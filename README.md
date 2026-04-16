@@ -22,13 +22,20 @@ Claude Code saves every conversation, but finding and resuming them is painful:
 
 ## Features
 
-- **Project picker** — see all directories where you've used Claude Code, sorted by recent activity
-- **Session picker** — browse sessions for a specific project with named sessions on top
+- **Project picker** — see all directories where you've used Claude Code, with git branch and disk usage
+- **Session picker** — browse sessions with named sessions on top, unnamed auto-labeled from first message
 - **Conversation preview** — see the last few messages before opening a session
+- **Full-text search** — `claude-picker --search` to search across ALL sessions in ALL projects
+- **Token/cost estimates** — see approximate token usage per session, color-coded by cost
+- **Auto-naming** — unnamed sessions show the first user message instead of "session"
 - **Named session support** — sessions created with `claude --name "feature-x"` show their name prominently
+- **Export to markdown** — press `Ctrl+E` to export any session to `~/Desktop/claude-exports/`
 - **Delete sessions** — press `Ctrl+D` to remove sessions you don't need
 - **Smart filtering** — only shows Claude Code sessions (filters out SDK/third-party tool sessions)
 - **Fuzzy search** — powered by fzf, type to filter instantly
+- **Git branch display** — see current branch for each project in the project picker
+- **Disk usage** — see total `~/.claude/` size and session count
+- **Shell keybinding** — `Ctrl+P` to launch from anywhere (installed automatically)
 - **Activity bars** — visual indicators showing session count per project
 - **Relative timestamps** — "5m ago", "2h ago", "3d ago" instead of dates
 - **Warp integration** — optional one-click access from Warp's `+` menu
@@ -49,12 +56,14 @@ git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker &&
 ## Usage
 
 ```bash
-claude-picker
+claude-picker              # browse sessions
+claude-picker --search     # search across ALL conversations
+Ctrl+P                     # keybinding (after install)
 ```
 
-That's it. Two-step flow:
+Two-step flow:
 
-1. **Pick a project** — shows all directories with Claude sessions
+1. **Pick a project** — shows all directories with Claude sessions, current git branch, disk usage
 2. **Pick a session** — browse, preview, and resume
 
 ### Keyboard shortcuts
@@ -62,6 +71,7 @@ That's it. Two-step flow:
 | Key | Action |
 |-----|--------|
 | `Enter` | Open selected session |
+| `Ctrl+E` | Export session to markdown (`~/Desktop/claude-exports/`) |
 | `Ctrl+D` | Delete selected session |
 | `Ctrl+C` | Go back / quit |
 | Type anything | Fuzzy search / filter |
@@ -115,15 +125,17 @@ No data leaves your machine. Everything is local, read-only (except delete).
 
 ```
 claude-picker/
-├── claude-picker          # Main entry point
+├── claude-picker           # Main entry point
 ├── lib/
-│   ├── session-list.sh    # Builds the fzf session list
-│   └── session-preview.py # Generates conversation preview
+│   ├── session-list.sh     # Builds the fzf session list
+│   ├── session-preview.py  # Generates conversation preview
+│   ├── session-search.py   # Full-text search across all sessions
+│   └── session-export.py   # Export sessions to markdown
 ├── warp/
-│   └── claude_picker.toml # Warp tab config (optional)
-├── install.sh             # Installer
-├── uninstall.sh           # Uninstaller
-├── LICENSE                # MIT
+│   └── claude_picker.toml  # Warp tab config (optional)
+├── install.sh              # Installer (includes keybinding setup)
+├── uninstall.sh            # Uninstaller
+├── LICENSE                 # MIT
 └── README.md
 ```
 

@@ -146,13 +146,39 @@ for d in os.listdir(projects_dir):
     if latest_mod > results[real_path]['last_mod']:
         results[real_path]['last_mod'] = latest_mod
 
+import subprocess
+
+# Get total disk usage of ~/.claude/projects/
+try:
+    total_size = 0
+    for root, dirs, files in os.walk(projects_dir):
+        for f in files:
+            total_size += os.path.getsize(os.path.join(root, f))
+    size_str = f'{total_size / (1024*1024):.1f} MB' if total_size > 1024*1024 else f'{total_size // 1024} KB'
+except: size_str = '?'
+
+total_sessions = sum(info['count'] for info in results.values())
+print(f'  {DG}{D}~/.claude  {total_sessions} sessions  {size_str}{R}  |  __INFO__')
+print()
+
 for path, info in sorted(results.items(), key=lambda x: x[1]['last_mod'], reverse=True):
     rel = relative_time(info['last_mod'])
     name = os.path.basename(path)
     count = info['count']
     s = 's' if count != 1 else ' '
     bar = '█' * min(count, 12)
-    print(f'  {CY}{B}{name:<30s}{R}  {DG}{rel:>9s}{R}  {GN}{D}{bar:<12s}{R} {DG}{count} session{s}{R}  |  {path}')
+
+    # Get current git branch
+    branch = ''
+    try:
+        result = subprocess.run(['git', '-C', path, 'branch', '--show-current'],
+                              capture_output=True, text=True, timeout=2)
+        if result.returncode == 0 and result.stdout.strip():
+            branch = result.stdout.strip()[:15]
+    except: pass
+
+    branch_str = f'{MG}{branch}{R}  ' if branch else ''
+    print(f'  {CY}{B}{name:<25s}{R}  {branch_str}{DG}{rel:>9s}{R}  {GN}{D}{bar:<12s}{R} {DG}{count} session{s}{R}  |  {path}')
 ")
 
 if [ -z "$dir_list" ]; then
@@ -204,7 +230,7 @@ fi
 proj_name=$(basename "$PWD")
 
 selected=$(echo "$session_list" | fzf \
-  --header=$"  \033[38;5;176m\033[1m$proj_name\033[0m  \033[38;5;242m│  enter open  │  ctrl-d delete  │  ctrl-c back\033[0m\n" \
+  --header=$"  \033[38;5;176m\033[1m$proj_name\033[0m  \033[38;5;242m│  enter open  │  ctrl-e export  │  ctrl-d delete  │  ctrl-c back\033[0m\n" \
   --header-first \
   --delimiter="|" \
   --with-nth=1 \
@@ -219,7 +245,8 @@ selected=$(echo "$session_list" | fzf \
   --no-separator \
   --preview="PROJECT_DIR='$PROJECT_DIR' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
   --preview-window=right,45%,wrap,border-left \
-  --bind="ctrl-d:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && rm -f \"$PROJECT_DIR/\$sid.jsonl\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
+  --bind="ctrl-e:execute(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && path=\$(python3 '$SCRIPT_DIR/lib/session-export.py' \"\$sid\") && echo \"Exported to: \$path\")" \
+  --bind="ctrl-d:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && rm -f \"$PROJECT_DIR/\$sid.jsonl\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
   --ansi)
 
 if [ -n "$selected" ]; then

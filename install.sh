@@ -86,11 +86,36 @@ TOML
   echo -e "  ${GN}✓${R} Warp tab config installed ${DG}(available in + menu)${R}"
 fi
 
+# Shell keybinding (Ctrl+P to launch picker)
+SHELL_RC=""
+if [ -f "$HOME/.zshrc" ]; then
+  SHELL_RC="$HOME/.zshrc"
+elif [ -f "$HOME/.bashrc" ]; then
+  SHELL_RC="$HOME/.bashrc"
+fi
+
+if [ -n "$SHELL_RC" ]; then
+  if ! grep -q "claude-picker" "$SHELL_RC" 2>/dev/null; then
+    cat >> "$SHELL_RC" << 'KEYBIND'
+
+# claude-picker: Ctrl+P to browse Claude Code sessions
+claude-picker-widget() { claude-picker; zle reset-prompt 2>/dev/null; }
+if [ -n "$ZSH_VERSION" ]; then
+  zle -N claude-picker-widget
+  bindkey '^P' claude-picker-widget
+fi
+KEYBIND
+    echo -e "  ${GN}✓${R} Keybinding installed ${DG}(Ctrl+P to launch)${R}"
+  fi
+fi
+
 echo ""
 echo -e "  ${GN}✓${R} Installed successfully!"
 echo ""
 echo -e "  ${CY}${B}Usage:${R}"
-echo -e "  ${DG}\$${R} claude-picker"
+echo -e "  ${DG}\$${R} claude-picker              ${DG}# browse sessions${R}"
+echo -e "  ${DG}\$${R} claude-picker --search      ${DG}# search across all conversations${R}"
+echo -e "  ${DG}\$${R} Ctrl+P                      ${DG}# keybinding (after shell restart)${R}"
 echo ""
 echo -e "  ${DG}Warp users: click + → Claude Picker${R}"
 echo ""
