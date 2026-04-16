@@ -43,16 +43,21 @@ def _rates(inp, out, cw5, cw1, cr):
         cache_r=cr / 1_000_000,
     )
 
+# Rates verified from Anthropic docs + multiple 2026 pricing references.
+# Cache write 5m = 1.25x input  ·  1h = 2x input  ·  cache read = 0.1x input.
 MODEL_PRICES = [
-    # Opus family — $15 / $75 per 1M, 5m cache $18.75, 1h $30, read $1.50
-    ('claude-opus-4',     _rates(15.00, 75.00, 18.75, 30.00, 1.50)),
+    # Opus 4.x — Opus 4.7 launched Apr 16 2026, kept Opus 4.6's pricing.
+    #   $5 input / $25 output / $6.25 cw5 / $10 cw1 / $0.50 cr
+    ('claude-opus-4',     _rates( 5.00, 25.00,  6.25, 10.00, 0.50)),
+    # Opus 3 — legacy; kept expensive older rates
     ('claude-3-opus',     _rates(15.00, 75.00, 18.75, 30.00, 1.50)),
-    # Sonnet family — $3 / $15, cache $3.75 / $6, read $0.30
+    # Sonnet 4.x — Sonnet 4.6 + 4.5 both at $3/$15
     ('claude-sonnet-4',   _rates( 3.00, 15.00,  3.75,  6.00, 0.30)),
     ('claude-3-7-sonnet', _rates( 3.00, 15.00,  3.75,  6.00, 0.30)),
     ('claude-3-5-sonnet', _rates( 3.00, 15.00,  3.75,  6.00, 0.30)),
-    # Haiku family — $0.80 / $4, cache $1 / $1.60, read $0.08
-    ('claude-haiku-4',    _rates( 0.80,  4.00,  1.00,  1.60, 0.08)),
+    # Haiku 4.5 — $1/$5 (newer rates than Haiku 3.5)
+    ('claude-haiku-4',    _rates( 1.00,  5.00,  1.25,  2.00, 0.10)),
+    # Haiku 3.5 — older/cheaper $0.80/$4
     ('claude-3-5-haiku',  _rates( 0.80,  4.00,  1.00,  1.60, 0.08)),
 ]
 # Fallback if a model isn't recognised — use Opus rates (most conservative)
