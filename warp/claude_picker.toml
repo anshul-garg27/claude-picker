@@ -1,0 +1,7 @@
+name = "Claude Picker"
+color = "magenta"
+
+[[panes]]
+id = "main"
+type = "terminal"
+commands = ["claude-picker"]
