@@ -60,395 +60,415 @@ LinkedIn carousels generate 3.5x more engagement than text-only posts (6.60% avg
 **Format**: 1080 x 1920 px (9:16 ratio)
 **Safe zone**: Keep critical content within 1080 x 1390 px (centered), avoiding top 250px and bottom 280px
 **Color palette**: Catppuccin Mocha throughout
+**Voice**: First person, personal. A developer sharing what they built and why. Not marketing. Not "you have 47 sessions" — "I had 47 sessions". Feels like texting a friend.
 
-## Story Slide 1 of 10 — The Hook
+Post all 10 stories in one sitting. They form a chronological story: *I was building something → I hit a problem → I got curious → I dug in → I built a fix → I kept extending it → I use it daily now → here it is.*
+
+---
+
+## Story 1 of 10 — Where it started
 
 **Text on screen:**
 ```
-You have 47 Claude Code sessions.
+been using claude code every day
+for like six months now.
 
-Which one had that auth fix?
-
-Good luck finding it.
+multiple projects.
+way too many conversations.
 ```
 
-**Visual direction:** Dark background (#1E1E2E). Text centered. "47" in large yellow (#F9E2AF). "Good luck finding it." in smaller muted gray (#6C7086), slightly sardonic. No images — just text on dark. Minimalist. The emptiness IS the point.
-
-**Swipe-up text:** "Swipe to see the fix -->"
+**Visual direction:** Dark background (#1E1E2E). Casual, handwritten-feel. All lowercase to match the conversational tone. Centered, generous vertical breathing room. Feels like an iMessage on the lock screen.
 
 **Gemini AI Pro prompt:**
 ```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Content fits within safe zone (avoid top 250px and bottom 280px), center-aligned with 80px horizontal padding. Three lines of text stacked with 48px line spacing:
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Content centered in safe zone, avoiding top 250px and bottom 280px. 80px horizontal padding.
 
-Line 1: "You have 47 Claude Code sessions." in color #CDD6F4, clean sans-serif, medium weight, 56px. The number "47" is color #F9E2AF (golden yellow), bolder, 72px.
-Line 2: "Which one had that auth fix?" in color #CDD6F4, 52px.
-Line 3: "Good luck finding it." in color #6C7086 (muted gray), 44px, slightly italic.
+Four lines of text, all lowercase, conversational, stacked with 52px line spacing, center-aligned:
 
-No images, decorations, or gradients. Monospace or clean sans-serif typeface. Developer aesthetic. No emojis.
+Line 1: "been using claude code every day" in #CDD6F4, clean sans-serif (not monospace — this is the personal intro slide), 48px.
+Line 2: "for like six months now." in #CDD6F4, 48px.
+[60px gap — deliberate pause]
+Line 3: "multiple projects." in #CDD6F4, 44px.
+Line 4: "way too many conversations." in #F9E2AF (yellow), 44px — subtle emphasis on the problem starting to show.
+
+No images, decorations, or emojis. The feel is a personal journal entry, not a marketing hook. Plenty of negative space. Dark and intimate.
 ```
 
 ---
 
-## Story Slide 2 of 10 — The Problem
+## Story 2 of 10 — The moment I hit the wall
 
 **Text on screen:**
 ```
-Claude Code doesn't have
-a session manager.
+last week i needed to get back
+to this one conversation i had
+about auth middleware.
 
-Your conversations pile up.
-Unnamed. Unsearchable. Forgotten.
+went to `claude --resume`
 
-You re-explain context.
-You burn tokens.
-You waste money.
+got this:
 ```
 
-**Visual direction:** Same dark background (#1E1E2E). Text in #CDD6F4. "burn tokens" in peach (#FAB387). "waste money" in red-ish peach. Left-aligned text. Each line stacked with breathing room. Terminal-style monospace font feel.
+**Visual direction:** Text setup on the left, leaving room for a small terminal snippet at the bottom showing the ugly UUID list. Feels like I'm showing you my actual screen. The word "this" in the last line hangs — it sets up the next slide visually, but this one stops there for tension.
 
 **Gemini AI Pro prompt:**
 ```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned text in safe zone with 80px left padding, vertically centered. Monospace typography throughout, 40px body size.
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned text block, 80px left padding, starts at 25% from top.
 
-"Claude Code doesn't have" in #CDD6F4
-"a session manager." in #CDD6F4
+Lines with 44px line height, all lowercase:
+"last week i needed to get back" in #CDD6F4, 42px.
+"to this one conversation i had" in #CDD6F4, 42px.
+"about auth middleware." in #CDD6F4, 42px.
 [40px gap]
-"Your conversations pile up." in #CDD6F4
-"Unnamed. Unsearchable. Forgotten." in #6C7086
+"went to " in #CDD6F4, 40px + "claude --resume" in monospace #89B4FA (blue), 40px, all on one line.
 [40px gap]
-"You re-explain context." in #CDD6F4
-"You burn tokens." in #FAB387 (peach), bold
-"You waste money." in #FAB387 (peach), bold
+"got this:" in #CDD6F4, 44px, slightly emphasized.
 
-No decorations, images, or emojis. Terminal-aesthetic typography. Dark and stark.
+Below the text (starts at about 60% from top), an actual mini terminal mockup: 900x520px, background #181825, subtle border #313244, no title bar dots. Inside, seven rows of monospace 26px:
+
+"? Pick a conversation to resume" in #6C7086
+"4a2e8f1c-9b3d-4e7a-a891..." in #6C7086
+"b7c9d2e0-1f4a-8b6c-d5e9..." in #6C7086
+"e5f8a3b1-7c2d-9e0f-b4a5..." in #6C7086
+"c2d6e1f7-3b9a-5c4d-e8f1..." in #6C7086
+"a9b3c7d2-8e4f-1a6b-c5d9..." in #6C7086
+"..." in #6C7086
+
+All UUIDs in dim gray. Nothing highlighted. The ugliness IS the point. No emojis.
 ```
 
 ---
 
-## Story Slide 3 of 10 — Introducing claude-picker
+## Story 3 of 10 — Four wrong clicks later
 
 **Text on screen:**
 ```
-claude-picker
+uuids and timestamps.
+that's it.
 
-Browse. Preview. Resume.
-Your Claude Code sessions.
+i clicked through four wrong
+conversations before finding
+the right one.
 
-fzf + Rich + python.
-~800 lines. MIT.
+and it's not the first time.
 ```
 
-**Visual direction:** Center-aligned. "claude-picker" in large purple (#CBA6F7) as hero text. "Browse. Preview. Resume." in green (#A6E3A1). The "~800 lines" stat in yellow (#F9E2AF). Below, a subtle terminal window outline (rounded rectangle in #313244) with fake blinking cursor. Background #1E1E2E.
+**Visual direction:** Left-aligned, conversational. "four" in yellow to emphasize the actual count. Minor detail: the word "wrong" is also subtly highlighted because it's the specific frustration. Feels like me venting.
 
 **Gemini AI Pro prompt:**
 ```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Center-aligned layout in safe zone.
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned text block, 80px left padding, vertically centered in safe zone.
 
-Top: "claude-picker" hero text in #CBA6F7 (purple), bold monospace, 96px.
-Below (24px gap): "Browse. Preview. Resume." in #A6E3A1 (green), 44px. "Your Claude Code sessions." in #CDD6F4, 40px.
-[60px gap]
-Terminal window mockup centered: rounded rectangle, 760px wide, 180px tall, background #313244, border 1px #45475A. Title bar dots #F38BA8, #F9E2AF, #A6E3A1. Inside: "$ claude-picker" in #CDD6F4 monospace 32px, cursor block #CBA6F7.
-[40px gap]
-"fzf + Rich + python." in #F9E2AF (yellow), 32px.
-"~800 lines. MIT." in #6C7086 (muted gray), 28px.
+All sentence-case, conversational tone, 44px line spacing:
 
-No photographs, gradients, or emojis. Clean developer aesthetic.
-```
-
----
-
-## Story Slide 4 of 10 — The Killer Feature (Cost)
-
-**Text on screen:**
-```
-No other tool shows you this:
-
-  auth-refactor      $0.47  12.3k tokens
-  fix-race-condition $1.23  31.2k tokens
-  drizzle-migration  $0.08   2.1k tokens
-
-Per-session cost tracking.
-Know exactly what you're spending.
-```
-
-**Visual direction:** This is the money slide (literally). Background #1E1E2E. Three session lines styled like terminal output, monospace font, inside a terminal window frame (#313244 border). Dollar amounts in green (#A6E3A1). Token counts in blue (#89B4FA). Session names in #CDD6F4. "No other tool shows you this" in yellow (#F9E2AF) at top. "Per-session cost tracking." bold, in peach (#FAB387). Feels like a real terminal.
-
-**Gemini AI Pro prompt:**
-```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Layout centered in safe zone.
-
-Top: "No other tool shows you this:" in #F9E2AF (yellow), bold, 44px, center-aligned.
-[40px gap]
-Terminal window mockup: rounded rectangle 900x380px, background #313244, border #45475A. Title bar dots #F38BA8, #F9E2AF, #A6E3A1. Inside, three rows monospace 32px, left-aligned with column alignment:
-
-Row 1: "auth-refactor" in #CDD6F4 | "$0.47" in #A6E3A1 | "12.3k tokens" in #89B4FA
-Row 2: "fix-race-condition" in #CDD6F4 | "$1.23" in #A6E3A1 | "31.2k tokens" in #89B4FA
-Row 3: "drizzle-migration" in #CDD6F4 | "$0.08" in #A6E3A1 | "2.1k tokens" in #89B4FA
-
-Dollar column visually prominent.
-[40px gap]
-"Per-session cost tracking." in #FAB387 (peach), bold, 48px.
-"Know exactly what you're spending." in #CDD6F4, 36px.
-
-Authentic terminal feel. No emojis, no decorations beyond terminal frame.
-```
-
----
-
-## Story Slide 5 of 10 — How It Works
-
-**Text on screen:**
-```
-Step 1: Pick your project
-Step 2: Pick your session
-Step 3: You're back in context
-
-Live preview panel.
-Fuzzy search via fzf 0.58+.
-Rich-formatted conversation.
-```
-
-**Visual direction:** Three steps stacked vertically with step numbers in purple circles (#CBA6F7). Each step text in #CDD6F4. Below, three feature bullets — green (#A6E3A1) checkmarks before each. Background #1E1E2E. Clean, scannable.
-
-**Gemini AI Pro prompt:**
-```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Center-aligned layout in safe zone with 60px between steps.
-
-Step 1: 80px circle with #CBA6F7 (purple) fill, "1" in #1E1E2E centered. Next to it: "Pick your project" in #CDD6F4, 42px monospace.
-Step 2: Same circle with "2". Next to it: "Pick your session" in #CDD6F4, 42px.
-Step 3: Same circle with "3". Next to it: "You're back in context" in #A6E3A1 (green), 42px bold — emphasize the payoff.
-
-[60px gap]
-Divider line 1px in #313244 spanning 600px centered.
-[40px gap]
-Three feature bullets, left-aligned with 40px left padding:
-- Green checkmark #A6E3A1 + "Live preview panel" in #CDD6F4, 36px
-- Green checkmark #A6E3A1 + "Fuzzy search via fzf 0.58+" in #CDD6F4, 36px
-- Green checkmark #A6E3A1 + "Rich-formatted conversation" in #CDD6F4, 36px
-
-No images, gradients, or emojis.
-```
-
----
-
-## Story Slide 6 of 10 — The Stats Dashboard
-
-**Text on screen:**
-```
-claude-picker --stats
-
-  Total sessions:     142
-  Total tokens:    2.4M
-  Total cost:    $38.27
-
-  architex        ████████ $12.40
-  design-system   ██████   $8.92
-  infra           ████     $5.13
-
-  today     ██ 8
-  week      ████████ 34
-  older     ████████████████ 100
-```
-
-**Visual direction:** Pure terminal aesthetic. Background #1E1E2E. Terminal frame (#313244). The three totals in #CDD6F4 with values colored (sessions blue, tokens yellow, cost green). Bar charts using block characters in #CBA6F7. Monospace everything.
-
-**Gemini AI Pro prompt:**
-```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Center-aligned layout in safe zone.
-
-Top: "claude-picker --stats" in #CDD6F4 monospace, 40px, with "--stats" in #F9E2AF. 
-[40px gap]
-Large terminal window mockup 960x1100px, background #313244, border #45475A, three title bar dots.
-
-Inside terminal, monospace 30px throughout, left-aligned 40px padding:
-
-Section 1 — Totals:
-"Total sessions:" #CDD6F4 + "142" in #89B4FA (blue)
-"Total tokens:" #CDD6F4 + "2.4M" in #F9E2AF (yellow)
-"Total cost:" #CDD6F4 + "$38.27" in #A6E3A1 (green)
-[30px gap]
-
-Section 2 — Per-project bars:
-"architex       " #CDD6F4 + "████████" in #CBA6F7 + "$12.40" #A6E3A1
-"design-system  " #CDD6F4 + "██████" in #CBA6F7 + "$8.92" #A6E3A1
-"infra          " #CDD6F4 + "████" in #CBA6F7 + "$5.13" #A6E3A1
-[30px gap]
-
-Section 3 — Activity timeline:
-"today    " #CDD6F4 + "██" in #A6E3A1 + "8" #CDD6F4
-"week     " #CDD6F4 + "████████" in #F9E2AF + "34" #CDD6F4
-"older    " #CDD6F4 + "████████████████" in #6C7086 + "100" #CDD6F4
-
-[40px gap below terminal]
-"Full dashboard. One command." in #CBA6F7 (purple), 40px, center-aligned.
-
-No emojis. Pure terminal aesthetic. Block characters must render cleanly.
-```
-
----
-
-## Story Slide 7 of 10 — Session Tree with Forks
-
-**Text on screen:**
-```
-claude-picker --tree
-
-architex/
-  ├─ auth-refactor
-  │   └─ auth-refactor-retry (fork)
-  │       └─ auth-refactor-v3 (fork)
-  ├─ drizzle-migration
-  └─ fix-race-condition
-
-Every fork. Every branch. Visualized.
-```
-
-**Visual direction:** Tree diagram rendered in terminal style. Project name in purple. Tree characters in muted gray. Fork labels in peach to highlight relationship. Background #1E1E2E.
-
-**Gemini AI Pro prompt:**
-```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Center-aligned layout in safe zone.
-
-Top: "claude-picker --tree" in #CDD6F4 monospace 40px, "--tree" in #F9E2AF.
+"uuids and timestamps." in #CDD6F4, 46px.
+"that's it." in #6C7086 (muted gray), 40px — resigned tone.
 [50px gap]
-Terminal window 960x720px, background #313244, border #45475A, three title bar dots.
+"i clicked through " in #CDD6F4 + "four wrong" in #F9E2AF (yellow) + " " in #CDD6F4, 44px — "four wrong" emphasized.
+"conversations before finding" in #CDD6F4, 44px.
+"the right one." in #CDD6F4, 44px.
+[50px gap]
+"and it's not the first time." in #FAB387 (peach), 42px, slightly italic feel.
 
-Inside terminal, monospace 32px, left-aligned 40px padding:
-
-"architex/" in #CBA6F7 (purple), bold
-"  ├─ auth-refactor" — tree characters in #6C7086, name in #CDD6F4
-"  │   └─ auth-refactor-retry" — tree in #6C7086, name in #CDD6F4, " (fork)" in #FAB387 (peach)
-"  │       └─ auth-refactor-v3" — tree in #6C7086, name in #CDD6F4, " (fork)" in #FAB387
-"  ├─ drizzle-migration" — tree in #6C7086, name in #CDD6F4
-"  └─ fix-race-condition" — tree in #6C7086, name in #CDD6F4
-
-[40px gap below terminal]
-"Every fork. Every branch. Visualized." in #A6E3A1 (green), 38px center-aligned.
-
-Box-drawing characters must render cleanly. No emojis.
+No terminal mockup here — this slide is pure text, pure venting. Dark, stark. No emojis.
 ```
 
 ---
 
-## Story Slide 8 of 10 — Full-Text Search
+## Story 4 of 10 — I got curious
 
 **Text on screen:**
 ```
-claude-picker --search "race condition"
+so instead of fixing
+the auth thing i was
+supposed to fix...
 
-architex   fix-race-condition
-  > "race condition in the websocket
-    reconnect logic..."
-
-infra      deploy-debug
-  > "might be a race condition when
-    both pods start at the same time"
-
-Every message. Every session.
-Every project. One command.
+i opened ~/.claude/
+to see what's in there.
 ```
 
-**Visual direction:** Search results in terminal frame. The match snippets in italic-feel #CDD6F4 on slightly darker background. Project and session names in blue/purple. Quoted highlight ">".
+**Visual direction:** Self-aware developer humor. The "instead of fixing" setup lands as a joke because developers know this exact feeling of getting nerd-sniped. The path `~/.claude/` is in monospace to signal "we're going into the terminal now".
 
 **Gemini AI Pro prompt:**
 ```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Safe zone centered.
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned text, 80px left padding, vertically centered.
 
-Top: "claude-picker --search \"race condition\"" in #CDD6F4 monospace 32px. "--search" in #F9E2AF, quoted query in #A6E3A1.
+All lowercase, 44px line spacing, conversational:
+
+"so instead of fixing" in #CDD6F4, 46px.
+"the auth thing i was" in #CDD6F4, 46px.
+"supposed to fix..." in #6C7086 (muted gray), 46px — the ellipsis and gray feel self-aware.
+[60px gap]
+"i opened " in #CDD6F4 + "~/.claude/" in monospace #A6E3A1 (green), 46px, all on one line.
+"to see what's in there." in #CDD6F4, 46px.
+
+No terminal mockup. Just text. Personal, curious, slightly guilty. No emojis.
+```
+
+---
+
+## Story 5 of 10 — What I found
+
+**Text on screen:**
+```
+turns out claude stores every
+session as a jsonl file.
+
+~/.claude/projects/<encoded-path>/
+  abc123.jsonl
+  def456.jsonl
+  ghi789.jsonl
+  ...
+
+one file per conversation.
+everything's in there.
+```
+
+**Visual direction:** The "aha" moment. Mini terminal tree structure shown clearly. Makes the technical discovery feel accessible. The ellipsis `...` lets viewers feel there's more.
+
+**Gemini AI Pro prompt:**
+```
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned text, 80px padding.
+
+Top section, sentence-case conversational:
+"turns out claude stores every" in #CDD6F4, 44px.
+"session as a jsonl file." in #CDD6F4, 44px.
+[60px gap]
+
+Middle — small file tree in monospace 32px, background #181825 rounded rectangle with 40px padding, 900px wide:
+
+"~/.claude/projects/<encoded-path>/" in #89B4FA (blue)
+"  abc123.jsonl" in #CDD6F4
+"  def456.jsonl" in #CDD6F4
+"  ghi789.jsonl" in #CDD6F4
+"  ..." in #6C7086
+
+[50px gap]
+"one file per conversation." in #CDD6F4, 42px.
+"everything's in there." in #A6E3A1 (green), 42px — the discovery moment.
+
+No emojis. The file tree should look like an actual `tree` command output.
+```
+
+---
+
+## Story 6 of 10 — Started building
+
+**Text on screen:**
+```
+so i started writing
+something to read them.
+
+two hours later i had
+a working session picker.
+
+bash + python + fzf.
+no dependencies i didn't
+already have.
+```
+
+**Visual direction:** The casual reveal of what I built. No hype. "Two hours later" signals this wasn't a massive engineering effort — it was a Saturday afternoon thing. Makes it feel approachable.
+
+**Gemini AI Pro prompt:**
+```
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned, 80px padding, vertically centered in safe zone.
+
+Conversational, lowercase, 44px line spacing:
+
+"so i started writing" in #CDD6F4, 44px.
+"something to read them." in #CDD6F4, 44px.
+[50px gap]
+"two hours later i had" in #CDD6F4, 44px.
+"a working session picker." in #A6E3A1 (green), 44px.
+[60px gap]
+"bash + python + fzf." in monospace #F9E2AF (yellow), 40px.
+"no dependencies i didn't" in #CDD6F4, 40px.
+"already have." in #CDD6F4, 40px.
+
+No terminal mockup, no decorations. The words carry the slide. No emojis.
+```
+
+---
+
+## Story 7 of 10 — Then I kept adding stuff
+
+**Text on screen:**
+```
+then i was curious
+how much claude was
+actually costing me.
+
+added --stats.
+
+  total:    $38.27
+  architex  $12.40
+  infra     $5.13
+  ...
+
+turns out i was spending
+more on one project
+than on lunch.
+```
+
+**Visual direction:** The "kept adding stuff" moment — shows the natural progression. The cost numbers are specific and slightly uncomfortable (especially "more than on lunch" — a relatable self-roast). Not bragging about features, just telling what happened next.
+
+**Gemini AI Pro prompt:**
+```
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned, 80px padding.
+
+Top text, conversational lowercase, 44px line spacing:
+"then i was curious" in #CDD6F4, 42px.
+"how much claude was" in #CDD6F4, 42px.
+"actually costing me." in #CDD6F4, 42px.
 [40px gap]
-Terminal window 960x900px, background #313244, border #45475A, three title bar dots.
+"added " in #CDD6F4 + "--stats." in monospace #F9E2AF (yellow), 44px, on one line.
 
-Inside terminal, monospace 28px, left-aligned 32px padding:
+[40px gap]
+Mini terminal box 800x280px, background #181825, 40px padding, monospace 28px:
+"  total:    $38.27" — label #CDD6F4, amount #A6E3A1 (green)
+"  architex  $12.40" — same coloring
+"  infra     $5.13"  — same
+"  ..."              — in #6C7086
 
-Result 1:
-"architex   fix-race-condition" — "architex" in #89B4FA (blue), session name in #CBA6F7 (purple).
-"  > \"race condition in the websocket" in #CDD6F4
-"    reconnect logic...\"" in #CDD6F4
-[20px gap]
+[40px gap]
+"turns out i was spending" in #CDD6F4, 40px.
+"more on one project" in #CDD6F4, 40px.
+"than on lunch." in #FAB387 (peach), 40px, slightly italic — self-roast tone.
 
-Result 2:
-"infra      deploy-debug" — "infra" in #89B4FA, session in #CBA6F7.
-"  > \"might be a race condition when" in #CDD6F4
-"    both pods start at the same time\"" in #CDD6F4
-
-[40px gap below terminal]
-"Every message. Every session." in #F9E2AF (yellow), 36px center.
-"Every project. One command." in #F9E2AF, 36px center.
-
-Quote character ">" in #A6E3A1 (green), prominent.
 No emojis.
 ```
 
 ---
 
-## Story Slide 9 of 10 — In-Picker Shortcuts
+## Story 8 of 10 — Search, because memory is bad
 
 **Text on screen:**
 ```
-Power keys:
+kept trying to remember
+stuff like "where did i fix
+that race condition"
 
-  Ctrl+B   bookmark (top of list)
-  Ctrl+E   export to markdown
-  Ctrl+D   delete in-place
-  Ctrl+P   launch from anywhere
+so added --search.
 
-No config. No plugins. Just works.
+every message. every session.
+every project.
+
+grep, but for conversations.
 ```
 
-**Visual direction:** Keys presented as rounded rectangles with purple fill, white key letters. Action descriptions in #CDD6F4. Tight, clean keycap aesthetic.
+**Visual direction:** The honesty about forgetfulness makes this relatable. The phrase "grep, but for conversations" is the money quote — developers get it instantly.
 
 **Gemini AI Pro prompt:**
 ```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Center-aligned layout in safe zone.
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned, 80px padding, vertically centered.
 
-Top: "Power keys:" in #CBA6F7 (purple), bold, 56px, center-aligned.
-[60px gap]
-Four rows, 50px vertical spacing, left-aligned with 120px left padding:
+Conversational lowercase, 44px line spacing:
 
-Row 1: Keycap group "[Ctrl]" + "[B]" — each keycap is rounded rectangle 120x60px, background #313244, border 1.5px #89B4FA (blue), letters #CDD6F4 monospace 32px. Gap between pair: 12px. Then 40px gap, then "bookmark (top of list)" in #CDD6F4 36px.
+"kept trying to remember" in #CDD6F4, 42px.
+"stuff like " in #CDD6F4 + "\"where did i fix" — opening quote and text in #A6E3A1 (green), 42px, on one line.
+"that race condition\"" in #A6E3A1 (green), 42px — closed quote same color.
+[40px gap]
+"so added " in #CDD6F4 + "--search." in monospace #F9E2AF (yellow), 44px, on one line.
 
-Row 2: "[Ctrl]" + "[E]" keycaps (same style). Then "export to markdown" in #CDD6F4.
+[50px gap]
+"every message. every session." in #CDD6F4, 40px.
+"every project." in #CDD6F4, 40px.
 
-Row 3: "[Ctrl]" + "[D]" keycaps. Then "delete in-place" in #CDD6F4.
+[50px gap]
+"grep, but for conversations." in #CBA6F7 (purple), 44px, bold — the money line.
 
-Row 4: "[Ctrl]" + "[P]" keycaps. Then "launch from anywhere" in #CDD6F4.
-
-[60px gap]
-Bottom: "No config. No plugins. Just works." in #A6E3A1 (green), 40px, center-aligned.
-
-Keycaps must look like real keyboard keys. No emojis.
+No emojis. Minimal, punchy.
 ```
 
 ---
 
-## Story Slide 10 of 10 — CTA
+## Story 9 of 10 — How I actually use it now
 
 **Text on screen:**
 ```
-MIT licensed. Works now.
+six months later, i use
+this thing like 20 times a day.
+
+also started naming every
+claude session:
+
+  claude --name "auth-refactor"
+  claude --name "drizzle-fix"
+
+takes 2 seconds.
+saves me like 10 minutes.
+```
+
+**Visual direction:** The real outcome. Not "it changed my life" — just "this is what I do now". The `claude --name` examples are in monospace because they're actual commands you can copy. The final two lines are the honest math.
+
+**Gemini AI Pro prompt:**
+```
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned, 80px padding.
+
+Conversational lowercase, 44px line spacing:
+
+"six months later, i use" in #CDD6F4, 42px.
+"this thing like " in #CDD6F4 + "20 times a day" in #F9E2AF (yellow), 42px, on one line + "." at end in #CDD6F4.
+[50px gap]
+"also started naming every" in #CDD6F4, 42px.
+"claude session:" in #CDD6F4, 42px.
+[40px gap]
+
+Mini command block in monospace 30px, 40px left-indented:
+"claude --name \"auth-refactor\"" — "claude" in #CDD6F4, "--name" in #89B4FA, string in #A6E3A1
+"claude --name \"drizzle-fix\""    — same coloring
+
+[50px gap]
+"takes 2 seconds." in #CDD6F4, 40px.
+"saves me like 10 minutes." in #A6E3A1 (green), 40px — the payoff.
+
+No emojis. Honest, personal.
+```
+
+---
+
+## Story 10 of 10 — Here if anyone wants it
+
+**Text on screen:**
+```
+put it on github in case
+anyone else has this problem.
 
 github.com/anshul-garg27/claude-picker
 
-Star it. Try it. Tell me what breaks.
+mit licensed.
+bash + python + fzf.
+works in any terminal.
+
+if you try it, lmk what breaks.
 ```
 
-**Visual direction:** GitHub logo (simplified, white outline) at top. URL in blue (#89B4FA), styled to look clickable. "Star it. Try it. Tell me what breaks." in yellow (#F9E2AF) — casual, honest. Background #1E1E2E. Link sticker points to repo.
+**Visual direction:** Low-key CTA. Not "STAR MY REPO!" — just "here's the link, let me know if it breaks". The humility is the hook. The URL should be the most prominent element because that's the only thing people need.
 
 **Instagram link sticker:** github.com/anshul-garg27/claude-picker
 
 **Gemini AI Pro prompt:**
 ```
-Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Center-aligned in safe zone.
+Create a minimalist Instagram Story image at 1080x1920 pixels. Background: solid #1E1E2E (Catppuccin Mocha Base). Left-aligned, 80px padding. Text vertically centered in safe zone.
 
-Top: Simplified GitHub octocat silhouette as 120x120px outline in #CDD6F4, centered.
-[40px gap]
-"MIT licensed. Works now." in #CDD6F4, 42px, center-aligned.
-[30px gap]
-"github.com/anshul-garg27/claude-picker" in #89B4FA (blue), 36px monospace, center-aligned, subtle underline in #89B4FA suggesting clickable hyperlink. Most prominent text on slide.
+Conversational lowercase, 44px line spacing:
+
+"put it on github in case" in #CDD6F4, 42px.
+"anyone else has this problem." in #CDD6F4, 42px.
 [50px gap]
-"Star it. Try it. Tell me what breaks." in #F9E2AF (yellow), 36px, center-aligned, casual tone.
 
-Clean, inviting. Blue URL draws the eye. No busy decorations or emojis.
+The URL prominently: "github.com/anshul-garg27/claude-picker" in monospace #89B4FA (blue), 42px, with subtle #89B4FA underline to suggest it's clickable. This is the most visually dominant element on the slide.
+
+[50px gap]
+Three small facts, each on its own line, 32px monospace #6C7086 (muted gray):
+"mit licensed."
+"bash + python + fzf."
+"works in any terminal."
+
+[50px gap]
+"if you try it, lmk what breaks." in #F9E2AF (yellow), 38px — casual, honest sign-off.
+
+No GitHub logo icon (would feel corporate). Keep it text-only. No emojis. The link sticker handles the actual tap target.
 ```
 
 ---

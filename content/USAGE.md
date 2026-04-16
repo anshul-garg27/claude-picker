@@ -278,20 +278,20 @@ This table tells you which prompt number produces which file, and where it lives
 
 ### Instagram stories (10 slides from `instagram-linkedin.md`)
 
-These are separate prompts inside `instagram-linkedin.md`, not the numbered list above.
+Personal, first-person story arc — not a feature pitch. Each slide is a chapter in the "I was building something → found a problem → built a fix" journey. Post all 10 in one sitting so the story reads end-to-end.
 
-| Story | Prompt section in instagram-linkedin.md | Save as |
-|-------|----------------------------------------|---------|
-| Hook | Story Slide 1 prompt | `assets/ai-generated/instagram/story-01-hook.png` |
-| Problem | Story Slide 2 prompt | `assets/ai-generated/instagram/story-02-problem.png` |
-| Introducing | Story Slide 3 prompt | `assets/ai-generated/instagram/story-03-intro.png` |
-| Cost tracking | Story Slide 4 prompt | `assets/ai-generated/instagram/story-04-cost.png` |
-| How it works | Story Slide 5 prompt | `assets/ai-generated/instagram/story-05-how-it-works.png` |
-| `--stats` | Story Slide 6 prompt | `assets/ai-generated/instagram/story-06-stats.png` |
-| `--tree` | Story Slide 7 prompt | `assets/ai-generated/instagram/story-07-tree.png` |
-| `--search` | Story Slide 8 prompt | `assets/ai-generated/instagram/story-08-search.png` |
-| Shortcuts | Story Slide 9 prompt | `assets/ai-generated/instagram/story-09-shortcuts.png` |
-| CTA | Story Slide 10 prompt | `assets/ai-generated/instagram/story-10-cta.png` |
+| Slide | Story beat | Save as |
+|-------|------------|---------|
+| 1 | Context — "been using claude code every day" | `assets/ai-generated/instagram/story-01-where-it-started.png` |
+| 2 | The moment — `claude --resume` shows UUIDs | `assets/ai-generated/instagram/story-02-the-moment.png` |
+| 3 | The vent — "four wrong clicks" | `assets/ai-generated/instagram/story-03-four-wrong-clicks.png` |
+| 4 | Curiosity — "opened ~/.claude/" | `assets/ai-generated/instagram/story-04-got-curious.png` |
+| 5 | Discovery — JSONL files, one per session | `assets/ai-generated/instagram/story-05-what-i-found.png` |
+| 6 | Building — "two hours later..." | `assets/ai-generated/instagram/story-06-started-building.png` |
+| 7 | Stats — "more on one project than on lunch" | `assets/ai-generated/instagram/story-07-stats.png` |
+| 8 | Search — "grep, but for conversations" | `assets/ai-generated/instagram/story-08-search.png` |
+| 9 | Daily use — "20 times a day" + naming habit | `assets/ai-generated/instagram/story-09-how-i-use-it.png` |
+| 10 | Share — "lmk what breaks" + repo link | `assets/ai-generated/instagram/story-10-share.png` |
 
 ### LinkedIn carousel (12 slides from `instagram-linkedin.md`)
 
