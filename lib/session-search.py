@@ -122,7 +122,8 @@ for proj_dir in sorted(os.listdir(projects_dir)):
                 name_label = f'{GN}{session_name}{R}' if session_name else f'{DG}session{R}'
                 proj_label = f'{MG}{proj_name}{R}'
 
-                # Format: project | session | role | text | session_id
-                print(f'  {proj_label}  {DG}│{R}  {name_label}  {DG}│{R}  {role_label}  {DG}│{R}  {GR}{clean}{R}  	{session_id}')
+                # Format: visible content [TAB] session_id (TAB is fzf delimiter)
+                visible = f'  {proj_label}  {DG}\u2502{R}  {name_label}  {DG}\u2502{R}  {role_label}  {DG}\u2502{R}  {GR}{clean}{R}'
+                print(visible + '\t' + session_id)
         except:
             pass
