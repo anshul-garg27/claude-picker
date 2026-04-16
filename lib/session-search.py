@@ -40,20 +40,20 @@ for proj_dir in sorted(os.listdir(projects_dir)):
         session_id = os.path.basename(jf).replace('.jsonl', '')
         mod_ts = os.path.getmtime(jf)
 
-        # Filter: Claude CLI only
-        is_claude = True
+        # Filter: only interactive CLI sessions (sdk-cli can't be resumed)
+        is_resumable = False
         try:
             for line in open(jf):
                 data = json.loads(line.strip())
                 ep = data.get('entrypoint', '')
-                if ep and ep not in ('cli', 'sdk-cli'):
-                    is_claude = False
+                if ep == 'cli':
+                    is_resumable = True
                     break
-                if ep in ('cli', 'sdk-cli'):
+                if ep and ep != 'cli':
                     break
         except:
             pass
-        if not is_claude:
+        if not is_resumable:
             continue
 
         # Get session name
