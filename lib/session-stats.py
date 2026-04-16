@@ -43,6 +43,10 @@ def term_width():
     except Exception:
         return 100
 
+# Cap dashboard width so it doesn't stretch ugly on ultra-wide terminals.
+MAX_W = 110
+MIN_W = 90
+
 def sparkline(values, width=8):
     if not values:
         return ' ' * width
@@ -264,8 +268,10 @@ total_cost   = sum(p['cost'] for p in project_data.values())
 
 # ── Render ──
 
-W = max(90, term_width() - 2)
+W = min(MAX_W, max(MIN_W, term_width() - 2))
 card_w = (W - 8) // 3   # 3 cards + 2 gaps + 2 margin
+# Right-side metric column used by per-project rows: "$xx.xx  ·  xx.xM tok  ·  xxx ses"
+RIGHT_COL_W = 35
 
 def rule(label, w=W, color=SUB):
     inner = f' {label} ' if label else ''
@@ -363,85 +369,85 @@ if project_data:
     sorted_proj = sorted(project_data.items(), key=lambda x: x[1]['cost'], reverse=True)[:8]
     max_cost = sorted_proj[0][1]['cost'] if sorted_proj else 1
 
-    name_w = min(22, max((len(n) for n, _ in sorted_proj), default=8) + 2)
-    bar_w  = W - name_w - 36
+    name_w = min(18, max((len(n) for n, _ in sorted_proj), default=8) + 2)
+    # Layout: "  " + name(name_w) + "  " + bar(bar_w) + "  " + right(RIGHT_COL_W)
+    # Total visible must be ≤ W. Give bar whatever's left.
+    bar_w = max(10, W - name_w - RIGHT_COL_W - 6)
 
     for i, (name, info) in enumerate(sorted_proj):
         color = project_color(i)
         filled = int((info['cost'] / max_cost) * bar_w) if max_cost else 0
         bar = color + BAR_FULL * filled + R + LINE + BAR_EMPTY * (bar_w - filled) + R
         toks = info['input'] + info['output']
-        right = f'{format_cost(info["cost"]):>8}  ·  {format_tokens(toks):>6} tok  ·  {info["sessions"]:>3} ses'
+        # Right-side column — keep total visible width == RIGHT_COL_W (35 chars)
+        right = f'{format_cost(info["cost"]):>7}  ·  {format_tokens(toks):>5} tok  ·  {info["sessions"]:>3} ses'
         print(f'  {color}{B}{name:<{name_w}}{R}  {bar}  {SUB}{right}{R}')
     print()
 
 # Activity timeline (30 days)
-print(f'  {SUB}{D}── activity (30d) {"─" * (W - 23)}{R}')
+print(f'  {SUB}{D}── activity (30d) ' + '─' * max(0, W - 20) + f'{R}')
 print()
 
-labels = ['Mar 17', 'Mar 22', 'Mar 27', 'Apr 1', 'Apr 6', 'Apr 11', 'Apr 16']
-# Dynamic labels
-label_indices = [0, 5, 10, 15, 20, 25, 29]
-dynamic_labels = []
-for idx in label_indices:
-    if 0 <= idx < len(days_series):
-        dynamic_labels.append(days_series[idx].strftime('%b %d').lstrip())
-
-# Build vertical bars
 max_day = max(daily_sessions) if any(daily_sessions) else 1
-bar_width = (W - 6) // 30  # chars per day bar
-if bar_width < 2:
-    bar_width = 2
 
-# Use block glyph with height-based color
+# 3 cols per day (bar + 2 spaces) — gives 90-col bar area for 30 days
+SLOT = 3
+BAR_AREA = 30 * SLOT  # 90 visible cols for bars
+
+# 5 labels spaced evenly, plus "today" at the end = 6 labels.
+# Positions chosen so labels never collide: each label takes 6 chars, gap >= 6.
+label_indices = [0, 6, 13, 20, 29]    # 5 anchor labels ~ every ~6-7 days
+dynamic_labels = [days_series[i].strftime('%b %d') for i in label_indices]
+
 def day_bar(count, is_today, is_spike):
     if count == 0:
         return f'{LINE}{D}·{R}'
     idx = int((count / max_day) * (len(SPARK_CHARS) - 1))
     ch = SPARK_CHARS[idx]
     if is_today:
-        color = GREEN
-    elif is_spike:
-        color = RED
-    else:
-        color = MAUVE
-    return f'{color}{ch}{R}'
+        return f'{GREEN}{B}{ch}{R}'
+    if is_spike:
+        return f'{RED}{ch}{R}'
+    return f'{MAUVE}{ch}{R}'
 
 avg_sessions = (sum_sessions_30 / 30) if sum_sessions_30 else 0
 spike_threshold = max(2, avg_sessions * 2.2)
 
-gap = max(0, bar_width - 1)
-bar_line = '    '
+# Center the bar area horizontally within W
+left_pad = max(4, (W - BAR_AREA) // 2)
+
+# Bar line
+bar_line = ' ' * left_pad
 for i, d in enumerate(days_series):
     count = daily_sessions[i]
     is_today = (d == today)
     is_spike = (count >= spike_threshold and count > 0)
-    bar_line += day_bar(count, is_today, is_spike) + ' ' * gap
-print(bar_line)
+    bar_line += day_bar(count, is_today, is_spike) + '  '
+print(bar_line.rstrip())
 
-# Label line
-label_line = '    '
-total_slot = bar_width
-placed_positions = [int(i * 29 / 6) for i in range(7)]
-for pos in range(30):
-    if pos in placed_positions:
-        idx = placed_positions.index(pos)
-        lbl = dynamic_labels[idx] if idx < len(dynamic_labels) else ''
-        label_line += f'{SUB}{lbl}{R}'
-        pad = total_slot - len(lbl)
-        if pad > 0:
-            label_line += ' ' * pad
-    else:
-        label_line += ' ' * total_slot
+# Label line — each anchor day's column is day_idx * SLOT
+label_cells = [' '] * BAR_AREA
+for li, day_idx in enumerate(label_indices):
+    lbl = dynamic_labels[li]
+    start = day_idx * SLOT
+    # Right-align the final label so "Apr 16" doesn't overflow past BAR_AREA
+    if start + len(lbl) > BAR_AREA:
+        start = BAR_AREA - len(lbl)
+    for k, ch in enumerate(lbl):
+        if 0 <= start + k < BAR_AREA:
+            label_cells[start + k] = ch
+label_line = ' ' * left_pad + f'{SUB}' + ''.join(label_cells) + f'{R}'
 print(label_line)
 
-# Annotations line (find today highlight)
-today_pos = 29
-today_count = daily_sessions[today_pos] if 0 <= today_pos < 30 else 0
-if today_count > 0:
-    ann_line = '    '
-    ann_line += ' ' * ((today_pos) * total_slot) + f'{GREEN}↑ today{R}'
-    print(ann_line)
+# Annotation line — today arrow only (spike annotations add visual noise with real data)
+if daily_sessions and daily_sessions[-1] > 0:
+    ann_cells = [' '] * BAR_AREA
+    arrow = '↑ today'
+    start_today = BAR_AREA - len(arrow)
+    for k, ch in enumerate(arrow):
+        if 0 <= start_today + k < BAR_AREA:
+            ann_cells[start_today + k] = ch
+    print(' ' * left_pad + f'{GREEN}' + ''.join(ann_cells) + f'{R}')
 
 print()
 
