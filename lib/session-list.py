@@ -152,7 +152,7 @@ for f in sorted(glob.glob(os.path.join(project_dir, '*.jsonl')), key=os.path.get
     tc = time_color(mod_ts)
     age_warn = age_indicator(mod_ts)
 
-    display_name = name if name else (auto_name[:35] if auto_name else 'session')
+    display_name = name if name else (auto_name[:28] if auto_name else 'session')
     entry = (rel_time, display_name, msg_count, tokens, tok_display, cc, session_id, tc, age_warn, cost_str, bool(name))
 
     if session_id in bookmarks:
@@ -164,22 +164,29 @@ for f in sorted(glob.glob(os.path.join(project_dir, '*.jsonl')), key=os.path.get
 
 # ── Output ──
 
-print(f'  {MG}{B}+{R}   {CY}{B}New Session{R}                                        {DG}start fresh{R}  |  __NEW__')
-print(f'  {DG}{D}  \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}  |  __SEP__')
+W = 28  # name column width
+hr = '\u2500' * 50
+hr_short = '\u2500' * 42
+
+print(f'  {MG}{B}+{R}   {CY}{B}New Session{R}  |  __NEW__')
+print(f'  {DG}{D}  {hr}{R}  |  __SEP__')
+
+def fmt_row(icon, ic, nm, nc, ns, tc, rel, aw, msgs, cc, tstr, cs, sid):
+    return f'  {ic}{icon}{R}  {ns}{nc}{nm:<{W}s}{R}  {tc}{rel:>8s}{R}{aw}  {DG}{msgs:>3d}m{R} {cc}{tstr}{R}{cs}  |  {sid}'
 
 if bookmarked_sessions:
-    print(f'  {DG}  {D}\u2500\u2500 bookmarked \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}  |  __HDR0__')
+    print(f'  {DG}{D}  \u2500\u2500 pinned {hr_short}{R}  |  __HDR0__')
     for rel, nm, msgs, tokens, tstr, cc, sid, tc, aw, cs, is_named in bookmarked_sessions:
-        nc = GN if is_named else GR
-        ns = B if is_named else I
-        print(f'  {PB}\u25a0{R}   {ns}{nc}{nm:<35s}{R}  {tc}{rel:>9s}{R}{aw}  {DG}{msgs:>3d} msgs{R}  {cc}{tstr:>7s}{R}{cs}  |  {sid}')
+        nc = GN if is_named else GR; ns = B if is_named else I
+        print(fmt_row('\u25a0', PB, nm[:W], nc, ns, tc, rel, aw, msgs, cc, tstr, cs, sid))
 
 if named:
-    print(f'  {DG}  {D}\u2500\u2500 saved \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}  |  __HDR1__')
+    hr_saved = '\u2500' * 43
+    print(f'  {DG}{D}  \u2500\u2500 saved {hr_saved}{R}  |  __HDR1__')
     for rel, nm, msgs, tokens, tstr, cc, sid, tc, aw, cs, is_named in named:
-        print(f'  {YL}\u25cf{R}   {B}{GN}{nm:<35s}{R}  {tc}{rel:>9s}{R}{aw}  {DG}{msgs:>3d} msgs{R}  {cc}{tstr:>7s}{R}{cs}  |  {sid}')
+        print(fmt_row('\u25cf', YL, nm[:W], GN, B, tc, rel, aw, msgs, cc, tstr, cs, sid))
 
 if unnamed:
-    print(f'  {DG}  {D}\u2500\u2500 recent \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}  |  __HDR2__')
+    print(f'  {DG}{D}  \u2500\u2500 recent {hr_short}{R}  |  __HDR2__')
     for rel, display, msgs, tokens, tstr, cc, sid, tc, aw, cs, is_named in unnamed:
-        print(f'  {DG}\u25cb{R}   {GR}{I}{display:<35s}{R}  {tc}{rel:>9s}{R}{aw}  {DG}{msgs:>3d} msgs{R}  {cc}{tstr:>7s}{R}{cs}  |  {sid}')
+        print(fmt_row('\u25cb', DG, display[:W], GR, I, tc, rel, aw, msgs, cc, tstr, cs, sid))

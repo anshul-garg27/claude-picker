@@ -39,9 +39,13 @@ if [ -n "$missing" ]; then
 fi
 
 # Clone or update
-if [ -d "$INSTALL_DIR" ]; then
+if [ -d "$INSTALL_DIR/.git" ]; then
   echo -e "  ${DG}Updating...${R}"
   cd "$INSTALL_DIR" && git pull --quiet
+elif [ -d "$INSTALL_DIR" ]; then
+  echo -e "  ${DG}Replacing existing install...${R}"
+  rm -rf "$INSTALL_DIR"
+  git clone --quiet "$REPO" "$INSTALL_DIR"
 else
   echo -e "  ${DG}Installing...${R}"
   git clone --quiet "$REPO" "$INSTALL_DIR"

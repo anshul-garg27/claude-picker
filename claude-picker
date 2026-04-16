@@ -117,7 +117,7 @@ for proj_dir_name in sorted(os.listdir(projects_dir)):
         icon = f'{YL}\u25cf' if name else f'{DG}\u25cb'
         nc = GN if name else GR
         ns = B if name else I
-        print(f'  {icon}{R}   {ns}{nc}{display:<35s}{R}  {MG}{proj_name:<15s}{R}  {DG}{rel:>9s}{R}  {DG}{msg_count:>3d} msgs{R}  |  {session_id}')
+        print(f'  {icon}{R}  {ns}{nc}{display:<28s}{R} {MG}{proj_name:<12s}{R} {DG}{rel:>8s}{R} {DG}{msg_count:>3d}m{R}  |  {session_id}')
 ")
 
   if [ -z "$all_sessions" ]; then
@@ -360,7 +360,7 @@ for path, info in sorted(results.items(), key=lambda x: x[1]['last_mod'], revers
     except: pass
 
     branch_str = f'{MG}{branch}{R}  ' if branch else ''
-    print(f'  {CY}{B}{name:<25s}{R}  {branch_str}{DG}{rel:>9s}{R}  {GN}{D}{bar:<12s}{R} {DG}{count} session{s}{R}  |  {path}')
+    print(f'  {CY}{B}{name:<20s}{R} {branch_str}{DG}{rel:>8s}{R}  {GN}{D}{bar:<8s}{R} {DG}{count}s{R}  |  {path}')
 ")
 
 if [ -z "$dir_list" ]; then
