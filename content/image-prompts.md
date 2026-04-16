@@ -1,275 +1,339 @@
-# Image Generation Prompts (Gemini AI Pro)
+# Image Generation Prompts — Research-Backed Edition
 
-Each platform needs different visuals. Here are ready-to-paste prompts.
+Based on analysis of top repos (fzf 67k stars, lazygit 56k, bat 51k, starship 47k), Linear/Raycast/Warp design language, and AI prompt best practices.
+
+**Color palette:** Catppuccin Mocha (the most popular dark theme for marketing)
+- Background: #1E1E2E (base) / #181825 (mantle) / #11111B (crust)
+- Text: #CDD6F4
+- Accent purple: #CBA6F7 (mauve)
+- Green: #A6E3A1
+- Yellow: #F9E2AF
+- Cyan/Blue: #89B4FA
+- Pink: #F5C2E7
+- Peach: #FAB387
 
 ---
 
-## 1. GitHub Social Preview (1280x640)
+## 1. GitHub Social Preview (1280x640) — MOST IMPORTANT
 
-This appears when someone shares your repo link on any platform. Most important image.
+This appears when your repo link is shared ANYWHERE. 2x CTR boost over repos without one.
 
 **Prompt:**
 
 ```
-Design a minimal, dark-themed social preview banner for a developer tool called "claude-picker". 
+Product photograph style image of a developer tool interface. Dark background using color #1E1E2E (Catppuccin Mocha base). 
 
-Dimensions: 1280x640 pixels.
+Left side, vertically centered: The word "claude-picker" in large bold monospace font (JetBrains Mono style), color #CDD6F4. Below it in smaller text, color #6C7086: "find, preview, and resume your Claude Code sessions"
 
-Background: deep dark gradient (#0d1117 to #161b22), similar to GitHub's dark mode.
+Right side: A minimal terminal window mockup with rounded corners, background #181825, showing a styled list:
+- Line 1: A small mauve/purple dot (#CBA6F7) followed by "auth-refactor" in green (#A6E3A1), "5m ago" in gray (#6C7086), "45 msgs" in gray
+- Line 2: A small mauve dot followed by "fix-race-condition" in green, "2h ago" in gray, "28 msgs"  
+- Line 3: A small mauve dot followed by "drizzle-migration" in green, "1d ago" in gray
+- Line 4: A gray dot (#6C7086) followed by "session" in dim gray
 
-Left side: The text "claude-picker" in a modern monospace font (like JetBrains Mono), large, white bold. Below it in smaller gray text: "Find, preview, and resume your Claude Code sessions"
+The terminal window has a subtle purple glow around it — very subtle, 10% opacity of #CBA6F7 with large blur radius.
 
-Right side: A stylized minimal terminal window mockup showing a fzf-style list with these items:
-- A magenta "+" icon with "New Session" in cyan
-- A yellow dot with "auth-refactor" in green  
-- A yellow dot with "fix-bug-123" in green
-- A gray dot with "session" in dim gray
-The terminal should have a dark background with rounded corners.
-
-Bottom right corner: small "github.com/anshul-garg27" in dim gray text.
-
-Style: clean, minimal, developer-focused. No gradients or flashy effects. Think Vercel or Raycast aesthetic. No emojis.
+Dimensions: 1280x640 pixels. Keep core content within central 800x420 safe zone. No gradients, no flashy effects. Clean, minimal, dark. Inspired by Linear and Raycast design aesthetic. No emoji.
 ```
 
 ---
 
 ## 2. Medium Hero Image (1400x788)
 
-First thing readers see. Needs to be eye-catching in the Medium feed.
+First thing readers see in the Medium feed. Needs to be moody and editorial.
 
 **Prompt:**
 
 ```
-Create a hero image for a technical blog post about a terminal-based developer tool.
+An atmospheric, cinematic-style image of a dark terminal interface floating in dark space. Background: deep black (#11111B) with an extremely subtle grid pattern (thin lines at 5% white opacity).
 
-Dimensions: 1400x788 pixels.
+In the center: A terminal window with rounded corners, background #1E1E2E, showing a session picker interface with colored text:
+- Yellow dots (#F9E2AF) next to green (#A6E3A1) session names: "auth-refactor", "payment-gateway", "k8s-deployment"
+- Gray timestamps on the right
+- A right-side panel showing conversation preview with "you:" in blue (#89B4FA) and "ai:" in yellow (#F9E2AF)
 
-The image shows a dark terminal screen (black/dark gray background) with a glowing, slightly blurred terminal window in the center. Inside the terminal, show a stylized session picker interface with:
-- Colored dots (yellow, green) next to session names like "auth-refactor", "fix-bug-123", "drizzle-migration"
-- Relative timestamps like "5m ago", "2h ago"  
-- A right panel showing a conversation preview with "you:" in cyan and "ai:" in yellow
+The terminal window has a soft purple/mauve rim glow (#CBA6F7 at 15% opacity, large blur radius) making it look like it's floating.
 
-The terminal window should have a subtle purple/magenta glow around it, like it's floating in dark space. Very subtle, not overdone.
+Above the terminal in clean white (#CDD6F4) sans-serif text: "I Reverse-Engineered Claude Code's Session Storage"
+Below the terminal in smaller peach (#FAB387) text: "432 lines. bash + python + fzf."
 
-Above the terminal, in clean sans-serif white text: "I Reverse-Engineered Claude Code's Session Storage"
-Below: "432 lines. bash + python + fzf." in smaller gray text.
-
-Style: moody, editorial, technical. Like a Wired magazine cover for developers. Dark, atmospheric, premium feel.
+Style: moody, editorial, premium. Like a Wired magazine cover for developers. Dark, atmospheric. Catppuccin Mocha color palette throughout. 1400x788 pixels.
 ```
 
 ---
 
-## 3. Medium Inline — "Before vs After" (1200x600)
-
-For inside the article, showing the pain point vs the solution.
+## 3. Before vs After Comparison (1200x600) — for Medium inline
 
 **Prompt:**
 
 ```
-Create a side-by-side comparison image for a developer blog post. Split into two panels.
+A side-by-side comparison image split vertically into two equal panels on a dark background (#11111B).
 
-Dimensions: 1200x600 pixels. Dark background.
-
-LEFT PANEL (labeled "Before" in red/orange text at top):
-A terminal showing a plain, ugly list of session UUIDs:
+LEFT PANEL: 
+Label at top: "before" in soft red (#F38BA8), small caps
+A terminal window (background #1E1E2E) showing ugly, hard-to-read content:
+  ? Pick a conversation to resume
   4a2e8f1c-9b3d-4e7a... (2 hours ago)
   b7c9d2e0-1f4a-8b6c... (3 hours ago)
   e5f8a3b1-7c2d-9e0f... (yesterday)
-A confused face emoji or a red X mark. Feels frustrating and messy.
+The text should look cluttered and confusing. No colors, all monochrome gray.
 
-RIGHT PANEL (labeled "After" in green text at top):
-A polished terminal showing a clean session picker with:
-  ● auth-refactor       5m ago   45 msgs
-  ● fix-bug-123         2h ago   12 msgs
-  ○ session             1d ago    6 msgs
-With a preview panel on the right showing conversation snippets.
-A green checkmark. Feels clean and organized.
+RIGHT PANEL:
+Label at top: "after" in green (#A6E3A1), small caps
+A terminal window (background #1E1E2E) showing a clean, colorful session picker:
+  ● auth-refactor          5m ago    45 msgs
+  ● fix-race-condition     2h ago    28 msgs  
+  ● drizzle-migration      1d ago    67 msgs
+With yellow dots (#F9E2AF), green names (#A6E3A1), and a preview panel on the right showing colored conversation text.
 
-Dividing line between panels: thin white or gray vertical line.
+Thin vertical divider line between panels: #313244
 
-Style: clean, minimal, dark theme. The contrast between messy left and polished right should be immediately obvious.
+Style: clean, high contrast between the two panels. The left should feel frustrating, the right should feel organized and premium. Catppuccin Mocha palette. 1200x600 pixels.
 ```
 
 ---
 
-## 4. Twitter Card Image (1600x900)
-
-For tweets that don't have a GIF — a static image that grabs attention in the feed.
+## 4. Architecture Diagram (1200x800) — for Medium + GitHub README
 
 **Prompt:**
 
 ```
-Design a bold, attention-grabbing social media card for a developer tool.
+A clean, minimal system architecture diagram on a dark background (#1E1E2E).
 
-Dimensions: 1600x900 pixels.
+The diagram shows this flow with connected boxes and thin arrow lines:
 
-Dark background (#0f0f0f). 
+TOP ROW (two boxes side by side):
+- Box 1: "~/.claude/projects/" with small label "JSONL session files" — border color #89B4FA
+- Box 2: "~/.claude/sessions/" with small label "metadata" — border color #89B4FA
 
-Center: Large white bold text: "claude-picker"
-Below it: "Stop clicking through UUIDs." in a slightly smaller, orange/amber color.
-Below that: "Browse, preview, and resume Claude Code sessions." in gray.
+MIDDLE (one highlighted box):
+- Box 3: "claude-picker" — highlighted with a mauve/purple border (#CBA6F7) and subtle glow. This is the main entry point.
 
-Bottom section: Three small icons/badges in a row:
-- "bash + python + fzf" 
-- "432 lines"
+BOTTOM ROW (two boxes):
+- Box 4: "session-list.sh" with label "builds fzf list" — border color #A6E3A1
+- Box 5: "session-preview.py" with label "renders preview" — border color #A6E3A1
+
+BOTTOM CENTER:
+- Box 6: "fzf" with label "interactive picker" — border color #F9E2AF
+
+FINAL:
+- Box 7: "claude --resume" with label "opens session" — border color #FAB387
+
+Thin white arrow lines (#6C7086) connecting the boxes in flow order. All boxes have rounded corners, dark fill (#181825), and subtle borders. Labels in small gray text (#6C7086). Main text in white (#CDD6F4). Monospace font for file names.
+
+Style: Excalidraw-like but polished. Catppuccin Mocha palette. No 3D effects. 1200x800 pixels.
+```
+
+---
+
+## 5. Twitter Card (1200x675) — for tweets without GIF
+
+**Prompt:**
+
+```
+A bold, high-contrast social media card on a dark background (#11111B) with a very subtle grid pattern (barely visible).
+
+Center: Large white bold text (#CDD6F4): "claude-picker"
+Below it: "Stop clicking through UUIDs." in peach (#FAB387), medium size.
+Below that: "Browse, preview, and resume Claude Code sessions." in gray (#6C7086), smaller.
+
+Bottom section: Three small pill-shaped badges in a row, each with dark fill (#313244) and subtle border (#45475A):
+- "bash + python + fzf"
+- "432 lines"  
 - "any terminal"
-Each in a subtle rounded dark pill/badge shape with dim borders.
+Text inside badges in gray (#A6ADC8).
 
-Top right corner: A small terminal icon or command prompt icon.
+Top right corner: A small minimal terminal prompt icon in mauve (#CBA6F7).
 
-Style: bold, high contrast, dark mode. Think product launch card. Clean sans-serif font. No images of terminals — just typography. Similar to how Linear or Vercel do their announcement cards.
+Style: Bold, typographic, no terminal mockups. Think Linear or Vercel announcement card aesthetic. Clean sans-serif font. Catppuccin Mocha palette. 1200x675 pixels.
 ```
 
 ---
 
-## 5. Reddit Post Image (1200x630)
-
-Reddit thumbnails are small. Needs to be readable at thumbnail size.
+## 6. Reddit Post Image (1200x630) — must be readable as small thumbnail
 
 **Prompt:**
 
 ```
-Create a simple, high-contrast image for a Reddit post about a CLI developer tool.
+A simple, high-contrast image on dark background (#1E1E2E). Must be readable when scaled to a small thumbnail.
 
-Dimensions: 1200x630 pixels.
+Left side (40% width): A minimal terminal window with rounded corners, background #181825, showing 4 lines:
+- Yellow dot + "auth-refactor" in green + "5m ago" in gray
+- Yellow dot + "payment-gateway" in green + "2h ago"
+- Yellow dot + "k8s-deployment" in green + "1d ago"
+- Gray dot + "session" in dim gray + "4h ago"
 
-Dark background. 
-
-Left side: A minimal terminal window with rounded corners showing 4-5 lines of a session picker:
-  ● auth-refactor      5m ago
-  ● fix-bug-123        2h ago
-  ● migration           1d ago
-  ○ session             3h ago
-Use yellow dots for named, gray for unnamed. Green text for names.
-
-Right side: Large white text vertically centered:
+Right side (60% width): Large white bold text (#CDD6F4) vertically centered:
 "claude-picker"
-Below in small gray: "Session manager for Claude Code"
+Below in smaller gray (#6C7086): "Session manager for Claude Code"
+Below that, even smaller: "github.com/anshul-garg27/claude-picker" in mauve (#CBA6F7)
 
-Style: ultra-simple, must be readable as a small thumbnail. High contrast. No gradients, no glows, no effects. Just terminal + text. Dark background, white/green/yellow foreground.
+Style: Ultra-simple. Maximum contrast. No gradients, no glows, no effects. Must be clearly readable at 70x70 pixel thumbnail size. Dark background, bright foreground. 1200x630 pixels.
 ```
 
 ---
 
-## 6. Architecture Diagram (for Medium article) (1200x800)
-
-Shows how the tool works internally — adds technical credibility.
+## 7. Logo / Icon (512x512) — for GitHub avatar, social profiles
 
 **Prompt:**
 
 ```
-Create a clean, minimal architecture diagram for a CLI tool.
+A minimal, geometric icon/logo on a dark background (#1E1E2E).
 
-Dimensions: 1200x800 pixels. Dark background (#1a1a2e).
+The icon combines two visual concepts:
+1. A magnifying glass (representing search/find) 
+2. A terminal cursor bracket ">" (representing CLI)
 
-Show this flow with connected boxes and arrows:
+The magnifying glass handle forms the ">" bracket shape. Single color: mauve/purple (#CBA6F7).
 
-Box 1 (top left): "~/.claude/projects/" with label "JSONL session files"
-Box 2 (top right): "~/.claude/sessions/" with label "Session metadata"
+The icon should be geometric, flat, and recognizable at 16x16 pixels. No text. No gradients. Just the mauve icon shape on the dark background.
 
-Arrow from both boxes pointing down to:
-
-Box 3 (center): "claude-picker" (main script) — highlighted with a subtle magenta border
-
-Arrow from Box 3 going down-left to:
-Box 4: "session-list.sh" with label "Builds fzf list"
-
-Arrow from Box 3 going down-right to:
-Box 5: "session-preview.py" with label "Renders preview"
-
-Arrow from Box 4 and Box 5 going down to:
-Box 6 (bottom center): "fzf" with label "Interactive picker"
-
-Arrow from Box 6 to:
-Box 7 (bottom): "claude --resume <id>" with label "Opens session"
-
-Style: clean, minimal, use thin white lines for arrows. Boxes should have rounded corners, subtle borders, dark fill. Labels in small gray text. Main text in white. Use monospace font for file names. Think Excalidraw or Mermaid diagram aesthetic but polished.
+Square format, 512x512 pixels. Think of how Raycast or Linear do their icons — simple, geometric, instantly recognizable.
 ```
 
 ---
 
-## 7. Logo / Icon (512x512)
+## 8. Open Graph / Link Sharing Image (1200x630)
 
-For GitHub avatar, social profiles, favicon.
-
-**Prompt:**
-
-```
-Design a minimal, modern icon/logo for a developer tool called "claude-picker".
-
-Dimensions: 512x512 pixels. Square, suitable for GitHub and social profile pictures.
-
-The icon should combine two concepts:
-1. A magnifying glass or search icon (representing "picking/finding")
-2. A terminal/command prompt bracket (representing CLI tool)
-
-Color: Use a soft magenta/purple (#b48ead or #c792ea) as the primary color on a dark background (#1e1e2e).
-
-Style: geometric, minimal, single-color on dark background. No text in the icon. No gradients. Flat design. Think of how Raycast, Linear, or Arc browser do their icons — simple, geometric, recognizable at 16x16.
-```
-
----
-
-## 8. Open Graph Image for Blog (1200x630)
-
-When someone shares your Medium article link on LinkedIn, Slack, Discord — this is what shows up.
+When someone shares your article/repo on LinkedIn, Slack, Discord.
 
 **Prompt:**
 
 ```
-Create an Open Graph social sharing image for a blog article.
+A typographic social sharing image on dark background (#11111B) with an extremely subtle grid pattern (#ffffff at 3% opacity).
 
-Dimensions: 1200x630 pixels.
-
-Dark background with very subtle grid pattern (like graph paper, barely visible).
-
-Large white bold text centered: 
+Large white bold text (#CDD6F4) centered: 
 "I Reverse-Engineered How Claude Code Stores Sessions"
 
-Below in smaller amber/orange text:
+Below in peach (#FAB387), slightly smaller:
 "and built a 432-line tool to browse them"
 
-Bottom left: Small text "by Anshul Garg" in gray.
-Bottom right: Small GitHub icon + "anshul-garg27/claude-picker" in gray.
+Bottom left: "by Anshul Garg" in gray (#6C7086)
+Bottom right: Small GitHub icon (gray) + "claude-picker" in mauve (#CBA6F7)
 
-Style: editorial, clean, confident. Like a conference talk title card. Dark background, high contrast text. No terminal screenshots or mockups — pure typography.
+Style: editorial, confident, typographic. Like a conference talk title card. No terminal screenshots, no mockups — pure typography on dark. Clean sans-serif font. Keep text within central safe zone. 1200x630 pixels.
 ```
 
 ---
 
-## Summary: Which Images Go Where
+## 9. Medium Inline: Project Picker Screenshot (1200x600) — NEW
 
-| Platform | Images Needed |
-|----------|--------------|
-| **GitHub README** | Demo GIF + Architecture diagram |
-| **GitHub repo settings** | Social preview (1280x640) |
-| **Medium article** | Hero image + Before/After + Architecture diagram |
-| **Twitter** | Demo GIF (tweet 1) + Twitter card (for quote tweets) |
-| **Reddit** | Reddit post image + Demo GIF |
-| **Hacker News** | None (text only) — but OG image matters when shared |
-| **LinkedIn/Slack/Discord shares** | Open Graph image (auto-pulled) |
+Show the first step of the tool — the project directory picker.
 
-## GIF Recording Instructions
+**Prompt:**
 
-**Option A: Screen record (recommended)**
-1. Open a terminal, make the font size bigger (Cmd+Plus a few times)
-2. Press `Cmd+Shift+5` on Mac → select "Record Selected Portion"
-3. Select just the terminal window
-4. Run `claude-picker`, navigate the picker, select a session
-5. Stop recording (saves as .mov on Desktop)
-6. Convert:
-```bash
-ffmpeg -i ~/Desktop/"Screen Recording"*.mov -vf "fps=12,scale=800:-1:flags=lanczos" -loop 0 ~/Desktop/claude-picker/demo.gif
+```
+A terminal screenshot mockup on dark background (#181825) with rounded window corners and a subtle window title bar.
+
+Inside the terminal, show a styled project picker list:
+Header text in mauve (#CBA6F7): "claude-picker"
+
+Four rows:
+1. "architex" in bold cyan (#89B4FA), "just now" in gray, green bar "█████" (#A6E3A1), "5 sessions" in gray
+2. "ecommerce-api" in bold cyan, "2m ago" in gray, green bar "███", "3 sessions" in gray
+3. "infra-automation" in bold cyan, "1h ago" in gray, green bar "██", "2 sessions"
+4. "portfolio-site" in bold cyan, "3h ago" in gray, green bar "██", "2 sessions"
+
+The first row has a mauve pointer arrow "▸" on the left indicating it's selected.
+
+At the bottom: "project >" prompt text in cyan.
+
+Style: Realistic terminal look. Catppuccin Mocha colors. Monospace font. Dark, clean. 1200x600 pixels.
 ```
 
-**Option B: VHS (scripted)**
-```bash
-cd ~/Desktop/claude-picker && vhs demo.tape
-```
-This uses the `demo.tape` file I created. You may need to adjust the key timings.
+---
 
-**Tips for a good GIF:**
-- Keep it under 15 seconds
-- Make terminal font bigger (so it's readable on mobile)
-- Show the FULL flow: project picker → session picker → preview → open
-- Dark theme looks best in GIFs
+## 10. Medium Inline: Session Picker with Preview (1200x600) — NEW
+
+Show the second step — session list with the conversation preview panel.
+
+**Prompt:**
+
+```
+A terminal screenshot mockup split into two sections (60/40 split).
+
+LEFT SECTION (the session list):
+Header: "architex" in mauve (#CBA6F7) with "enter open | ctrl-d delete" in dim gray
+A section label: "── saved ──" in dim gray (#6C7086)
+Rows:
+- Mauve pointer "▸" + yellow dot (#F9E2AF) + "auth-refactor" in bold green (#A6E3A1) + "5m ago" + "45 msgs"
+- Yellow dot + "fix-race-condition" in green + "2h ago" + "28 msgs"
+- Yellow dot + "drizzle-migration" in green + "1d ago" + "67 msgs"
+Section label: "── recent ──" in dim gray
+- Gray dot + "session" in dim gray + "4h ago" + "12 msgs"
+
+Prompt: "session >" in cyan at bottom.
+
+RIGHT SECTION (preview panel, separated by a thin vertical line):
+Header: "auth-refactor" in bold green
+"created  2026-04-16 14:30" in gray
+"messages 45" in gray
+Thin horizontal line
+Conversation:
+"you" in bold cyan + "the auth middleware is storing session tokens..."
+"ai" in yellow + "I'll restructure the session token storage to use encrypted..."
+"you" in bold cyan + "also need to handle the refresh token flow..."
+
+All on dark background (#1E1E2E). Monospace font. Catppuccin Mocha. 1200x600 pixels.
+```
+
+---
+
+## 11. Twitter Thread: Feature Highlight Cards (1200x675 each) — NEW
+
+One image per tweet. Clean, typographic, one feature per card.
+
+**Prompt for Card 1 (Search):**
+```
+Dark background (#11111B). Large emoji-free icon of a magnifying glass in mauve (#CBA6F7) on the left. Right side: Bold white text "Fuzzy Search" and below in gray "Type to filter sessions instantly. Find any conversation in seconds." Catppuccin Mocha. 1200x675.
+```
+
+**Prompt for Card 2 (Preview):**
+```
+Dark background (#11111B). Large icon of an eye/preview symbol in cyan (#89B4FA) on the left. Right side: Bold white text "Conversation Preview" and below in gray "See the last few messages before opening. No more guessing." Catppuccin Mocha. 1200x675.
+```
+
+**Prompt for Card 3 (Delete):**
+```
+Dark background (#11111B). Large icon of a trash/X symbol in soft red (#F38BA8) on the left. Right side: Bold white text "Ctrl+D to Delete" and below in gray "Clean up old sessions without leaving the picker." Catppuccin Mocha. 1200x675.
+```
+
+**Prompt for Card 4 (Named Sessions):**
+```
+Dark background (#11111B). Large star icon in yellow (#F9E2AF) on the left. Right side: Bold white text "Named Sessions First" and below in gray "Sessions created with --name appear on top. Always find what matters." Catppuccin Mocha. 1200x675.
+```
+
+---
+
+## Summary: Complete Image Inventory
+
+| # | Image | Size | For |
+|---|-------|------|-----|
+| 1 | GitHub Social Preview | 1280x640 | Repo settings → Social preview |
+| 2 | Medium Hero | 1400x788 | Top of article |
+| 3 | Before vs After | 1200x600 | Medium inline (the problem) |
+| 4 | Architecture Diagram | 1200x800 | Medium + GitHub README |
+| 5 | Twitter Card | 1200x675 | Tweet 1 (if no GIF) |
+| 6 | Reddit Thumbnail | 1200x630 | Reddit posts |
+| 7 | Logo/Icon | 512x512 | GitHub avatar, social profiles |
+| 8 | Open Graph | 1200x630 | Link sharing (LinkedIn, Slack) |
+| 9 | Project Picker Screenshot | 1200x600 | Medium inline (step 1) |
+| 10 | Session Picker + Preview | 1200x600 | Medium inline (step 2) |
+| 11a | Feature Card: Search | 1200x675 | Twitter thread tweet 2 |
+| 11b | Feature Card: Preview | 1200x675 | Twitter thread tweet 3 |
+| 11c | Feature Card: Delete | 1200x675 | Twitter thread tweet 4 |
+| 11d | Feature Card: Named | 1200x675 | Twitter thread tweet 5 |
+
+**Total: 14 images** to generate in Gemini AI Pro.
+
+## GIF Recording (do separately)
+
+Not an AI-generated image — this needs real terminal recording:
+
+1. Make terminal font BIG (`Cmd + +` several times)
+2. `Cmd + Shift + 5` → Record Selected Portion → select terminal only
+3. Run `claude-picker`, navigate both steps, show preview, select a session
+4. Keep under 15 seconds
+5. Convert: `ffmpeg -i recording.mov -vf "fps=12,scale=800:-1:flags=lanczos" -loop 0 demo.gif`
+
+The GIF goes in: GitHub README (hero), Twitter tweet 1, Reddit posts.

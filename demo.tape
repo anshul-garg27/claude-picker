@@ -1,51 +1,58 @@
 # claude-picker demo recording
-# Run: vhs demo.tape
-# Output: demo.gif
+# Run: cd ~/Desktop/claude-picker && vhs demo.tape
 
 Output demo.gif
 Output demo.webm
 
-Set FontSize 14
-Set Width 1200
-Set Height 700
+Set Shell bash
+Set FontSize 16
+Set Width 1400
+Set Height 800
 Set Theme "Catppuccin Mocha"
-Set Padding 20
-Set TypingSpeed 60ms
+Set Padding 30
+Set TypingSpeed 50ms
+Set CursorBlink false
 
-Type "claude-picker"
+# Type the command
 Sleep 500ms
+Type "bash demo-mode.sh"
+Sleep 800ms
 Enter
-Sleep 2s
+Sleep 2500ms
 
-# Navigate project picker
+# Step 1: Project picker — navigate and select architex
+Sleep 500ms
+Down
+Sleep 400ms
+Up
+Sleep 600ms
+Enter
+Sleep 2500ms
+
+# Step 2: Session picker — browse sessions
+# Move down through New Session → saved header → auth-refactor
+Sleep 500ms
 Down
 Sleep 300ms
-Up
+Down
 Sleep 300ms
-Enter
-Sleep 2s
+Down
+Sleep 1500ms
 
-# Navigate session picker
+# Move to fix-race-condition (show preview changing)
 Down
-Sleep 400ms
+Sleep 1500ms
+
+# Move to drizzle-migration
 Down
-Sleep 400ms
-Down
-Sleep 400ms
+Sleep 1500ms
+
+# Go back up to auth-refactor
 Up
 Sleep 400ms
 Up
-Sleep 400ms
+Sleep 1500ms
 
-# Wait to show preview panel
-Sleep 2s
-
-Down
-Sleep 500ms
-Down
-Sleep 500ms
-
-# Select a session
-Sleep 1s
+# Select auth-refactor
 Enter
-Sleep 2s
+Sleep 2000ms
