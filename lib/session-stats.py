@@ -31,14 +31,40 @@ SPARK_CHARS = '▁▂▃▄▅▆▇█'
 BAR_FULL    = '█'
 BAR_EMPTY   = '░'
 
-# Pricing per token (Sonnet 4 / 4.5 approximate).
-# Claude Code logs per-message usage in the assistant message's `usage` field.
-# We use those actual token counts + differentiated cache pricing for accurate cost.
-PRICE_INPUT         = 3.00  / 1_000_000   # plain input
-PRICE_OUTPUT        = 15.00 / 1_000_000
-PRICE_CACHE_WRITE_5 = 3.75  / 1_000_000   # ephemeral_5m cache creation
-PRICE_CACHE_WRITE_1 = 6.00  / 1_000_000   # ephemeral_1h cache creation
-PRICE_CACHE_READ    = 0.30  / 1_000_000   # cache hits — 10x cheaper
+# ── Pricing per model (USD per token) ─────────────────────────────────────
+# Claude Code logs per-message usage AND the model in every assistant entry.
+# We look up the right price for each message so mixed-model sessions
+# (Opus 4.7 today, Opus 4.6 earlier, maybe Sonnet 4.5) stay accurate.
+
+def _rates(inp, out, cw5, cw1, cr):
+    return dict(
+        input=inp / 1_000_000, output=out / 1_000_000,
+        cache_w5=cw5 / 1_000_000, cache_w1=cw1 / 1_000_000,
+        cache_r=cr / 1_000_000,
+    )
+
+MODEL_PRICES = [
+    # Opus family — $15 / $75 per 1M, 5m cache $18.75, 1h $30, read $1.50
+    ('claude-opus-4',     _rates(15.00, 75.00, 18.75, 30.00, 1.50)),
+    ('claude-3-opus',     _rates(15.00, 75.00, 18.75, 30.00, 1.50)),
+    # Sonnet family — $3 / $15, cache $3.75 / $6, read $0.30
+    ('claude-sonnet-4',   _rates( 3.00, 15.00,  3.75,  6.00, 0.30)),
+    ('claude-3-7-sonnet', _rates( 3.00, 15.00,  3.75,  6.00, 0.30)),
+    ('claude-3-5-sonnet', _rates( 3.00, 15.00,  3.75,  6.00, 0.30)),
+    # Haiku family — $0.80 / $4, cache $1 / $1.60, read $0.08
+    ('claude-haiku-4',    _rates( 0.80,  4.00,  1.00,  1.60, 0.08)),
+    ('claude-3-5-haiku',  _rates( 0.80,  4.00,  1.00,  1.60, 0.08)),
+]
+# Fallback if a model isn't recognised — use Opus rates (most conservative)
+FALLBACK_RATES = MODEL_PRICES[0][1]
+
+def rates_for(model):
+    if not model or model == '<synthetic>':
+        return None   # skip internal messages
+    for prefix, rates in MODEL_PRICES:
+        if model.startswith(prefix):
+            return rates
+    return FALLBACK_RATES
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -136,6 +162,9 @@ total_size = 0
 named_count = 0
 unnamed_count = 0
 
+# Per-model cost breakdown (for an optional summary line)
+model_cost = defaultdict(float)
+
 project_data = defaultdict(lambda: {
     'sessions': 0, 'input': 0, 'output': 0,
     'cache_read': 0, 'cache_write_5': 0, 'cache_write_1': 0,
@@ -229,18 +258,21 @@ for d in os.listdir(projects_dir):
                             continue
                         msg_count += 1
 
-                        # Read real token usage from the assistant message.
-                        # Claude Code logs per-message usage including cache split.
+                        # Read real token usage + model from the assistant message.
+                        # Claude Code logs per-message usage with cache split and model id.
                         if role == 'assistant':
+                            model = msg.get('model') or ''
+                            rates = rates_for(model)
+                            if rates is None:
+                                continue   # skip <synthetic> or unknown-zero entries
+
                             usage = msg.get('usage') or {}
                             it = int(usage.get('input_tokens', 0))
                             ot = int(usage.get('output_tokens', 0))
                             cr = int(usage.get('cache_read_input_tokens', 0))
-                            # Cache creation breakdown
                             cc = usage.get('cache_creation', {}) or {}
                             cw5 = int(cc.get('ephemeral_5m_input_tokens', 0))
                             cw1 = int(cc.get('ephemeral_1h_input_tokens', 0))
-                            # Fall back if breakdown missing — treat all cache_creation as 5m
                             if cw5 == 0 and cw1 == 0:
                                 cw5 = int(usage.get('cache_creation_input_tokens', 0))
 
@@ -249,13 +281,16 @@ for d in os.listdir(projects_dir):
                             s_cache_read     += cr
                             s_cache_write_5  += cw5
                             s_cache_write_1  += cw1
-                            s_cost += (
-                                it  * PRICE_INPUT        +
-                                ot  * PRICE_OUTPUT       +
-                                cr  * PRICE_CACHE_READ   +
-                                cw5 * PRICE_CACHE_WRITE_5 +
-                                cw1 * PRICE_CACHE_WRITE_1
+
+                            msg_cost = (
+                                it  * rates['input']    +
+                                ot  * rates['output']   +
+                                cr  * rates['cache_r']  +
+                                cw5 * rates['cache_w5'] +
+                                cw1 * rates['cache_w1']
                             )
+                            s_cost += msg_cost
+                            model_cost[model] += msg_cost
         except Exception:
             pass
 
@@ -506,6 +541,16 @@ if daily_sessions and daily_sessions[-1] > 0:
     print(' ' * left_pad + f'{GREEN}' + ''.join(ann_cells) + f'{R}')
 
 print()
+
+# Per-model cost breakdown (shown only if more than one model was used)
+if len(model_cost) > 1:
+    parts = []
+    for m, c in sorted(model_cost.items(), key=lambda x: -x[1]):
+        short = m.replace('claude-', '').replace('-20', ' 20')
+        parts.append(f'{MAUVE}{short}{R} {GREEN}{format_cost(c)}{R}')
+    breakdown = f'  {SUB}by model:{R}  ' + f'{SUB} · {R}'.join(parts)
+    print(breakdown)
+    print()
 
 # Footer
 foot = f'  {SUB}press {R}{TEXT}q{R}{SUB} to quit  ·  press {R}{TEXT}e{R}{SUB} to export  ·  press {R}{TEXT}t{R}{SUB} to toggle days/weeks{R}'

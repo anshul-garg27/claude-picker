@@ -78,6 +78,10 @@ printf "    "
 printf "%*s${RED}${D}← ouch${R}%*s${GREEN}↑ today${R}\n" 17 "" 44 ""
 
 echo ""
+# Per-model breakdown
+echo -e "  ${SUB}by model:${R}  ${MAUVE}opus-4-7${R} ${GREEN}\$92.40${R}${SUB} · ${R}${MAUVE}opus-4-6${R} ${GREEN}\$28.10${R}${SUB} · ${R}${MAUVE}sonnet-4-5${R} ${GREEN}\$6.98${R}"
+echo ""
+
 # Footer
 echo -e "  ${SUB}press ${R}${TEXT}q${R}${SUB} to quit  ·  press ${R}${TEXT}e${R}${SUB} to export  ·  press ${R}${TEXT}t${R}${SUB} to toggle days/weeks${R}"
 echo ""
