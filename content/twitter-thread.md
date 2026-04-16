@@ -11,7 +11,7 @@ You know that thing where you have 15 Claude Code sessions and can't remember wh
 
 I got tired of clicking through UUIDs. So I built a session browser.
 
-432 lines. fzf. Works in any terminal.
+bash + python + fzf. Works in any terminal.
 
 [ATTACH: 15-second demo GIF — full flow from project picker to session resume]
 
@@ -31,25 +31,27 @@ No project names. No preview. No way to tell sessions apart.
 
 I was clicking through 4-5 wrong sessions every time.
 
+[ATTACH: screenshot of the ugly default list]
+
 ---
 
 ## Tweet 3 (Solution — show, don't tell)
 
-claude-picker gives you this instead:
+claude-picker gives you this:
 
-- Pick a project (with session counts)
-- Browse sessions (named ones on top)
-- Preview the conversation before opening
-- Fuzzy search to filter
-- Ctrl+D to delete
+- Project picker (git branch + session counts + activity bars)
+- Session browser (named sessions on top)
+- Conversation preview before opening
+- Fuzzy search with fzf
+- Named sessions pin above UUIDs
 
-Two-step flow. Under 500ms.
+Under 500ms to list 50+ sessions.
 
 [ATTACH: screenshot of session list with preview panel]
 
 ---
 
-## Tweet 4 (Interesting technical bit)
+## Tweet 4 (The interesting technical bit)
 
 The fun part: reverse-engineering Claude Code's session storage.
 
@@ -63,7 +65,92 @@ Had to write 3 fallback strategies to crack it.
 
 ---
 
-## Tweet 5 (The real insight)
+## Tweet 5 (--search)
+
+Then I added --search.
+
+Full-text search across every message in every session across every project.
+
+"Which session was that race condition I debugged two weeks ago?"
+
+Type the phrase. Get ranked sessions. Opens in the right project dir automatically.
+
+[ATTACH: GIF of --search flow]
+
+---
+
+## Tweet 6 (--stats)
+
+And --stats, because I was curious how much Claude I was actually using.
+
+- Total sessions / tokens / estimated cost
+- Per-project breakdown with bar charts
+- Today vs this week vs older
+- Top 5 sessions by token count
+
+Token estimate = content_length / 4. Rough but in the right ballpark.
+
+[ATTACH: screenshot of --stats dashboard]
+
+---
+
+## Tweet 7 (--tree + fork detection)
+
+Claude Code has /branch and --fork-session that fork conversations.
+
+Every forked session has a forkedFrom field in its JSONL.
+
+claude-picker --tree walks that graph:
+
+```
+auth-refactor
+├── auth-refactor-jwt-variant   (forked)
+└── auth-refactor-sessions      (forked)
+```
+
+Found 3 forks I'd completely forgotten about.
+
+---
+
+## Tweet 8 (Keyboard shortcuts)
+
+Inside the picker:
+
+- Ctrl+B: bookmark (pins to very top with blue ■)
+- Ctrl+E: export session to clean markdown
+- Ctrl+D: delete + auto-refresh
+- Ctrl+P: shell keybinding, opens picker from anywhere
+- Just type: fuzzy filter
+
+The installer sets up Ctrl+P for zsh and bash.
+
+---
+
+## Tweet 9 (--diff)
+
+--diff picks two sessions and shows them side by side:
+
+- Common topics
+- Unique topics per session
+- Conversation previews from both
+
+I use it when I fork a session and want to know which branch actually got anywhere.
+
+Simple keyword frequency, not semantic. Good enough.
+
+---
+
+## Tweet 10 (Claude Code skill)
+
+There's also a /claude-picker skill for Claude Code itself.
+
+Inside any Claude conversation: type /claude-picker, pick a session, Claude swaps to that context.
+
+Useful when you wander away and want to jump back without leaving your terminal state.
+
+---
+
+## Tweet 11 (The real insight)
 
 Honestly, the tool wasn't the real win.
 
@@ -72,23 +159,24 @@ The real win: I started naming every session.
 ```
 claude --name "auth-refactor"
 claude --name "fix-race-condition"
+claude --name "drizzle-migration"
 ```
 
 2 seconds of effort. Now I find any conversation in under 3 seconds.
 
 ---
 
-## Tweet 6 (CTA)
+## Tweet 12 (CTA)
 
-It's open source. Works in any terminal.
+It's open source. ~800 lines of bash + python. Works in any terminal.
 
 ```
 git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
 ```
 
-All you need: fzf + python3.
+Needs: fzf 0.58+, python3 with rich (auto-installed).
 
-Warp users get a bonus tab config in the + menu.
+Warp users get a + menu entry. Everyone gets Ctrl+P.
 
 github.com/anshul-garg27/claude-picker
 
@@ -99,4 +187,6 @@ github.com/anshul-garg27/claude-picker
 - Reply-chain the rest immediately after
 - Quote-tweet #1 with the GIF again 6-8 hours later for second wave
 - Pin the thread to your profile for a week
-- Hashtags (only on tweet 1 or 6): #ClaudeCode #DeveloperTools #OpenSource
+- Hashtags (only on tweet 1 or 12): #ClaudeCode #DeveloperTools #OpenSource
+- If a tweet gets ratio'd or a reply has traction, turn the reply into its own thread
+- Tweet 5 (--search) and tweet 7 (--tree) are the strongest standalone shares if you want to repost individual cards later
