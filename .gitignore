@@ -1,2 +1,3 @@
 .DS_Store
 content/
+lib/__pycache__/

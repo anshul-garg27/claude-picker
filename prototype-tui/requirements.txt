@@ -1,0 +1,11 @@
+# claude-picker TUI prototype — pinned dependencies.
+#
+# Install with:
+#     python3 -m pip install --user -r prototype-tui/requirements.txt
+#
+# Python 3.10+ required (Textual's floor). On macOS with Homebrew:
+#     brew install python@3.12
+#     python3.12 -m pip install --user -r prototype-tui/requirements.txt
+
+textual>=0.86.0,<9.0
+rich>=13.7.0
