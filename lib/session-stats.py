@@ -1,21 +1,102 @@
 #!/usr/bin/env python3
-"""Session stats dashboard for claude-picker"""
+"""Session stats dashboard for claude-picker.
 
-import json, glob, os, time
-from datetime import datetime, timedelta
+Renders a rich terminal dashboard with KPI cards (with sparklines),
+per-project horizontal bars, a 30-day activity timeline, and a footer.
+"""
 
-# Catppuccin Mocha palette
-R  = '\033[0m';  B  = '\033[1m';  D  = '\033[2m';  I  = '\033[3m'
-CY = '\033[38;5;117m'; GN = '\033[38;5;114m'; YL = '\033[38;5;222m'
-MG = '\033[38;5;176m'; DG = '\033[38;5;242m'; GR = '\033[38;5;249m'
-BL = '\033[38;5;111m'; PE = '\033[38;5;215m'; RD = '\033[38;5;203m'
-WH = '\033[97m'
+import json, glob, os, shutil, sys, time
+from datetime import datetime, timedelta, date
+from collections import defaultdict
+
+# ── Catppuccin Mocha palette ──────────────────────────────────────────────
+R  = '\033[0m'
+B  = '\033[1m'
+D  = '\033[2m'
+I  = '\033[3m'
+
+TEXT   = '\033[38;5;253m'   # #CDD6F4
+SUB    = '\033[38;5;244m'   # #6C7086 muted
+LINE   = '\033[38;5;238m'   # #45475A dividers
+MAUVE  = '\033[38;5;141m'   # #CBA6F7
+GREEN  = '\033[38;5;114m'   # #A6E3A1
+YELLOW = '\033[38;5;222m'   # #F9E2AF
+BLUE   = '\033[38;5;111m'   # #89B4FA
+PEACH  = '\033[38;5;215m'   # #FAB387
+RED    = '\033[38;5;210m'   # #F38BA8
+TEAL   = '\033[38;5;116m'   # #94E2D5
+PINK   = '\033[38;5;217m'   # #F5C2E7
+
+SPARK_CHARS = '▁▂▃▄▅▆▇█'
+BAR_FULL    = '█'
+BAR_EMPTY   = '░'
+
+# Pricing (blended Sonnet 4 approximation per token)
+INPUT_COST_PER_TOKEN  = 0.000003
+OUTPUT_COST_PER_TOKEN = 0.000015
+
+# ── Helpers ───────────────────────────────────────────────────────────────
+
+def term_width():
+    try:
+        return shutil.get_terminal_size((100, 30)).columns
+    except Exception:
+        return 100
+
+def sparkline(values, width=8):
+    if not values:
+        return ' ' * width
+    if len(values) > width:
+        step = len(values) / width
+        sampled = [values[min(int(i * step), len(values) - 1)] for i in range(width)]
+    else:
+        sampled = list(values) + [0] * (width - len(values))
+    lo, hi = min(sampled), max(sampled)
+    rng = (hi - lo) if hi > lo else 1
+    out = ''
+    for v in sampled:
+        idx = int(((v - lo) / rng) * (len(SPARK_CHARS) - 1))
+        out += SPARK_CHARS[idx]
+    return out
+
+def format_number(n):
+    if n >= 1_000_000:
+        return f'{n / 1_000_000:.1f}M'
+    if n >= 1_000:
+        return f'{n / 1_000:.1f}k'
+    return str(n)
+
+def format_cost(c):
+    if c >= 1000:
+        return f'${c:,.0f}'
+    return f'${c:,.2f}'
+
+def format_tokens(t):
+    if t >= 1_000_000:
+        return f'{t / 1_000_000:.1f}M'
+    if t >= 1_000:
+        return f'{t / 1_000:.0f}k'
+    return str(t)
+
+def project_color(i):
+    palette = [GREEN, TEAL, BLUE, YELLOW, PEACH, PINK, MAUVE]
+    return palette[i % len(palette)]
+
+def strip_ansi(s):
+    import re
+    return re.sub(r'\033\[[0-9;]*m', '', s)
+
+def pad_visible(s, width):
+    visible = len(strip_ansi(s))
+    return s + ' ' * max(0, width - visible)
+
+# ── Data collection ──────────────────────────────────────────────────────
 
 projects_dir = os.path.expanduser('~/.claude/projects')
 sessions_dir = os.path.expanduser('~/.claude/sessions')
-now = time.time()
+now_dt = datetime.now()
+today = now_dt.date()
 
-# Load session metadata for CWD resolution
 meta_cwds = {}
 for mf in glob.glob(os.path.join(sessions_dir, '*.json')):
     try:
@@ -24,28 +105,30 @@ for mf in glob.glob(os.path.join(sessions_dir, '*.json')):
         cwd = data.get('cwd', '')
         if sid and cwd:
             meta_cwds[sid] = cwd
-    except:
+    except Exception:
         pass
 
-# ── Scan all projects ──
-
 total_sessions = 0
-total_messages = 0
-total_chars = 0
+total_input_tokens = 0
+total_output_tokens = 0
 total_size = 0
-project_data = {}  # project_name -> {sessions, messages, chars, tokens}
-session_details = []  # (name, project, tokens)
+named_count = 0
+unnamed_count = 0
 
-# Activity tracking
-today_count = 0
-yesterday_count = 0
-this_week_count = 0
-older_count = 0
+project_data = defaultdict(lambda: {'sessions': 0, 'input': 0, 'output': 0, 'cost': 0.0})
 
-now_dt = datetime.now()
-today_start = now_dt.replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-yesterday_start = (now_dt - timedelta(days=1)).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
-week_start = (now_dt - timedelta(days=now_dt.weekday())).replace(hour=0, minute=0, second=0, microsecond=0).timestamp()
+# Daily buckets for last 30 days
+daily = defaultdict(lambda: {'sessions': 0, 'input': 0, 'output': 0, 'cost': 0.0})
+thirty_days_ago = today - timedelta(days=29)
+
+noise_prefixes = (
+    '<local-command', '<command-name>', '<bash-',
+    '<system-reminder>', '[Request inter', '<command-message>',
+)
+
+if not os.path.isdir(projects_dir):
+    print(f'\n  {SUB}no sessions found at {projects_dir}{R}\n')
+    sys.exit(0)
 
 for d in os.listdir(projects_dir):
     full = os.path.join(projects_dir, d)
@@ -55,198 +138,314 @@ for d in os.listdir(projects_dir):
     if not jsonl_files:
         continue
 
-    # Resolve project name
     project_name = None
     for jf in jsonl_files:
         try:
-            for line in open(jf):
-                data = json.loads(line.strip())
-                sid = data.get('sessionId', '')
-                if sid and sid in meta_cwds:
-                    candidate = meta_cwds[sid]
-                    if os.path.isdir(candidate):
-                        project_name = os.path.basename(candidate)
-                        break
-                break
-        except:
+            with open(jf) as fh:
+                for line in fh:
+                    data = json.loads(line.strip())
+                    sid = data.get('sessionId', '')
+                    if sid and sid in meta_cwds:
+                        cand = meta_cwds[sid]
+                        if os.path.isdir(cand):
+                            project_name = os.path.basename(cand)
+                            break
+                    break
+        except Exception:
             pass
         if project_name:
             break
 
     if not project_name:
-        # Fallback: decode directory name
         project_name = d.split('-')[-1] if '-' in d else d
 
     for jf in jsonl_files:
         file_size = os.path.getsize(jf)
         mod_ts = os.path.getmtime(jf)
+        mod_date = datetime.fromtimestamp(mod_ts).date()
 
-        # Filter: Claude CLI only
         is_claude = True
         try:
-            for line in open(jf):
-                data = json.loads(line.strip())
-                ep = data.get('entrypoint', '')
-                if ep and ep not in ('cli', 'sdk-cli'):
-                    is_claude = False
-                    break
-                if ep in ('cli', 'sdk-cli'):
-                    break
-        except:
+            with open(jf) as fh:
+                for line in fh:
+                    data = json.loads(line.strip())
+                    ep = data.get('entrypoint', '')
+                    if ep and ep not in ('cli', 'sdk-cli'):
+                        is_claude = False
+                        break
+                    if ep in ('cli', 'sdk-cli'):
+                        break
+        except Exception:
             pass
         if not is_claude:
             continue
 
-        # Parse session
         session_name = None
-        auto_name = None
+        input_chars = 0
+        output_chars = 0
         msg_count = 0
-        char_count = 0
-        noise = ['<local-command', '<command-name>', '<bash-', '<system-reminder>',
-                 '[Request inter', '---', '<command-message>']
-
         try:
-            for line in open(jf):
-                data = json.loads(line.strip())
+            with open(jf) as fh:
+                for line in fh:
+                    data = json.loads(line.strip())
+                    if data.get('type') == 'custom-title' and data.get('customTitle'):
+                        session_name = data['customTitle']
 
-                if data.get('type') == 'custom-title' and data.get('customTitle'):
-                    session_name = data['customTitle'][:40]
-
-                if data.get('type') in ('user', 'assistant') and data.get('message', {}).get('role') in ('user', 'assistant'):
-                    msg_count += 1
-                    content = data['message'].get('content', '')
-                    if isinstance(content, str):
-                        char_count += len(content)
-                    elif isinstance(content, list):
-                        for item in content:
-                            if isinstance(item, dict) and item.get('type') == 'text':
-                                char_count += len(item.get('text', ''))
-
-                    # Auto-name from first user message
-                    if not auto_name and data.get('type') == 'user':
+                    if data.get('type') in ('user', 'assistant'):
+                        role = data.get('message', {}).get('role')
+                        if role not in ('user', 'assistant'):
+                            continue
+                        msg_count += 1
+                        content = data['message'].get('content', '')
                         text = ''
                         if isinstance(content, str):
-                            text = content.strip()
+                            text = content
                         elif isinstance(content, list):
                             for item in content:
                                 if isinstance(item, dict) and item.get('type') == 'text':
-                                    text = item['text'].strip()
-                                    break
-                        if text and len(text) > 3 and not any(n in text for n in noise):
-                            auto_name = text[:40].replace('\n', ' ').strip()
-        except:
+                                    text += item.get('text', '')
+                        if role == 'user':
+                            if any(text.startswith(p) for p in noise_prefixes):
+                                continue
+                            input_chars += len(text)
+                        else:
+                            output_chars += len(text)
+        except Exception:
             pass
 
         if msg_count < 2:
             continue
 
+        in_tok  = max(1, input_chars // 4)
+        out_tok = max(1, output_chars // 4)
+        cost = in_tok * INPUT_COST_PER_TOKEN + out_tok * OUTPUT_COST_PER_TOKEN
+
         total_size += file_size
         total_sessions += 1
-        total_messages += msg_count
-        total_chars += char_count
+        total_input_tokens += in_tok
+        total_output_tokens += out_tok
 
-        tokens = max(1, char_count // 4)
-
-        # Activity bucketing
-        if mod_ts >= today_start:
-            today_count += 1
-        elif mod_ts >= yesterday_start:
-            yesterday_count += 1
-        elif mod_ts >= week_start:
-            this_week_count += 1
+        if session_name:
+            named_count += 1
         else:
-            older_count += 1
+            unnamed_count += 1
 
-        # Project aggregation
-        if project_name not in project_data:
-            project_data[project_name] = {'sessions': 0, 'messages': 0, 'tokens': 0}
         project_data[project_name]['sessions'] += 1
-        project_data[project_name]['messages'] += msg_count
-        project_data[project_name]['tokens'] += tokens
+        project_data[project_name]['input']    += in_tok
+        project_data[project_name]['output']   += out_tok
+        project_data[project_name]['cost']     += cost
 
-        # Session detail for top list
-        display_name = session_name or auto_name or 'unnamed'
-        session_details.append((display_name, project_name, tokens))
+        if mod_date >= thirty_days_ago:
+            key = mod_date
+            daily[key]['sessions'] += 1
+            daily[key]['input']    += in_tok
+            daily[key]['output']   += out_tok
+            daily[key]['cost']     += cost
 
-# ── Formatting helpers ──
+# ── Build 30-day series ──
 
-def format_tokens(t):
-    if t >= 1_000_000:
-        return f'~{t/1_000_000:.1f}M'
-    elif t >= 1000:
-        return f'~{t//1000}k'
-    else:
-        return f'~{t}'
+days_series = [thirty_days_ago + timedelta(days=i) for i in range(30)]
+daily_sessions = [daily[d]['sessions'] for d in days_series]
+daily_tokens   = [daily[d]['input'] + daily[d]['output'] for d in days_series]
+daily_cost     = [daily[d]['cost']   for d in days_series]
 
-def format_size(b):
-    if b >= 1024 * 1024:
-        return f'{b / (1024*1024):.0f} MB'
-    elif b >= 1024:
-        return f'{b // 1024} KB'
-    else:
-        return f'{b} B'
+last7_sessions = daily_sessions[-7:]
+last7_tokens   = daily_tokens[-7:]
+last7_cost     = daily_cost[-7:]
 
-def bar_chart(value, max_val, max_width=20):
-    if max_val == 0:
-        return ''
-    width = max(1, int((value / max_val) * max_width))
-    return '\u2588' * width
+sum_sessions_30 = sum(daily_sessions)
+sum_tokens_30   = sum(daily_tokens)
+sum_cost_30     = sum(daily_cost)
+days_with_activity = sum(1 for c in daily_cost if c > 0) or 1
+avg_cost_per_day = sum_cost_30 / 30.0
 
-# ── Render Dashboard ──
+total_tokens = total_input_tokens + total_output_tokens
+total_cost   = sum(p['cost'] for p in project_data.values())
+
+# ── Render ──
+
+W = max(90, term_width() - 2)
+card_w = (W - 8) // 3   # 3 cards + 2 gaps + 2 margin
+
+def rule(label, w=W, color=SUB):
+    inner = f' {label} ' if label else ''
+    dashes = '─' * max(0, w - len(strip_ansi(inner)))
+    return f'{color}{D}── {label} ' + '─' * max(0, w - len(label) - 5) + f'{R}'
+
+def boxed_kpi(label_color, label, big_value, big_color, spark_color, spark_vals, subtitle):
+    """Four-line KPI card: top rule, big+spark, subtitle, bottom rule. All lines pad to card_w."""
+    lines = []
+
+    # Top rule: "╭─ label ──────"  visible width == card_w
+    top = f'{LINE}{D}╭─ {R}{label_color}{label}{R} {LINE}{D}'
+    dashes_top = '─' * max(0, card_w - (3 + len(label) + 1))
+    top += dashes_top + R
+    lines.append(pad_visible(top, card_w))
+
+    # Middle: "  69k   ▁▁▇█▄"  — big value, gap, sparkline
+    prefix = '  '
+    gap = '   '
+    spark_room = max(4, card_w - len(prefix) - len(big_value) - len(gap) - 1)
+    spark = sparkline(spark_vals, width=spark_room)
+    mid = f'{prefix}{big_color}{B}{big_value}{R}{gap}{spark_color}{spark}{R}'
+    lines.append(pad_visible(mid, card_w))
+
+    # Subtitle line — truncate if too long
+    sub_raw = subtitle
+    max_sub = card_w - 3
+    if len(sub_raw) > max_sub:
+        sub_raw = sub_raw[:max_sub - 1] + '…'
+    sub_line = f'  {SUB}{sub_raw}{R}'
+    lines.append(pad_visible(sub_line, card_w))
+
+    # Bottom rule: "╰───────"  visible width == card_w
+    bot = f'{LINE}{D}╰' + '─' * (card_w - 1) + f'{R}'
+    lines.append(pad_visible(bot, card_w))
+
+    return lines
 
 print()
-print(f'  {MG}{B}claude-picker stats{R}')
+# Header
+left = f'  {MAUVE}{B}claude-picker --stats{R}'
+right = f'{SUB}last 30 days · all projects{R}'
+pad_w = W - len(strip_ansi(left)) - len(strip_ansi(right))
+print(left + ' ' * max(1, pad_w) + right)
 print()
 
-# Overview section
-total_tokens = max(1, total_chars // 4)
-print(f'  {DG}{D}\u2500\u2500 overview \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}')
-print()
-print(f'    {GR}Total sessions{R}     {CY}{B}{total_sessions:,}{R}')
-print(f'    {GR}Total messages{R}     {CY}{B}{total_messages:,}{R}')
-print(f'    {GR}Estimated tokens{R}   {CY}{B}{format_tokens(total_tokens)}{R}')
-print(f'    {GR}Disk usage{R}         {CY}{B}{format_size(total_size)}{R}')
-print(f'    {GR}Projects{R}           {CY}{B}{len(project_data):,}{R}')
+# KPI row
+input_mtok  = total_input_tokens  / 1_000_000
+output_mtok = total_output_tokens / 1_000_000
+
+kpi1 = boxed_kpi(
+    label_color=SUB,
+    label='tokens',
+    big_value=format_tokens(total_tokens),
+    big_color=TEXT,
+    spark_color=TEAL,
+    spark_vals=last7_tokens or [0],
+    subtitle=f'{format_tokens(total_input_tokens)} input · {format_tokens(total_output_tokens)} output',
+)
+kpi2 = boxed_kpi(
+    label_color=SUB,
+    label='cost',
+    big_value=format_cost(total_cost),
+    big_color=GREEN,
+    spark_color=GREEN,
+    spark_vals=last7_cost or [0],
+    subtitle=f'avg {format_cost(avg_cost_per_day)} / day',
+)
+kpi3 = boxed_kpi(
+    label_color=SUB,
+    label='sessions',
+    big_value=str(total_sessions),
+    big_color=YELLOW,
+    spark_color=YELLOW,
+    spark_vals=last7_sessions or [0],
+    subtitle=f'{named_count} named · {unnamed_count} unnamed',
+)
+
+for i in range(max(len(kpi1), len(kpi2), len(kpi3))):
+    row = '  '
+    row += kpi1[i] if i < len(kpi1) else ' ' * card_w
+    row += '  '
+    row += kpi2[i] if i < len(kpi2) else ' ' * card_w
+    row += '  '
+    row += kpi3[i] if i < len(kpi3) else ' ' * card_w
+    print(row)
+
 print()
 
-# Projects section
+# Per project
 if project_data:
-    print(f'  {DG}{D}\u2500\u2500 projects \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}')
-    print()
-    sorted_projects = sorted(project_data.items(), key=lambda x: x[1]['tokens'], reverse=True)
-    max_proj_tokens = sorted_projects[0][1]['tokens'] if sorted_projects else 1
-
-    for name, info in sorted_projects:
-        bar = bar_chart(info['tokens'], max_proj_tokens, 16)
-        s = 's' if info['sessions'] != 1 else ' '
-        token_str = format_tokens(info['tokens'])
-        print(f'    {GN}{B}{name:<20s}{R}  {YL}{bar:<16s}{R}  {GR}{info["sessions"]:>2d} session{s}{R}  {DG}{token_str:>8s} tokens{R}')
+    print(f'  {SUB}{D}── per project {"─" * (W - 20)}{R}')
     print()
 
-# Activity section
-activity = [
-    ('Today', today_count),
-    ('Yesterday', yesterday_count),
-    ('This week', this_week_count),
-    ('Older', older_count),
-]
-max_activity = max((v for _, v in activity), default=1) or 1
+    sorted_proj = sorted(project_data.items(), key=lambda x: x[1]['cost'], reverse=True)[:8]
+    max_cost = sorted_proj[0][1]['cost'] if sorted_proj else 1
 
-print(f'  {DG}{D}\u2500\u2500 activity \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}')
-print()
-for label, count in activity:
-    bar = bar_chart(count, max_activity, 20)
-    s = 's' if count != 1 else ' '
-    color = CY if count > 0 else DG
-    print(f'    {GR}{label:<14s}{R}  {color}{bar:<20s}{R}  {GR}{count} session{s}{R}')
+    name_w = min(22, max((len(n) for n, _ in sorted_proj), default=8) + 2)
+    bar_w  = W - name_w - 36
+
+    for i, (name, info) in enumerate(sorted_proj):
+        color = project_color(i)
+        filled = int((info['cost'] / max_cost) * bar_w) if max_cost else 0
+        bar = color + BAR_FULL * filled + R + LINE + BAR_EMPTY * (bar_w - filled) + R
+        toks = info['input'] + info['output']
+        right = f'{format_cost(info["cost"]):>8}  ·  {format_tokens(toks):>6} tok  ·  {info["sessions"]:>3} ses'
+        print(f'  {color}{B}{name:<{name_w}}{R}  {bar}  {SUB}{right}{R}')
+    print()
+
+# Activity timeline (30 days)
+print(f'  {SUB}{D}── activity (30d) {"─" * (W - 23)}{R}')
 print()
 
-# Top sessions by tokens
-if session_details:
-    print(f'  {DG}{D}\u2500\u2500 top sessions by tokens \u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500\u2500{R}')
-    print()
-    top = sorted(session_details, key=lambda x: x[2], reverse=True)[:5]
-    for i, (name, project, tokens) in enumerate(top, 1):
-        token_str = format_tokens(tokens)
-        print(f'    {YL}{i}.{R} {GN}{B}{name:<28s}{R}  {DG}({project}){R}  {PE}{token_str:>8s} tokens{R}')
-    print()
+labels = ['Mar 17', 'Mar 22', 'Mar 27', 'Apr 1', 'Apr 6', 'Apr 11', 'Apr 16']
+# Dynamic labels
+label_indices = [0, 5, 10, 15, 20, 25, 29]
+dynamic_labels = []
+for idx in label_indices:
+    if 0 <= idx < len(days_series):
+        dynamic_labels.append(days_series[idx].strftime('%b %d').lstrip())
+
+# Build vertical bars
+max_day = max(daily_sessions) if any(daily_sessions) else 1
+bar_width = (W - 6) // 30  # chars per day bar
+if bar_width < 2:
+    bar_width = 2
+
+# Use block glyph with height-based color
+def day_bar(count, is_today, is_spike):
+    if count == 0:
+        return f'{LINE}{D}·{R}'
+    idx = int((count / max_day) * (len(SPARK_CHARS) - 1))
+    ch = SPARK_CHARS[idx]
+    if is_today:
+        color = GREEN
+    elif is_spike:
+        color = RED
+    else:
+        color = MAUVE
+    return f'{color}{ch}{R}'
+
+avg_sessions = (sum_sessions_30 / 30) if sum_sessions_30 else 0
+spike_threshold = max(2, avg_sessions * 2.2)
+
+gap = max(0, bar_width - 1)
+bar_line = '    '
+for i, d in enumerate(days_series):
+    count = daily_sessions[i]
+    is_today = (d == today)
+    is_spike = (count >= spike_threshold and count > 0)
+    bar_line += day_bar(count, is_today, is_spike) + ' ' * gap
+print(bar_line)
+
+# Label line
+label_line = '    '
+total_slot = bar_width
+placed_positions = [int(i * 29 / 6) for i in range(7)]
+for pos in range(30):
+    if pos in placed_positions:
+        idx = placed_positions.index(pos)
+        lbl = dynamic_labels[idx] if idx < len(dynamic_labels) else ''
+        label_line += f'{SUB}{lbl}{R}'
+        pad = total_slot - len(lbl)
+        if pad > 0:
+            label_line += ' ' * pad
+    else:
+        label_line += ' ' * total_slot
+print(label_line)
+
+# Annotations line (find today highlight)
+today_pos = 29
+today_count = daily_sessions[today_pos] if 0 <= today_pos < 30 else 0
+if today_count > 0:
+    ann_line = '    '
+    ann_line += ' ' * ((today_pos) * total_slot) + f'{GREEN}↑ today{R}'
+    print(ann_line)
+
+print()
+
+# Footer
+foot = f'  {SUB}press {R}{TEXT}q{R}{SUB} to quit  ·  press {R}{TEXT}e{R}{SUB} to export  ·  press {R}{TEXT}t{R}{SUB} to toggle days/weeks{R}'
+print(foot)
+print()
