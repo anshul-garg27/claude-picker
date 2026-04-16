@@ -138,16 +138,17 @@ for f in sorted(glob.glob(os.path.join(project_dir, '*.jsonl')), key=os.path.get
     cc = cost_color(tokens)
 
     if tokens >= 1000:
-        tok_display = f'~{tokens//1000}k tok'
+        tok_display = f'~{tokens//1000}k'
     else:
-        tok_display = f'~{tokens} tok'
+        tok_display = f'~{tokens}'
 
     cost_str = ''
     if tokens > 10000:
         cost = (tokens * 0.4 * 3 + tokens * 0.6 * 15) / 1_000_000
-        if cost < 0.01: cost_str = f' {DG}<$0.01{R}'
-        elif cost < 1.0: cost_str = f' {DG}~${cost:.2f}{R}'
-        else: cost_str = f' {DG}~${cost:.2f}{R}'
+        dollar = '$'
+        if cost < 0.01: cost_str = f' {DG}<{dollar}0.01{R}'
+        elif cost < 1.0: cost_str = f' {DG}~{dollar}{cost:.2f}{R}'
+        else: cost_str = f' {DG}~{dollar}{cost:.2f}{R}'
 
     tc = time_color(mod_ts)
     age_warn = age_indicator(mod_ts)
@@ -172,7 +173,7 @@ print(f'  {MG}{B}+{R}   {CY}{B}New Session{R}  |  __NEW__')
 print(f'  {DG}{D}  {hr}{R}  |  __SEP__')
 
 def fmt_row(icon, ic, nm, nc, ns, tc, rel, aw, msgs, cc, tstr, cs, sid):
-    return f'  {ic}{icon}{R}  {ns}{nc}{nm:<{W}s}{R}  {tc}{rel:>8s}{R}{aw}  {DG}{msgs:>3d}m{R} {cc}{tstr}{R}{cs}  |  {sid}'
+    return f'  {ic}{icon}{R}  {ns}{nc}{nm:<{W}s}{R} {tc}{rel:>8s}{R}{aw} {DG}{msgs:>4d} msgs{R} {cc}{tstr:>5s}{R}{cs}  |  {sid}'
 
 if bookmarked_sessions:
     print(f'  {DG}{D}  \u2500\u2500 pinned {hr_short}{R}  |  __HDR0__')

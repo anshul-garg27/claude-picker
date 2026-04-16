@@ -38,17 +38,21 @@ if [ -n "$missing" ]; then
   exit 1
 fi
 
-# Clone or update
-if [ -d "$INSTALL_DIR/.git" ]; then
+# Detect if running from inside the repo itself
+SCRIPT_REAL_DIR="$(cd "$(dirname "$0")" && pwd)"
+
+if [ "$SCRIPT_REAL_DIR" != "$INSTALL_DIR" ]; then
+  # Running from a different location — copy to install dir
+  if [ -d "$INSTALL_DIR" ]; then
+    rm -rf "$INSTALL_DIR"
+  fi
+  echo -e "  ${DG}Installing...${R}"
+  cp -r "$SCRIPT_REAL_DIR" "$INSTALL_DIR"
+elif [ -d "$INSTALL_DIR/.git" ]; then
   echo -e "  ${DG}Updating...${R}"
   cd "$INSTALL_DIR" && git pull --quiet
-elif [ -d "$INSTALL_DIR" ]; then
-  echo -e "  ${DG}Replacing existing install...${R}"
-  rm -rf "$INSTALL_DIR"
-  git clone --quiet "$REPO" "$INSTALL_DIR"
 else
-  echo -e "  ${DG}Installing...${R}"
-  git clone --quiet "$REPO" "$INSTALL_DIR"
+  echo -e "  ${DG}Already installed.${R}"
 fi
 
 # Make executable
