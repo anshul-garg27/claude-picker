@@ -57,8 +57,13 @@ fi
 
 # Make executable
 chmod +x "$INSTALL_DIR/claude-picker"
-chmod +x "$INSTALL_DIR/lib/session-list.sh"
-chmod +x "$INSTALL_DIR/lib/session-preview.py"
+chmod +x "$INSTALL_DIR/lib/"*.sh "$INSTALL_DIR/lib/"*.py 2>/dev/null
+
+# Install Python rich for beautiful previews (optional but recommended)
+if ! python3 -c "import rich" 2>/dev/null; then
+  echo -e "  ${DG}Installing rich (for preview panel)...${R}"
+  python3 -m pip install --user --quiet rich 2>/dev/null || true
+fi
 
 # Create bin directory and symlink
 mkdir -p "$BIN_DIR"

@@ -207,21 +207,32 @@ if [ "$1" = "--search" ] || [ "$1" = "-s" ]; then
   fi
 
   selected=$(echo "$search_results" | fzf \
-    --header=$'  \033[38;5;176m\033[1msearch sessions\033[0m  \033[38;5;242m│  type to filter across all conversations\033[0m\n' \
+    --style=full:rounded \
+    --border-label=" Search " \
+    --border-label-pos=2 \
+    --input-label=" Filter " \
+    --header="$(printf '\033[38;5;242mtype to search across all conversations\033[0m')" \
     --header-first \
-    --delimiter="\t" \
+    --delimiter=$'\t' \
     --with-nth=1 \
     --layout=reverse \
     --height=85% \
-    --border=rounded \
-    --margin=1,3 \
+    --margin=1,2 \
     --padding=1,1 \
-    --prompt="  search > " \
+    --prompt="  " \
     --pointer=" ▸" \
-    --color="fg:249,fg+:114,bg+:-1,hl:222,hl+:222,pointer:176,prompt:176,header:176,border:238,gutter:-1" \
-    --no-separator \
+    --color="border:#f9e2af,label:#f9e2af:bold" \
+    --color="input-border:#89b4fa,input-label:#89b4fa" \
+    --color="list-border:#313244" \
+    --color="header-border:#313244" \
+    --color="preview-border:#45475a,preview-label:#a6adc8" \
+    --color="fg:#cdd6f4,bg:#1e1e2e,bg+:#313244,fg+:#a6e3a1" \
+    --color="hl:#f9e2af,hl+:#f9e2af" \
+    --color="pointer:#cba6f7,prompt:#f9e2af,info:#6c7086" \
+    --color="gutter:#1e1e2e" \
+    --preview-label=" Preview " \
     --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'\t' '{print \$NF}' | xargs)" \
-    --preview-window=right,45%,wrap,border-left \
+    --preview-window=right,45%,wrap,border-rounded \
     --ansi)
 
   if [ -n "$selected" ]; then
@@ -388,19 +399,28 @@ print(f'{total_files} sessions  {sz}')
 " 2>/dev/null)
 
 selected_dir=$(echo "$dir_list" | fzf \
-  --header="$(printf '  \033[38;5;176m\033[1mclaude-picker\033[0m  \033[38;5;242m%s\033[0m\n' "$disk_info")" \
+  --style=full:rounded \
+  --border-label=" claude-picker " \
+  --border-label-pos=2 \
+  --input-label=" Search " \
+  --header="$(printf '\033[38;5;242m%s\033[0m' "$disk_info")" \
   --header-first \
-  --delimiter="\t" \
+  --delimiter=$'\t' \
   --with-nth=1 \
   --layout=reverse \
   --height=50% \
-  --border=rounded \
-  --margin=1,3 \
+  --margin=1,2 \
   --padding=1,1 \
-  --prompt="  project > " \
+  --prompt="  " \
   --pointer=" ▸" \
-  --color="fg:249,fg+:117,bg+:-1,hl:222,hl+:222,pointer:176,prompt:117,header:176,border:238,gutter:-1" \
-  --no-separator \
+  --color="border:#cba6f7,label:#cba6f7:bold" \
+  --color="input-border:#89b4fa,input-label:#89b4fa" \
+  --color="list-border:#313244" \
+  --color="header-border:#313244" \
+  --color="fg:#cdd6f4,bg:#1e1e2e,bg+:#313244,fg+:#89b4fa" \
+  --color="hl:#f9e2af,hl+:#f9e2af" \
+  --color="pointer:#cba6f7,prompt:#89b4fa,info:#6c7086" \
+  --color="gutter:#1e1e2e" \
   --preview-window=hidden \
   --ansi)
 
@@ -437,22 +457,33 @@ if [ -z "$session_list" ]; then
 fi
 
 proj_name=$(basename "$PWD")
-session_header=$(printf "  \033[38;5;176m\033[1m%s\033[0m  \033[38;5;242menter=open  ctrl-b=pin  ctrl-e=export  ctrl-d=delete\033[0m" "$proj_name")
+session_header=$(printf '\033[38;5;242menter=open  ctrl-b=pin  ctrl-e=export  ctrl-d=delete\033[0m')
 
 selected=$(echo "$session_list" | fzf \
+  --style=full:rounded \
+  --border-label=" $proj_name " \
+  --border-label-pos=2 \
+  --input-label=" Search " \
   --header="$session_header" \
   --header-first \
-  --delimiter="\t" \
+  --delimiter=$'\t' \
   --with-nth=1 \
   --layout=reverse \
   --height=85% \
-  --border=rounded \
-  --margin=1,3 \
+  --margin=1,2 \
   --padding=1,1 \
-  --prompt="  session > " \
+  --prompt="  " \
   --pointer=" ▸" \
-  --color="fg:249,fg+:114,bg+:-1,hl:222,hl+:222,pointer:176,prompt:117,header:176,border:238,gutter:-1" \
-  --no-separator \
+  --color="border:#cba6f7,label:#cba6f7:bold" \
+  --color="input-border:#89b4fa,input-label:#89b4fa" \
+  --color="list-border:#313244" \
+  --color="header-border:#313244" \
+  --color="preview-border:#45475a,preview-label:#a6adc8" \
+  --color="fg:#cdd6f4,bg:#1e1e2e,bg+:#313244,fg+:#a6e3a1" \
+  --color="hl:#f9e2af,hl+:#f9e2af" \
+  --color="pointer:#cba6f7,prompt:#89b4fa,info:#6c7086" \
+  --color="gutter:#1e1e2e" \
+  --preview-label=" Preview " \
   --preview="PROJECT_DIR='$PROJECT_DIR' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'\t' '{print \$NF}' | xargs)" \
   --preview-window=right,45%,wrap,border-left \
   --bind="ctrl-b:execute-silent(sid=\$(echo {} | awk -F'\t' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR0__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__SEP__' ] && [ \"\$sid\" != '__INFO__' ] && python3 '$SCRIPT_DIR/lib/session-bookmarks.py' \"\$sid\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \

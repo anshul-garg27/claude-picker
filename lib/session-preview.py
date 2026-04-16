@@ -1,37 +1,52 @@
 #!/usr/bin/env python3
-"""Preview helper for claude-session-picker — world class edition"""
+"""Preview renderer using Rich for beautiful formatted output."""
 
-import json, os, sys
-from datetime import datetime
+import json, os, sys, glob
 
 session_id = sys.argv[1].strip() if len(sys.argv) > 1 else ""
 
+# Try Rich, fall back to plain ANSI
+try:
+    from rich.console import Console
+    from rich.panel import Panel
+    from rich.text import Text
+    from rich.table import Table
+    from rich import box
+    HAS_RICH = True
+except ImportError:
+    HAS_RICH = False
+
+# Plain ANSI fallback colors
 R  = '\033[0m';  B  = '\033[1m';  D  = '\033[2m';  I  = '\033[3m'
 CY = '\033[38;5;117m'; GN = '\033[38;5;114m'; YL = '\033[38;5;222m'
 MG = '\033[38;5;176m'; DG = '\033[38;5;242m'; GR = '\033[38;5;249m'
-BL = '\033[38;5;111m'; OR = '\033[38;5;215m'; WH = '\033[97m'
+WH = '\033[97m'
 
 if not session_id or session_id in ('__NEW__',):
-    print()
-    print(f'  {MG}{B}New Session{R}')
-    print()
-    print(f'  {GR}Start a fresh Claude Code{R}')
-    print(f'  {GR}conversation in this project.{R}')
-    print()
-    print(f'  {DG}Directory:{R}')
-    print(f'  {CY}{os.path.basename(os.getcwd())}{R}')
+    if HAS_RICH:
+        console = Console(force_terminal=True, width=60)
+        console.print()
+        console.print("  [bold #cba6f7]+ New Session[/]")
+        console.print()
+        console.print("  [#a6adc8]Start a fresh Claude Code[/]")
+        console.print("  [#a6adc8]conversation in this project.[/]")
+        console.print()
+        console.print(f"  [#6c7086]Directory:[/] [#89b4fa]{os.path.basename(os.getcwd())}[/]")
+    else:
+        print(f'\n  {MG}{B}+ New Session{R}\n')
+        print(f'  {GR}Start a fresh Claude Code conversation.{R}\n')
+        print(f'  {DG}Directory:{R} {CY}{os.path.basename(os.getcwd())}{R}')
     sys.exit(0)
 
-if session_id in ('__HDR1__', '__HDR2__'):
+if session_id in ('__HDR0__', '__HDR1__', '__HDR2__', '__SEP__', '__INFO__'):
     sys.exit(0)
 
+# Find session file
 encoded_path = os.getcwd().replace('/', '-').replace('_', '-')
 project_dir = os.environ.get('PROJECT_DIR', os.path.expanduser(f'~/.claude/projects/{encoded_path}'))
 session_file = os.path.join(project_dir, f'{session_id}.jsonl')
 
-# Search mode fallback: find session across all projects
 if not os.path.exists(session_file):
-    import glob
     for f in glob.glob(os.path.expanduser(f'~/.claude/projects/*/{session_id}.jsonl')):
         session_file = f
         break
@@ -40,11 +55,15 @@ if not os.path.exists(session_file):
     print(f'  {DG}Session not found{R}')
     sys.exit(0)
 
+# Parse session
 messages = []
 name = None
 created = None
 msg_total = 0
 total_chars = 0
+
+noise = ['<local-command', '<command-name>', '<bash-', '<system-reminder>',
+         '[Request inter', '---', '<command-message>', '<user-prompt']
 
 for line in open(session_file):
     try:
@@ -80,10 +99,8 @@ for line in open(session_file):
                     if isinstance(item, dict) and item.get('type') == 'text':
                         text = item['text'].strip()
                         break
-            noise = ['<local-command', '<command-name>', '<bash-', '<system-reminder>',
-                     '[Request inter', '---', '<command-message>']
             if text and len(text) > 3 and not any(n in text for n in noise):
-                messages.append(('you', text[:250]))
+                messages.append(('you', text[:300]))
 
         elif msg_type == 'assistant' and data.get('message', {}).get('role') == 'assistant':
             content = data['message'].get('content', '')
@@ -95,48 +112,74 @@ for line in open(session_file):
                     if isinstance(item, dict) and item.get('type') == 'text':
                         t = item.get('text', '').strip()
                         if t:
-                            text = t[:250]
+                            text = t[:300]
                             break
             if text and len(text) > 3:
-                messages.append(('ai', text[:250]))
+                messages.append(('ai', text[:300]))
     except:
         pass
 
-# Header
-print()
-if name:
-    print(f'  {GN}{B}{name}{R}')
-else:
-    print(f'  {GR}{D}Unnamed session{R}')
-print()
-
-# Meta
+# Token estimate
 token_est = max(1, total_chars // 4)
-if token_est >= 1000:
-    token_str = f'~{token_est // 1000}k'
+token_str = f'~{token_est // 1000}k' if token_est >= 1000 else f'~{token_est}'
+
+# Render with Rich
+if HAS_RICH:
+    console = Console(force_terminal=True, width=60)
+
+    # Header
+    title = name or "Unnamed session"
+    title_style = "bold #a6e3a1" if name else "dim #a6adc8"
+
+    meta_table = Table(show_header=False, box=None, padding=(0, 1), show_edge=False)
+    meta_table.add_column(style="#6c7086", width=10)
+    meta_table.add_column(style="#a6adc8")
+    if created:
+        meta_table.add_row("created", created)
+    meta_table.add_row("messages", str(msg_total))
+    meta_table.add_row("tokens", token_str)
+
+    console.print()
+    console.print(f"  [{title_style}]{title}[/]")
+    console.print()
+    console.print(meta_table)
+    console.print()
+    console.print(f"  [#45475a]{'─' * 40}[/]")
+    console.print()
+
+    if not messages:
+        console.print("  [#6c7086](empty conversation)[/]")
+    else:
+        shown = messages[-8:]
+        for role, text in shown:
+            clean = text.replace('\n', ' ')[:140]
+            if role == 'you':
+                console.print(f"  [bold #89b4fa]you[/]  [#a6adc8]{clean}[/]")
+            else:
+                console.print(f"  [#f9e2af]ai[/]   [#cdd6f4]{clean}[/]")
+            console.print()
 else:
-    token_str = f'~{token_est}'
-
-if created:
-    print(f'  {DG}created  {GR}{created}{R}')
-print(f'  {DG}messages {GR}{msg_total}{R}')
-print(f'  {DG}tokens   {GR}{token_str}{R}')
-print()
-
-# Horizontal rule between header and conversation
-sep = '\u2500' * 40
-print(f'  {DG}{D}{sep}{R}')
-print()
-
-# Conversation
-if not messages:
-    print(f'  {DG}(empty conversation){R}')
-else:
-    shown = messages[-8:]
-    for role, text in shown:
-        clean = text.replace('\n', ' ')[:140]
-        if role == 'you':
-            print(f'  {CY}{B}you{R}  {GR}{clean}{R}')
-        else:
-            print(f'  {YL}ai{R}   {WH}{clean}{R}')
-        print()
+    # Fallback to plain ANSI
+    print()
+    if name:
+        print(f'  {GN}{B}{name}{R}')
+    else:
+        print(f'  {GR}{D}Unnamed session{R}')
+    print()
+    if created:
+        print(f'  {DG}created  {GR}{created}{R}')
+    print(f'  {DG}messages {GR}{msg_total}{R}')
+    print(f'  {DG}tokens   {GR}{token_str}{R}')
+    print()
+    print(f'  {DG}{"─" * 40}{R}')
+    print()
+    if not messages:
+        print(f'  {DG}(empty conversation){R}')
+    else:
+        for role, text in messages[-8:]:
+            clean = text.replace('\n', ' ')[:140]
+            if role == 'you':
+                print(f'  {CY}{B}you{R}  {GR}{clean}{R}')
+            else:
+                print(f'  {YL}ai{R}   {WH}{clean}{R}')
+            print()
