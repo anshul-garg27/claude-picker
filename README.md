@@ -1,143 +1,238 @@
-# claude-picker
+<p align="center">
+  <h1 align="center">claude-picker</h1>
+  <p align="center">
+    <strong>Find, preview, and resume your Claude Code sessions.</strong>
+  </p>
+  <p align="center">
+    A terminal-native session manager for <a href="https://claude.ai/code">Claude Code</a>.<br>
+    Browse projects, preview conversations, track costs, and jump back in — from any terminal.
+  </p>
+  <p align="center">
+    <a href="#install">Install</a> &bull;
+    <a href="#features">Features</a> &bull;
+    <a href="#commands">Commands</a> &bull;
+    <a href="#how-it-works">How it works</a>
+  </p>
+</p>
 
-**Find, preview, and resume your Claude Code sessions.**
+<!-- TODO: Replace with actual GIF after recording -->
+<!-- ![claude-picker demo](assets/demo.gif) -->
 
-A terminal-native session manager for [Claude Code](https://claude.ai/code). Browse all your projects, preview conversations, and jump back into any session — right from your terminal.
+---
 
-<!-- 
-TODO: Replace with actual screenshots/GIFs after recording
-![claude-picker demo](assets/demo.gif) 
--->
+## The Problem
 
-## Why
+Claude Code saves every conversation, but finding them again is painful:
 
-Claude Code saves every conversation, but finding and resuming them is painful:
+```
+? Pick a conversation to resume
+  4a2e8f1c-9b3d-4e7a... (2 hours ago)
+  b7c9d2e0-1f4a-8b6c... (3 hours ago)
+  e5f8a3b1-7c2d-9e0f... (yesterday)
+```
 
-- `claude --resume` shows **all sessions globally** — no way to filter by project
-- No preview of what a session was about
-- No way to delete old sessions
-- Session IDs are UUIDs — meaningless
+No project filtering. No preview. No names. Just UUIDs.
 
-**claude-picker** fixes all of this.
+**claude-picker** fixes this with a two-step fzf picker, conversation preview, cost tracking, and 20+ features that no other tool has together.
 
-## Features
-
-- **Project picker** — see all directories where you've used Claude Code, with git branch and disk usage
-- **Session picker** — browse sessions with named sessions on top, unnamed auto-labeled from first message
-- **Conversation preview** — see the last few messages before opening a session
-- **Full-text search** — `claude-picker --search` to search across ALL sessions in ALL projects
-- **Token/cost estimates** — see approximate token usage per session, color-coded by cost
-- **Auto-naming** — unnamed sessions show the first user message instead of "session"
-- **Named session support** — sessions created with `claude --name "feature-x"` show their name prominently
-- **Export to markdown** — press `Ctrl+E` to export any session to `~/Desktop/claude-exports/`
-- **Delete sessions** — press `Ctrl+D` to remove sessions you don't need
-- **Smart filtering** — only shows Claude Code sessions (filters out SDK/third-party tool sessions)
-- **Fuzzy search** — powered by fzf, type to filter instantly
-- **Git branch display** — see current branch for each project in the project picker
-- **Disk usage** — see total `~/.claude/` size and session count
-- **Shell keybinding** — `Ctrl+P` to launch from anywhere (installed automatically)
-- **Activity bars** — visual indicators showing session count per project
-- **Relative timestamps** — "5m ago", "2h ago", "3d ago" instead of dates
-- **Warp integration** — optional one-click access from Warp's `+` menu
+---
 
 ## Install
-
-**One-line install:**
 
 ```bash
 git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
 ```
 
 **Requirements:**
-- [Claude Code](https://claude.ai/code) (you need sessions to browse)
-- [fzf](https://github.com/junegunn/fzf) (`brew install fzf` on macOS)
-- Python 3 (comes with macOS/most Linux)
+- [Claude Code](https://claude.ai/code)
+- [fzf](https://github.com/junegunn/fzf) (`brew install fzf`)
+- Python 3
 
-## Usage
+**What the installer does:**
+- Symlinks `claude-picker` to `~/.local/bin/`
+- Adds `Ctrl+P` shell keybinding to `.zshrc`
+- Auto-detects [Warp](https://warp.dev) and installs tab config
+
+---
+
+## Features
+
+### Browse & Resume
+
+| Feature | Description |
+|---------|------------|
+| **Project picker** | All directories with Claude sessions, sorted by activity |
+| **Session picker** | Named sessions on top, unnamed auto-labeled from first message |
+| **Conversation preview** | Last few messages shown in a side panel before you open |
+| **Fuzzy search** | Type to filter — powered by fzf |
+| **Bookmarks** | `Ctrl+B` to pin important sessions to the top |
+
+### Search & Analyze
+
+| Feature | Description |
+|---------|------------|
+| **Full-text search** | `--search` greps across ALL sessions in ALL projects |
+| **Stats dashboard** | `--stats` shows token usage, cost estimates, activity timeline |
+| **Session diff** | `--diff` compares two sessions side-by-side with topic analysis |
+| **Session tree** | `--tree` shows all sessions grouped by project, with fork relationships |
+
+### Smart Display
+
+| Feature | Description |
+|---------|------------|
+| **Token/cost estimates** | Approximate tokens and cost per session, color-coded |
+| **Auto-naming** | Unnamed sessions show the first user message as their label |
+| **Git branch** | Current branch shown next to each project |
+| **Disk usage** | Total `~/.claude/` size and session count in header |
+| **Age warnings** | Timestamps turn peach (>7 days) or red with warning icon (>30 days) |
+| **Activity bars** | Visual `████` indicators showing session count per project |
+| **Relative time** | "5m ago", "2h ago" instead of absolute dates |
+
+### Integrations
+
+| Feature | Description |
+|---------|------------|
+| **Export to markdown** | `Ctrl+E` saves any session to `~/Desktop/claude-exports/` |
+| **Pipe mode** | `--pipe` outputs session ID for scripting |
+| **Shell keybinding** | `Ctrl+P` launches claude-picker from anywhere |
+| **Warp terminal** | One-click from Warp's `+` menu |
+| **Claude Code skill** | Available as a `/claude-picker` skill |
+| **Smart filtering** | Only shows Claude CLI sessions (filters out SDK tools) |
+
+---
+
+## Commands
 
 ```bash
-claude-picker              # browse sessions
-claude-picker --search     # search across ALL conversations
-Ctrl+P                     # keybinding (after install)
+claude-picker                  # browse projects → sessions → resume
+claude-picker --search         # full-text search across all conversations
+claude-picker --stats          # terminal dashboard with analytics
+claude-picker --tree           # session tree grouped by project
+claude-picker --diff           # compare two sessions side-by-side
+claude-picker --pipe           # output session ID (for scripting)
 ```
 
-Two-step flow:
-
-1. **Pick a project** — shows all directories with Claude sessions, current git branch, disk usage
-2. **Pick a session** — browse, preview, and resume
-
-### Keyboard shortcuts
+### Keyboard Shortcuts
 
 | Key | Action |
 |-----|--------|
-| `Enter` | Open selected session |
-| `Ctrl+E` | Export session to markdown (`~/Desktop/claude-exports/`) |
-| `Ctrl+D` | Delete selected session |
+| `Enter` | Open / resume session |
+| `Ctrl+B` | Toggle bookmark (pinned to top) |
+| `Ctrl+E` | Export session to markdown |
+| `Ctrl+D` | Delete session |
+| `Ctrl+P` | Launch from anywhere (shell keybinding) |
 | `Ctrl+C` | Go back / quit |
-| Type anything | Fuzzy search / filter |
+| Type | Fuzzy search / filter |
 
-### Named sessions
+---
 
-Give your sessions names for easy identification:
+## Usage Tips
+
+### Name your sessions
 
 ```bash
 claude --name "auth-refactor"
 claude --name "fix-bug-123"
 ```
 
-Named sessions appear at the top with a `●` indicator. Unnamed sessions appear below under "recent".
+Named sessions show at the top with a `●` indicator. Takes 2 seconds, saves you minutes of searching.
+
+### Bookmark important sessions
+
+Press `Ctrl+B` in the picker — bookmarked sessions get a blue `■` pin and appear at the very top, above named sessions.
+
+### Search by content
+
+```bash
+claude-picker --search
+```
+
+Searches across every message in every session. Type "kubernetes" and find that conversation from last week.
+
+### Check your costs
+
+The picker shows token estimates per session. Sessions over 10k tokens also show a cost estimate (e.g., `~$0.30`). Use `--stats` for a full breakdown.
+
+### Export conversations
+
+Press `Ctrl+E` on any session to save it as clean markdown in `~/Desktop/claude-exports/`.
+
+### Pipe to other tools
+
+```bash
+# Resume specific session from a script
+claude --resume $(claude-picker --pipe)
+
+# Export a session without opening the picker
+python3 ~/.claude-picker/lib/session-export.py <session-id>
+```
+
+---
 
 ## Configuration
 
 ### Claude flags
 
-By default, claude-picker launches Claude with `--dangerously-skip-permissions`. Change this by setting:
+By default, claude-picker launches Claude with `--dangerously-skip-permissions`. Override:
 
 ```bash
 export CLAUDE_PICKER_FLAGS=""                    # no flags
-export CLAUDE_PICKER_FLAGS="--model sonnet"      # custom flags
+export CLAUDE_PICKER_FLAGS="--model sonnet"      # custom model
 ```
 
 ### Warp terminal
 
-If you use [Warp](https://warp.dev), the installer automatically adds a tab config. Access claude-picker from the `+` menu → "Claude Picker".
+The installer auto-detects Warp and adds a tab config. Access via `+` menu → **Claude Picker**.
 
-To install the Warp integration manually:
+Manual install:
 
 ```bash
 cp ~/.claude-picker/warp/claude_picker.toml ~/.warp/tab_configs/
 ```
 
-## How it works
+---
 
-Claude Code stores session data in `~/.claude/projects/` as JSONL files. Each project directory is encoded (e.g., `/Users/you/my-project` becomes `-Users-you-my-project`). Session metadata lives in `~/.claude/sessions/`.
+## How It Works
+
+Claude Code stores sessions in `~/.claude/projects/` as JSONL files. Each project directory is encoded (e.g., `/Users/you/my_project` → `-Users-you-my-project`). Metadata lives in `~/.claude/sessions/`.
 
 claude-picker reads these files to:
-1. Discover all projects with Claude sessions
-2. Extract session names from `custom-title` entries in JSONL
-3. Count messages and compute relative timestamps
-4. Render a preview by extracting the last few user/AI messages
-5. Filter out non-Claude sessions (e.g., SDK-based tools) using the `entrypoint` field
 
-No data leaves your machine. Everything is local, read-only (except delete).
+1. **Discover projects** — scans all encoded directories, resolves real paths via 3 fallback strategies (metadata lookup, JSONL `cwd` field, encode-and-compare)
+2. **Extract session info** — names from `custom-title` entries, message counts, token estimates from content length
+3. **Filter noise** — skips SDK-based tools using the `entrypoint` field, strips system messages from previews
+4. **Render UI** — ANSI 256-color output (Catppuccin Mocha palette) piped through fzf
 
-## Project structure
+No data leaves your machine. Everything is local, read-only (except delete and bookmark).
+
+---
+
+## Project Structure
 
 ```
 claude-picker/
-├── claude-picker           # Main entry point
+├── claude-picker            # Main entry point (bash)
 ├── lib/
-│   ├── session-list.sh     # Builds the fzf session list
-│   ├── session-preview.py  # Generates conversation preview
-│   ├── session-search.py   # Full-text search across all sessions
-│   └── session-export.py   # Export sessions to markdown
+│   ├── session-list.py      # Builds fzf session list
+│   ├── session-list.sh      # Shell wrapper for list builder
+│   ├── session-preview.py   # Conversation preview renderer
+│   ├── session-search.py    # Full-text search engine
+│   ├── session-export.py    # Markdown exporter
+│   ├── session-stats.py     # Analytics dashboard
+│   ├── session-tree.py      # Tree visualization
+│   ├── session-diff.py      # Session comparison
+│   └── session-bookmarks.py # Bookmark manager
+├── skill/
+│   └── claude-picker.md     # Claude Code skill definition
 ├── warp/
-│   └── claude_picker.toml  # Warp tab config (optional)
-├── install.sh              # Installer (includes keybinding setup)
-├── uninstall.sh            # Uninstaller
-├── LICENSE                 # MIT
+│   └── claude_picker.toml   # Warp tab config
+├── install.sh               # Installer + keybinding setup
+├── uninstall.sh             # Clean uninstaller
+├── LICENSE                  # MIT
 └── README.md
 ```
+
+---
 
 ## Uninstall
 
@@ -145,9 +240,15 @@ claude-picker/
 bash ~/.claude-picker/uninstall.sh
 ```
 
+---
+
 ## Contributing
 
-Contributions welcome! Feel free to open issues or PRs.
+Contributions welcome. Open an issue or PR.
+
+If claude-picker saves you time, [star the repo](https://github.com/anshul-garg27/claude-picker) — it helps others find it.
+
+---
 
 ## License
 
@@ -155,4 +256,6 @@ MIT
 
 ---
 
-Built by [Anshul Garg](https://github.com/anshul-garg27)
+<p align="center">
+  Built by <a href="https://github.com/anshul-garg27">Anshul Garg</a>
+</p>
