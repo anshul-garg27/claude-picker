@@ -514,27 +514,7 @@ if [ -n "$selected" ]; then
       if [ "$PIPE_MODE" = "1" ]; then
         echo "$session_id"
       else
-        # Check if session is resumable (cli entrypoint only)
-        is_cli=$(python3 -c "
-import json, glob, os
-for f in glob.glob(os.path.expanduser('~/.claude/projects/*/$session_id.jsonl')):
-    for line in open(f):
-        try:
-            data = json.loads(line.strip())
-            ep = data.get('entrypoint', '')
-            if ep == 'cli': print('yes'); break
-            if ep: print('no'); break
-        except: pass
-    break
-" 2>/dev/null)
-        if [ "$is_cli" = "no" ]; then
-          echo ""
-          echo "  This session was created in non-interactive mode and cannot be resumed."
-          echo "  Use Ctrl+E to export it as markdown instead."
-          echo ""
-        else
-          claude $CLAUDE_FLAGS --resume "$session_id"
-        fi
+        claude $CLAUDE_FLAGS --resume "$session_id"
       fi
       ;;
   esac
