@@ -82,13 +82,11 @@ Add bookmarks, markdown export, and in-place delete — it's the most feature-ri
 - [ ] Join and participate in r/ClaudeAI, r/ClaudeCode, r/commandline (build karma)
 - [ ] Comment helpfully on Claude Code session management threads (link #8701, #11408, #6907)
 - [ ] Seed 100-200 GitHub stars from personal network (credibility floor)
-- [ ] Record demo GIF (screen recording + ffmpeg, 15-20 seconds, under 4MB for Twitter)
-  - Shot 1: `$ claude-picker` → two-step picker → resume (core flow, 6 sec)
-  - Shot 2: `$ claude-picker --stats` → dashboard appears (3 sec)
-  - Shot 3: `$ claude-picker --search "auth"` → results → select → auto-cd (5 sec)
-  - Shot 4: In-picker `Ctrl+B` bookmark, `Ctrl+E` export, `Ctrl+D` delete (4 sec)
-- [ ] Generate all images via Gemini AI Pro (12 LinkedIn slides, 10 IG stories, PH gallery)
-- [ ] Finalize README with GIF above the fold, feature matrix, install one-liner
+- [ ] Record all demo GIFs: `for t in scripts/tapes/*.tape; do vhs "$t"; done`. Output lands in `assets/gifs/` (hero, search, stats, tree, diff, bookmarks, export) and `assets/videos/`. Ensure `hero.gif` stays under 4 MB for Twitter — trim with `ffmpeg -i assets/gifs/hero.gif -vf "fps=12,scale=800:-1:flags=lanczos" -loop 0 hero-twitter.gif` if needed.
+- [ ] Generate static mockups: `bash assets/generate.sh` (writes `assets/mockups/*.png` and `*.svg`).
+- [ ] Extract key frames: `bash assets/extract-frames.sh` (writes `assets/frames/*.png`).
+- [ ] Generate AI images via Gemini AI Pro using prompts in `content/image-prompts.md` (25 prompts) and `content/instagram-linkedin.md` (10 IG stories + 12 LinkedIn slides). Save under `assets/ai-generated/<platform>/` per `content/USAGE.md`.
+- [ ] Finalize README — `assets/gifs/hero.gif` above the fold, feature matrix, install one-liner.
 - [ ] Pre-write ALL posts (HN, Reddit x3, Dev.to, Twitter, LinkedIn, PH)
 - [ ] Prepare newsletter pitch emails (TLDR, Console.dev, Changelog)
 - [ ] Verify install works on fresh macOS + fresh Ubuntu (smoke test)
@@ -162,13 +160,15 @@ github.com/anshul-garg27/claude-picker
 
 ### Image specs
 
-- **Gallery image 1** (1270x760 hero): Dark Catppuccin Mocha background, terminal mockup showing the two-step picker with cost column, tagline "The session manager Claude Code forgot to ship" in #CBA6F7
-- **Gallery image 2** (1270x760): `--stats` dashboard screenshot with per-project bars
-- **Gallery image 3** (1270x760): `--tree` showing fork relationships
-- **Gallery image 4** (1270x760): `--search` results across projects
-- **Gallery image 5** (1270x760): `--diff` side-by-side comparison
-- **Gallery image 6** (1270x760): In-picker shortcuts (Ctrl+B/E/D/P) with keycaps
-- **Thumbnail/logo** (240x240): "cp" monogram in #CBA6F7 on #1E1E2E, monospace
+Save every Product Hunt image under `assets/ai-generated/producthunt/`. See `content/USAGE.md` for the complete asset-to-platform map.
+
+- **Gallery image 1** (1270x760 hero) → `gallery-01-hero.png`: Dark Catppuccin Mocha background, terminal mockup showing the two-step picker with cost column, tagline "The session manager Claude Code forgot to ship" in #CBA6F7. *Fast path: resize `assets/frames/hero-02-sessions.png` to 1270x760 instead of generating.*
+- **Gallery image 2** (1270x760) → `gallery-02-stats.png`: `--stats` dashboard. *Fast path: resize `assets/mockups/stats.png`.*
+- **Gallery image 3** (1270x760) → `gallery-03-tree.png`: `--tree` with fork relationships. *Fast path: `assets/mockups/tree.png`.*
+- **Gallery image 4** (1270x760) → `gallery-04-search.png`: `--search` results across projects. *Fast path: `assets/frames/search-01-query.png`.*
+- **Gallery image 5** (1270x760) → `gallery-05-diff.png`: `--diff` comparison. *Fast path: `assets/mockups/diff.png`.*
+- **Gallery image 6** (1270x760) → `gallery-06-shortcuts.png`: In-picker shortcuts (Ctrl+B/E/D/P) with keycaps. (Generate via image-prompts.md.)
+- **Thumbnail/logo** (240x240) → `thumbnail.png`: "cp" monogram in #CBA6F7 on #1E1E2E, monospace. (Generate via image-prompts.md prompt #20.)
 
 All images use Catppuccin Mocha hex codes (see [color reference](#catppuccin-mocha-color-reference)). No emojis. Explicit safe zone: 80px padding all sides.
 

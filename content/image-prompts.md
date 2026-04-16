@@ -926,7 +926,7 @@ NEGATIVE: no emoji, no dollar-bill icon, no gradient, no 3D currency, no stock f
 
 ## 15. Logo / Icon — 512x512 — GitHub avatar, npm avatar, social profile, favicon source
 
-**Where it's used:** `assets/logo.png`, GitHub org avatar, npm package icon, profile images.
+**Where it's used:** Save as `assets/ai-generated/github/logo.png`. Use for GitHub org avatar, npm package icon, social profile images.
 
 **Safe zone:** The icon glyph lives inside a central **360x360** area. The outer 76 px on each side is breathing room for circular masks (GitHub/avatar crops).
 
@@ -1396,7 +1396,7 @@ NEGATIVE: no emoji, no gradient between swatches, no 3D, no photograph, no decor
 
 ## GIF Recording Section
 
-GIFs are captured from a real terminal (not AI-generated). They go in the `assets/` directory and are referenced from the README.
+GIFs are captured from a real terminal (not AI-generated). They go in `assets/gifs/` and WebM versions go in `assets/videos/`. See `content/USAGE.md` and `scripts/tapes/README.md` for the recording workflow.
 
 ### Required GIFs
 
@@ -1495,41 +1495,52 @@ For any image where authenticity trumps aesthetics — **record and screenshot a
 
 ## File Output Convention
 
-Place generated files in `assets/images/` with these exact names:
+All AI-generated images go under `assets/ai-generated/<platform>/` so they're grouped with the platform that consumes them. Saved paths for each of the 25 prompts in this file:
 
 ```
-01-github-social-preview.png   (1280x640)
-02-medium-hero.png             (1400x788)
-03-before-after.png            (1200x600)
-04-architecture.png            (1200x800)
-05-og-share.png                (1200x630)
-06-project-picker.png          (1200x600)
-07-session-preview.png         (1200x600)
-08-search.png                  (1200x600)
-09-stats.png                   (1200x800)
-10-tree.png                    (1200x800)
-11-diff.png                    (1400x800)
-12-bookmarks.png               (1200x630)
-13-export.png                  (1200x630)
-14-cost.png                    (1200x675)
-15-logo.png                    (512x512)
-15-logo-transparent.png        (512x512, alpha)
-16-favicon-16.png              (16x16)
-16-favicon-32.png              (32x32)
-16-favicon-64.png              (64x64)
-16-apple-touch-180.png         (180x180)
-17-twitter-card.png            (1200x675)
-18-reddit-thumb.png            (1200x630)
-19-ph-gallery.png              (1270x760)
-20-ph-thumb.png                (240x240)
-21-ig-story-template.png       (1080x1920)
-22-linkedin-carousel.png       (1080x1350)
-23-skill-card.png              (1200x630)
-24-warp-card.png               (1200x630)
-25-age-key.png                 (1200x600)
+Prompt #  →  Save as
+
+ 1 → assets/ai-generated/github/social-preview.png       (1280x640)
+ 2 → assets/ai-generated/medium/hero.png                 (1400x788)
+ 3 → assets/ai-generated/medium/before-after.png         (1200x600)
+ 4 → assets/ai-generated/medium/architecture.png         (1200x800)
+ 5 → assets/ai-generated/linkedin/og-image.png           (1200x630)
+ 6 → assets/ai-generated/medium/project-picker.png       (1200x600)
+ 7 → assets/ai-generated/medium/session-preview.png      (1200x600)
+ 8 → assets/ai-generated/medium/feature-search.png       (1200x600)
+ 9 → assets/ai-generated/medium/feature-stats.png        (1200x800)
+10 → assets/ai-generated/medium/feature-tree.png         (1200x800)
+11 → assets/ai-generated/medium/feature-diff.png         (1400x800)
+12 → assets/ai-generated/twitter/bookmarks-card.png      (1200x630)
+13 → assets/ai-generated/twitter/export-card.png         (1200x630)
+14 → assets/ai-generated/twitter/cost-card.png           (1200x675)
+15 → assets/ai-generated/github/logo.png                 (512x512)
+     assets/ai-generated/github/logo-transparent.png     (512x512, alpha)
+16 → assets/ai-generated/github/favicon-16.png           (16x16)
+     assets/ai-generated/github/favicon-32.png           (32x32)
+     assets/ai-generated/github/favicon-64.png           (64x64)
+     assets/ai-generated/github/apple-touch-180.png      (180x180)
+17 → assets/ai-generated/twitter/card-generic.png        (1200x675)
+18 → assets/ai-generated/reddit/thumbnail.png            (1200x630)
+19 → assets/ai-generated/producthunt/gallery-01.png      (1270x760)
+20 → assets/ai-generated/producthunt/thumbnail.png       (240x240)
+21 → assets/ai-generated/instagram/story-template.png    (1080x1920)
+22 → assets/ai-generated/linkedin/slide-template.png     (1080x1350)
+23 → assets/ai-generated/twitter/skill-card.png          (1200x630)
+24 → assets/ai-generated/twitter/warp-card.png           (1200x630)
+25 → assets/ai-generated/medium/age-warnings.png         (1200x600)
 ```
 
-Every image ships with a matching `.webp` version (50–60% smaller, same dimensions) for web embeds.
+**Story and carousel slides** (from `instagram-linkedin.md`) have their own naming pattern:
+
+```
+Instagram (10):  assets/ai-generated/instagram/story-01-hook.png … story-10-cta.png
+LinkedIn (12):   assets/ai-generated/linkedin/slide-01-cover.png … slide-12-cta.png
+```
+
+Every image can optionally ship with a matching `.webp` (50–60% smaller) for web embeds. Keep the original PNG for editing; use the .webp on Medium and the GitHub README.
+
+See `content/USAGE.md` for the complete platform-to-asset map (which image attaches to which tweet, which carousel slide, etc.).
 
 ---
 

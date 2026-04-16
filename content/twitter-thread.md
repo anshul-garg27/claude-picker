@@ -1,7 +1,9 @@
 # Twitter/X Thread
 
 Post Tuesday-Thursday, 9-11 AM EST for maximum reach.
-ATTACH A DEMO GIF TO TWEET 1. Without it, engagement drops 3-5x.
+ATTACH THE HERO GIF TO TWEET 1. Without it, engagement drops 3-5x.
+
+All asset paths below are relative to the project root. See `content/USAGE.md` for the full asset-to-platform map.
 
 ---
 
@@ -13,7 +15,7 @@ I got tired of clicking through UUIDs. So I built a session browser.
 
 bash + python + fzf. Works in any terminal.
 
-[ATTACH: 15-second demo GIF — full flow from project picker to session resume]
+**ATTACH:** `assets/gifs/hero.gif` (the main 15-second flow: project → session → preview → resume)
 
 ---
 
@@ -31,7 +33,7 @@ No project names. No preview. No way to tell sessions apart.
 
 I was clicking through 4-5 wrong sessions every time.
 
-[ATTACH: screenshot of the ugly default list]
+**ATTACH:** `assets/mockups/before.png` (the "before" mockup — raw `claude --resume` UUID list)
 
 ---
 
@@ -47,7 +49,7 @@ claude-picker gives you this:
 
 Under 500ms to list 50+ sessions.
 
-[ATTACH: screenshot of session list with preview panel]
+**ATTACH:** `assets/mockups/sessions.png` (session picker with preview panel side-by-side)
 
 ---
 
@@ -75,7 +77,7 @@ Full-text search across every message in every session across every project.
 
 Type the phrase. Get ranked sessions. Opens in the right project dir automatically.
 
-[ATTACH: GIF of --search flow]
+**ATTACH:** `assets/gifs/search.gif`
 
 ---
 
@@ -90,7 +92,7 @@ And --stats, because I was curious how much Claude I was actually using.
 
 Token estimate = content_length / 4. Rough but in the right ballpark.
 
-[ATTACH: screenshot of --stats dashboard]
+**ATTACH:** `assets/mockups/stats.png` (or `assets/gifs/stats.gif` if the dashboard movement reads better than the still)
 
 ---
 
@@ -110,6 +112,8 @@ auth-refactor
 
 Found 3 forks I'd completely forgotten about.
 
+**ATTACH:** `assets/mockups/tree.png`
+
 ---
 
 ## Tweet 8 (Keyboard shortcuts)
@@ -123,6 +127,8 @@ Inside the picker:
 - Just type: fuzzy filter
 
 The installer sets up Ctrl+P for zsh and bash.
+
+**ATTACH:** `assets/gifs/bookmarks.gif` (Ctrl+B in action)
 
 ---
 
@@ -138,6 +144,8 @@ I use it when I fork a session and want to know which branch actually got anywhe
 
 Simple keyword frequency, not semantic. Good enough.
 
+**ATTACH:** `assets/mockups/diff.png`
+
 ---
 
 ## Tweet 10 (Claude Code skill)
@@ -147,6 +155,8 @@ There's also a /claude-picker skill for Claude Code itself.
 Inside any Claude conversation: type /claude-picker, pick a session, Claude swaps to that context.
 
 Useful when you wander away and want to jump back without leaving your terminal state.
+
+**ATTACH (optional):** `assets/ai-generated/twitter/skill-card.png` — generate from image-prompts.md prompt #23
 
 ---
 
@@ -179,6 +189,8 @@ Needs: fzf 0.58+, python3 with rich (auto-installed).
 Warp users get a + menu entry. Everyone gets Ctrl+P.
 
 github.com/anshul-garg27/claude-picker
+
+**ATTACH (optional):** `assets/gifs/hero.gif` again as the closing visual, OR let the link unfurl into the GitHub social preview (`assets/ai-generated/github/social-preview.png` if already set on the repo).
 
 ---
 
