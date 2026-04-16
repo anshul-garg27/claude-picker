@@ -123,6 +123,6 @@ for proj_dir in sorted(os.listdir(projects_dir)):
                 proj_label = f'{MG}{proj_name}{R}'
 
                 # Format: project | session | role | text | session_id
-                print(f'  {proj_label}  {DG}│{R}  {name_label}  {DG}│{R}  {role_label}  {DG}│{R}  {GR}{clean}{R}  |  {session_id}')
+                print(f'  {proj_label}  {DG}│{R}  {name_label}  {DG}│{R}  {role_label}  {DG}│{R}  {GR}{clean}{R}  	{session_id}')
         except:
             pass

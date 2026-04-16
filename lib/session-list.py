@@ -170,25 +170,25 @@ W = 28  # name column width
 hr = '\u2500' * 50
 hr_short = '\u2500' * 42
 
-print(f'  {MG}{B}+{R}   {CY}{B}New Session{R}  |  __NEW__')
-print(f'  {DG}{D}  {hr}{R}  |  __SEP__')
+print(f'  {MG}{B}+{R}   {CY}{B}New Session{R}	__NEW__')
+print(f'  {DG}{D}  {hr}{R}	__SEP__')
 
 def fmt_row(icon, ic, nm, nc, ns, tc, rel, aw, msgs, cc, tstr, cs, sid):
-    return f'  {ic}{icon}{R}  {ns}{nc}{nm:<{W}s}{R} {tc}{rel:>8s}{R}{aw} {DG}{msgs:>4d} msgs{R} {cc}{tstr:>5s}{R}{cs}  |  {sid}'
+    return f'  {ic}{icon}{R}  {ns}{nc}{nm:<{W}s}{R} {tc}{rel:>8s}{R}{aw} {DG}{msgs:>4d} msgs{R} {cc}{tstr:>5s}{R}{cs}\t{sid}'
 
 if bookmarked_sessions:
-    print(f'  {DG}{D}  \u2500\u2500 pinned {hr_short}{R}  |  __HDR0__')
+    print(f'  {DG}{D}  \u2500\u2500 pinned {hr_short}{R}	__HDR0__')
     for rel, nm, msgs, tokens, tstr, cc, sid, tc, aw, cs, is_named in bookmarked_sessions:
         nc = GN if is_named else GR; ns = B if is_named else I
         print(fmt_row('\u25a0', PB, nm[:W], nc, ns, tc, rel, aw, msgs, cc, tstr, cs, sid))
 
 if named:
     hr_saved = '\u2500' * 43
-    print(f'  {DG}{D}  \u2500\u2500 saved {hr_saved}{R}  |  __HDR1__')
+    print(f'  {DG}{D}  \u2500\u2500 saved {hr_saved}{R}	__HDR1__')
     for rel, nm, msgs, tokens, tstr, cc, sid, tc, aw, cs, is_named in named:
         print(fmt_row('\u25cf', YL, nm[:W], GN, B, tc, rel, aw, msgs, cc, tstr, cs, sid))
 
 if unnamed:
-    print(f'  {DG}{D}  \u2500\u2500 recent {hr_short}{R}  |  __HDR2__')
+    print(f'  {DG}{D}  \u2500\u2500 recent {hr_short}{R}	__HDR2__')
     for rel, display, msgs, tokens, tstr, cc, sid, tc, aw, cs, is_named in unnamed:
         print(fmt_row('\u25cb', DG, display[:W], GR, I, tc, rel, aw, msgs, cc, tstr, cs, sid))

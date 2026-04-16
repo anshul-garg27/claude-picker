@@ -124,7 +124,7 @@ for proj_dir_name in sorted(os.listdir(projects_dir)):
         icon = f'{YL}\u25cf' if name else f'{DG}\u25cb'
         nc = GN if name else GR
         ns = B if name else I
-        print(f'  {icon}{R}  {ns}{nc}{display:<28s}{R} {MG}{proj_name:<12s}{R} {DG}{rel:>8s}{R} {DG}{msg_count:>3d}m{R}  |  {session_id}')
+        print(f'  {icon}{R}  {ns}{nc}{display:<28s}{R} {MG}{proj_name:<12s}{R} {DG}{rel:>8s}{R} {DG}{msg_count:>3d}m{R}  	{session_id}')
 ")
 
   if [ -z "$all_sessions" ]; then
@@ -136,7 +136,7 @@ for proj_dir_name in sorted(os.listdir(projects_dir)):
   selected_a=$(echo "$all_sessions" | fzf \
     --header=$'  \033[38;5;176m\033[1msession diff\033[0m  \033[38;5;242m│  pick FIRST session to compare\033[0m\n' \
     --header-first \
-    --delimiter="|" \
+    --delimiter="\t" \
     --with-nth=1 \
     --layout=reverse \
     --height=85% \
@@ -147,20 +147,20 @@ for proj_dir_name in sorted(os.listdir(projects_dir)):
     --pointer=" ▸" \
     --color="fg:249,fg+:114,bg+:-1,hl:222,hl+:222,pointer:176,prompt:114,header:176,border:238,gutter:-1" \
     --no-separator \
-    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
+    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'\t' '{print \$NF}' | xargs)" \
     --preview-window=right,45%,wrap,border-left \
     --ansi)
 
   if [ -z "$selected_a" ]; then
     exit 0
   fi
-  sid_a=$(echo "$selected_a" | awk -F'|' '{print $NF}' | xargs)
+  sid_a=$(echo "$selected_a" | awk -F'\t' '{print $NF}' | xargs)
 
   # Pick second session
   selected_b=$(echo "$all_sessions" | fzf \
     --header=$'  \033[38;5;176m\033[1msession diff\033[0m  \033[38;5;242m│  pick SECOND session to compare\033[0m\n' \
     --header-first \
-    --delimiter="|" \
+    --delimiter="\t" \
     --with-nth=1 \
     --layout=reverse \
     --height=85% \
@@ -171,14 +171,14 @@ for proj_dir_name in sorted(os.listdir(projects_dir)):
     --pointer=" ▸" \
     --color="fg:249,fg+:222,bg+:-1,hl:222,hl+:222,pointer:176,prompt:222,header:176,border:238,gutter:-1" \
     --no-separator \
-    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
+    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'\t' '{print \$NF}' | xargs)" \
     --preview-window=right,45%,wrap,border-left \
     --ansi)
 
   if [ -z "$selected_b" ]; then
     exit 0
   fi
-  sid_b=$(echo "$selected_b" | awk -F'|' '{print $NF}' | xargs)
+  sid_b=$(echo "$selected_b" | awk -F'\t' '{print $NF}' | xargs)
 
   python3 "$SCRIPT_DIR/lib/session-diff.py" "$sid_a" "$sid_b"
   exit 0
@@ -209,7 +209,7 @@ if [ "$1" = "--search" ] || [ "$1" = "-s" ]; then
   selected=$(echo "$search_results" | fzf \
     --header=$'  \033[38;5;176m\033[1msearch sessions\033[0m  \033[38;5;242m│  type to filter across all conversations\033[0m\n' \
     --header-first \
-    --delimiter="|" \
+    --delimiter="\t" \
     --with-nth=1 \
     --layout=reverse \
     --height=85% \
@@ -220,12 +220,12 @@ if [ "$1" = "--search" ] || [ "$1" = "-s" ]; then
     --pointer=" ▸" \
     --color="fg:249,fg+:114,bg+:-1,hl:222,hl+:222,pointer:176,prompt:176,header:176,border:238,gutter:-1" \
     --no-separator \
-    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
+    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'\t' '{print \$NF}' | xargs)" \
     --preview-window=right,45%,wrap,border-left \
     --ansi)
 
   if [ -n "$selected" ]; then
-    session_id=$(echo "$selected" | awk -F'|' '{print $NF}' | xargs)
+    session_id=$(echo "$selected" | awk -F'\t' '{print $NF}' | xargs)
     claude $CLAUDE_FLAGS --resume "$session_id"
   fi
   exit 0
@@ -361,7 +361,7 @@ for path, info in sorted(results.items(), key=lambda x: x[1]['last_mod'], revers
     except: pass
 
     branch_str = f' {MG}{branch:<10s}{R}' if branch else f' {DG}{\"\":<10s}{R}'
-    print(f'  {CY}{B}{name:<18s}{R}{branch_str} {DG}{rel:>8s}{R}  {DG}{count:>2d} sessions{R}  |  {path}')
+    print(f'  {CY}{B}{name:<18s}{R}{branch_str} {DG}{rel:>8s}{R}  {DG}{count:>2d} sessions{R}  	{path}')
 ")
 
 if [ -z "$dir_list" ]; then
@@ -390,7 +390,7 @@ print(f'{total_files} sessions  {sz}')
 selected_dir=$(echo "$dir_list" | fzf \
   --header="$(printf '  \033[38;5;176m\033[1mclaude-picker\033[0m  \033[38;5;242m%s\033[0m\n' "$disk_info")" \
   --header-first \
-  --delimiter="|" \
+  --delimiter="\t" \
   --with-nth=1 \
   --layout=reverse \
   --height=50% \
@@ -408,7 +408,7 @@ if [ -z "$selected_dir" ]; then
   exit 0
 fi
 
-selected_path=$(echo "$selected_dir" | awk -F'|' '{print $NF}' | xargs)
+selected_path=$(echo "$selected_dir" | awk -F'\t' '{print $NF}' | xargs)
 cd "$selected_path" || exit 1
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
@@ -437,11 +437,12 @@ if [ -z "$session_list" ]; then
 fi
 
 proj_name=$(basename "$PWD")
+session_header=$(printf "  \033[38;5;176m\033[1m%s\033[0m  \033[38;5;242menter=open  ctrl-b=pin  ctrl-e=export  ctrl-d=delete\033[0m" "$proj_name")
 
 selected=$(echo "$session_list" | fzf \
-  --header=$"  \033[38;5;176m\033[1m$proj_name\033[0m  \033[38;5;242m│  enter open  │  ctrl-b bookmark  │  ctrl-e export  │  ctrl-d delete  │  ctrl-c back\033[0m\n" \
+  --header="$session_header" \
   --header-first \
-  --delimiter="|" \
+  --delimiter="\t" \
   --with-nth=1 \
   --layout=reverse \
   --height=85% \
@@ -452,15 +453,15 @@ selected=$(echo "$session_list" | fzf \
   --pointer=" ▸" \
   --color="fg:249,fg+:114,bg+:-1,hl:222,hl+:222,pointer:176,prompt:117,header:176,border:238,gutter:-1" \
   --no-separator \
-  --preview="PROJECT_DIR='$PROJECT_DIR' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
+  --preview="PROJECT_DIR='$PROJECT_DIR' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'\t' '{print \$NF}' | xargs)" \
   --preview-window=right,45%,wrap,border-left \
-  --bind="ctrl-b:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR0__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__SEP__' ] && [ \"\$sid\" != '__INFO__' ] && python3 '$SCRIPT_DIR/lib/session-bookmarks.py' \"\$sid\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
-  --bind="ctrl-e:execute(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && path=\$(python3 '$SCRIPT_DIR/lib/session-export.py' \"\$sid\") && echo \"Exported to: \$path\")" \
-  --bind="ctrl-d:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && rm -f \"$PROJECT_DIR/\$sid.jsonl\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
+  --bind="ctrl-b:execute-silent(sid=\$(echo {} | awk -F'\t' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR0__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__SEP__' ] && [ \"\$sid\" != '__INFO__' ] && python3 '$SCRIPT_DIR/lib/session-bookmarks.py' \"\$sid\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
+  --bind="ctrl-e:execute(sid=\$(echo {} | awk -F'\t' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && path=\$(python3 '$SCRIPT_DIR/lib/session-export.py' \"\$sid\") && echo \"Exported to: \$path\")" \
+  --bind="ctrl-d:execute-silent(sid=\$(echo {} | awk -F'\t' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && rm -f \"$PROJECT_DIR/\$sid.jsonl\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
   --ansi)
 
 if [ -n "$selected" ]; then
-  session_id=$(echo "$selected" | awk -F'|' '{print $NF}' | xargs)
+  session_id=$(echo "$selected" | awk -F'\t' '{print $NF}' | xargs)
   case "$session_id" in
     __NEW__)
       if [ "$PIPE_MODE" = "1" ]; then
