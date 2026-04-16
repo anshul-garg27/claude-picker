@@ -1,8 +1,8 @@
 # diff.tape — claude-picker --diff two sessions side by side
-# Run: cd ~/Desktop/claude-picker && vhs tapes/diff.tape
+# Run: cd ~/Desktop/claude-picker && vhs scripts/tapes/diff.tape
 
-Output diff.gif
-Output diff.webm
+Output assets/gifs/diff.gif
+Output assets/videos/diff.webm
 
 Set Shell bash
 Set FontSize 14
@@ -14,7 +14,7 @@ Set TypingSpeed 45ms
 Set CursorBlink false
 
 Hide
-Type "alias claude-picker='bash ./demo-mode-diff.sh' ; clear"
+Type "alias claude-picker='bash ./scripts/demo-mode-diff.sh' ; clear"
 Enter
 Show
 

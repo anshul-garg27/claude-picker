@@ -1,8 +1,8 @@
 # export.tape — Ctrl+E to export a session to markdown
-# Run: cd ~/Desktop/claude-picker && vhs tapes/export.tape
+# Run: cd ~/Desktop/claude-picker && vhs scripts/tapes/export.tape
 
-Output export.gif
-Output export.webm
+Output assets/gifs/export.gif
+Output assets/videos/export.webm
 
 Set Shell bash
 Set FontSize 16
@@ -14,7 +14,7 @@ Set TypingSpeed 50ms
 Set CursorBlink false
 
 Hide
-Type "alias claude-picker='bash ./demo-mode.sh' ; clear"
+Type "alias claude-picker='bash ./scripts/demo-mode.sh' ; clear"
 Enter
 Show
 

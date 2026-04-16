@@ -1,8 +1,8 @@
 # stats.tape — claude-picker --stats dashboard
-# Run: cd ~/Desktop/claude-picker && vhs tapes/stats.tape
+# Run: cd ~/Desktop/claude-picker && vhs scripts/tapes/stats.tape
 
-Output stats.gif
-Output stats.webm
+Output assets/gifs/stats.gif
+Output assets/videos/stats.webm
 
 Set Shell bash
 Set FontSize 15
@@ -14,7 +14,7 @@ Set TypingSpeed 45ms
 Set CursorBlink false
 
 Hide
-Type "alias claude-picker='bash ./demo-mode-stats.sh' ; clear"
+Type "alias claude-picker='bash ./scripts/demo-mode-stats.sh' ; clear"
 Enter
 Show
 

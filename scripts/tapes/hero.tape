@@ -1,8 +1,8 @@
 # hero.tape — main claude-picker flow
-# Run: cd ~/Desktop/claude-picker && vhs tapes/hero.tape
+# Run: cd ~/Desktop/claude-picker && vhs scripts/tapes/hero.tape
 
-Output hero.gif
-Output hero.webm
+Output assets/gifs/hero.gif
+Output assets/videos/hero.webm
 
 Set Shell bash
 Set FontSize 16
@@ -14,7 +14,7 @@ Set TypingSpeed 50ms
 Set CursorBlink false
 
 Hide
-Type "alias claude-picker='bash ./demo-mode.sh' ; clear"
+Type "alias claude-picker='bash ./scripts/demo-mode.sh' ; clear"
 Enter
 Show
 

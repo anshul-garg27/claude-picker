@@ -1,11 +1,11 @@
 #!/bin/bash
-# Generate static PNG + SVG images of print-only claude-picker outputs.
+# Regenerate all freeze-based static mockup images.
 # Requires: freeze (brew install charmbracelet/tap/freeze)
 # Run from project root: bash assets/generate.sh
 
 set -e
 cd "$(dirname "$0")/.."
-mkdir -p assets
+mkdir -p assets/mockups
 
 common=(
   --theme "catppuccin-mocha"
@@ -17,42 +17,22 @@ common=(
   --shadow.y 8
 )
 
-echo "==> stats"
-freeze --execute "bash demo-mode-stats.sh" \
-  --output assets/stats.png --font.size 14 --width 1100 "${common[@]}"
-freeze --execute "bash demo-mode-stats.sh" \
-  --output assets/stats.svg --font.size 14 --width 1100 "${common[@]}"
+render() {
+  local script="$1" name="$2" fontsize="$3" width="$4"
+  echo "==> $name"
+  freeze --execute "bash $script" \
+    --output "assets/mockups/$name.png" --font.size "$fontsize" --width "$width" "${common[@]}"
+  freeze --execute "bash $script" \
+    --output "assets/mockups/$name.svg" --font.size "$fontsize" --width "$width" "${common[@]}"
+}
 
-echo "==> tree"
-freeze --execute "bash demo-mode-tree.sh" \
-  --output assets/tree.png --font.size 14 --width 1100 "${common[@]}"
-freeze --execute "bash demo-mode-tree.sh" \
-  --output assets/tree.svg --font.size 14 --width 1100 "${common[@]}"
-
-echo "==> diff"
-freeze --execute "bash demo-mode-diff.sh" \
-  --output assets/diff.png --font.size 13 --width 1300 "${common[@]}"
-freeze --execute "bash demo-mode-diff.sh" \
-  --output assets/diff.svg --font.size 13 --width 1300 "${common[@]}"
-
-echo "==> before (the problem — claude --resume output)"
-freeze --execute "bash demo-mockup-before.sh" \
-  --output assets/before.png --font.size 14 --width 1200 "${common[@]}"
-freeze --execute "bash demo-mockup-before.sh" \
-  --output assets/before.svg --font.size 14 --width 1200 "${common[@]}"
-
-echo "==> projects (static project picker)"
-freeze --execute "bash demo-mockup-projects.sh" \
-  --output assets/projects.png --font.size 14 --width 1200 "${common[@]}"
-freeze --execute "bash demo-mockup-projects.sh" \
-  --output assets/projects.svg --font.size 14 --width 1200 "${common[@]}"
-
-echo "==> sessions (static session picker with preview)"
-freeze --execute "bash demo-mockup-sessions.sh" \
-  --output assets/sessions.png --font.size 14 --width 1200 "${common[@]}"
-freeze --execute "bash demo-mockup-sessions.sh" \
-  --output assets/sessions.svg --font.size 14 --width 1200 "${common[@]}"
+render scripts/demo-mode-stats.sh    stats    14 1100
+render scripts/demo-mode-tree.sh     tree     14 1100
+render scripts/demo-mode-diff.sh     diff     13 1300
+render scripts/demo-mockup-before.sh before   14 1200
+render scripts/demo-mockup-projects.sh projects 14 1200
+render scripts/demo-mockup-sessions.sh sessions 14 1200
 
 echo ""
-echo "Done. Images written to assets/"
-ls -lh assets/*.png assets/*.svg
+echo "Done. Images written to assets/mockups/"
+ls -lh assets/mockups/

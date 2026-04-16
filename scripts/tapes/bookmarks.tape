@@ -1,8 +1,8 @@
 # bookmarks.tape — Ctrl+B to pin a session
-# Run: cd ~/Desktop/claude-picker && vhs tapes/bookmarks.tape
+# Run: cd ~/Desktop/claude-picker && vhs scripts/tapes/bookmarks.tape
 
-Output bookmarks.gif
-Output bookmarks.webm
+Output assets/gifs/bookmarks.gif
+Output assets/videos/bookmarks.webm
 
 Set Shell bash
 Set FontSize 16
@@ -14,7 +14,7 @@ Set TypingSpeed 50ms
 Set CursorBlink false
 
 Hide
-Type "alias claude-picker='bash ./demo-mode.sh' ; clear"
+Type "alias claude-picker='bash ./scripts/demo-mode.sh' ; clear"
 Enter
 Show
 

@@ -15,19 +15,19 @@
   </p>
 </p>
 
-![claude-picker demo](hero.gif)
+![claude-picker demo](assets/gifs/hero.gif)
 
 <details>
 <summary>More feature demos</summary>
 
 | Feature | Demo |
 |---------|------|
-| `--search` full-text across projects | ![](search.gif) |
-| `--stats` dashboard | ![](stats.gif) |
-| `--tree` with fork detection | ![](tree.gif) |
-| `--diff` two sessions side-by-side | ![](diff.gif) |
-| `Ctrl+B` bookmark | ![](bookmarks.gif) |
-| `Ctrl+E` export to markdown | ![](export.gif) |
+| `--search` full-text across projects | ![](assets/gifs/search.gif) |
+| `--stats` dashboard | ![](assets/gifs/stats.gif) |
+| `--tree` with fork detection | ![](assets/gifs/tree.gif) |
+| `--diff` two sessions side-by-side | ![](assets/gifs/diff.gif) |
+| `Ctrl+B` bookmark | ![](assets/gifs/bookmarks.gif) |
+| `Ctrl+E` export to markdown | ![](assets/gifs/export.gif) |
 
 </details>
 

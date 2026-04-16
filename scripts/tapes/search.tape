@@ -1,8 +1,8 @@
 # search.tape — claude-picker --search full-text across projects
-# Run: cd ~/Desktop/claude-picker && vhs tapes/search.tape
+# Run: cd ~/Desktop/claude-picker && vhs scripts/tapes/search.tape
 
-Output search.gif
-Output search.webm
+Output assets/gifs/search.gif
+Output assets/videos/search.webm
 
 Set Shell bash
 Set FontSize 16
@@ -14,7 +14,7 @@ Set TypingSpeed 50ms
 Set CursorBlink false
 
 Hide
-Type "alias claude-picker='bash ./demo-mode-search.sh' ; clear"
+Type "alias claude-picker='bash ./scripts/demo-mode-search.sh' ; clear"
 Enter
 Show
 
