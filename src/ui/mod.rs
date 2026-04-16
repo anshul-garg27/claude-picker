@@ -5,10 +5,14 @@
 //! purpose so swapping one out (e.g. reimplementing the preview to show the
 //! full transcript in a scroll pane) doesn't ripple through the others.
 
+pub mod diff;
 pub mod footer;
 pub mod layout;
 pub mod model_pill;
 pub mod picker;
 pub mod preview;
 pub mod project_list;
+pub mod search;
 pub mod session_list;
+pub mod stats;
+pub mod tree;
