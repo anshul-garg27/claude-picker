@@ -6,6 +6,188 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_FLAGS="${CLAUDE_PICKER_FLAGS:---dangerously-skip-permissions}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Stats mode: claude-picker --stats
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [ "$1" = "--stats" ]; then
+  python3 "$SCRIPT_DIR/lib/session-stats.py"
+  exit 0
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Tree mode: claude-picker --tree
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [ "$1" = "--tree" ] || [ "$1" = "-t" ]; then
+  python3 "$SCRIPT_DIR/lib/session-tree.py"
+  exit 0
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Diff mode: claude-picker --diff
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [ "$1" = "--diff" ] || [ "$1" = "-d" ]; then
+  # Collect all sessions across all projects for picking
+  all_sessions=$(python3 -c "
+import json, glob, os, time
+from datetime import datetime
+
+projects_dir = os.path.expanduser('~/.claude/projects')
+sessions_dir = os.path.expanduser('~/.claude/sessions')
+now = time.time()
+
+R  = '\033[0m';  B  = '\033[1m';  D  = '\033[2m';  I  = '\033[3m'
+CY = '\033[38;5;117m'; GN = '\033[38;5;114m'; YL = '\033[38;5;222m'
+MG = '\033[38;5;176m'; DG = '\033[38;5;242m'; GR = '\033[38;5;249m'
+
+def relative_time(ts):
+    diff = now - ts
+    if diff < 60: return 'just now'
+    elif diff < 3600: return f'{int(diff/60)}m ago'
+    elif diff < 86400: return f'{int(diff/3600)}h ago'
+    elif diff < 604800: return f'{int(diff/86400)}d ago'
+    else: return datetime.fromtimestamp(ts).strftime('%b %d')
+
+meta_by_sid = {}
+for mf in glob.glob(os.path.join(sessions_dir, '*.json')):
+    try:
+        data = json.load(open(mf))
+        sid = data.get('sessionId', '')
+        if sid: meta_by_sid[sid] = data
+    except: pass
+
+noise = ['<local-command', '<command-name>', '<bash-', '<system-reminder>', '[Request inter', '---', '<command-message>']
+
+for proj_dir_name in sorted(os.listdir(projects_dir)):
+    full_proj = os.path.join(projects_dir, proj_dir_name)
+    if not os.path.isdir(full_proj): continue
+
+    proj_name = None
+    for sid_key, meta in meta_by_sid.items():
+        cwd = meta.get('cwd', '')
+        if cwd and cwd.replace('/', '-').replace('_', '-') == proj_dir_name:
+            proj_name = os.path.basename(cwd); break
+    if not proj_name:
+        proj_name = proj_dir_name.split('-')[-1][:20]
+
+    for jf in sorted(glob.glob(os.path.join(full_proj, '*.jsonl')), key=os.path.getmtime, reverse=True):
+        session_id = os.path.basename(jf).replace('.jsonl', '')
+        mod_ts = os.path.getmtime(jf)
+        rel = relative_time(mod_ts)
+
+        is_claude = True
+        try:
+            for line in open(jf):
+                data = json.loads(line.strip())
+                ep = data.get('entrypoint', '')
+                if ep and ep not in ('cli', 'sdk-cli'):
+                    is_claude = False; break
+                if ep in ('cli', 'sdk-cli'): break
+        except: pass
+        if not is_claude: continue
+
+        name = None; auto_name = None; msg_count = 0
+        try:
+            for line in open(jf):
+                data = json.loads(line.strip())
+                if data.get('type') == 'custom-title' and data.get('customTitle'):
+                    name = data['customTitle'][:35]
+                if data.get('type') in ('user', 'assistant') and data.get('message', {}).get('role') in ('user', 'assistant'):
+                    msg_count += 1
+                    if not auto_name and data.get('type') == 'user':
+                        content = data['message'].get('content', '')
+                        text = ''
+                        if isinstance(content, str): text = content.strip()
+                        elif isinstance(content, list):
+                            for item in content:
+                                if isinstance(item, dict) and item.get('type') == 'text':
+                                    text = item['text'].strip(); break
+                        if text and len(text) > 3 and not any(n in text for n in noise):
+                            auto_name = text[:50].replace(chr(10), ' ').strip()
+        except: pass
+
+        if not name:
+            meta = meta_by_sid.get(session_id, {})
+            if meta.get('name'): name = meta['name'][:35]
+
+        if msg_count < 2: continue
+
+        display = name or (auto_name[:35] if auto_name else 'session')
+        icon = f'{YL}\u25cf' if name else f'{DG}\u25cb'
+        nc = GN if name else GR
+        ns = B if name else I
+        print(f'  {icon}{R}   {ns}{nc}{display:<35s}{R}  {MG}{proj_name:<15s}{R}  {DG}{rel:>9s}{R}  {DG}{msg_count:>3d} msgs{R}  |  {session_id}')
+")
+
+  if [ -z "$all_sessions" ]; then
+    echo "No sessions found to compare."
+    exit 0
+  fi
+
+  # Pick first session
+  selected_a=$(echo "$all_sessions" | fzf \
+    --header=$'  \033[38;5;176m\033[1msession diff\033[0m  \033[38;5;242m│  pick FIRST session to compare\033[0m\n' \
+    --header-first \
+    --delimiter="|" \
+    --with-nth=1 \
+    --layout=reverse \
+    --height=85% \
+    --border=rounded \
+    --margin=1,3 \
+    --padding=1,1 \
+    --prompt="  first > " \
+    --pointer=" ▸" \
+    --color="fg:249,fg+:114,bg+:-1,hl:222,hl+:222,pointer:176,prompt:114,header:176,border:238,gutter:-1" \
+    --no-separator \
+    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
+    --preview-window=right,45%,wrap,border-left \
+    --ansi)
+
+  if [ -z "$selected_a" ]; then
+    exit 0
+  fi
+  sid_a=$(echo "$selected_a" | awk -F'|' '{print $NF}' | xargs)
+
+  # Pick second session
+  selected_b=$(echo "$all_sessions" | fzf \
+    --header=$'  \033[38;5;176m\033[1msession diff\033[0m  \033[38;5;242m│  pick SECOND session to compare\033[0m\n' \
+    --header-first \
+    --delimiter="|" \
+    --with-nth=1 \
+    --layout=reverse \
+    --height=85% \
+    --border=rounded \
+    --margin=1,3 \
+    --padding=1,1 \
+    --prompt="  second > " \
+    --pointer=" ▸" \
+    --color="fg:249,fg+:222,bg+:-1,hl:222,hl+:222,pointer:176,prompt:222,header:176,border:238,gutter:-1" \
+    --no-separator \
+    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
+    --preview-window=right,45%,wrap,border-left \
+    --ansi)
+
+  if [ -z "$selected_b" ]; then
+    exit 0
+  fi
+  sid_b=$(echo "$selected_b" | awk -F'|' '{print $NF}' | xargs)
+
+  python3 "$SCRIPT_DIR/lib/session-diff.py" "$sid_a" "$sid_b"
+  exit 0
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Pipe mode flag
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+PIPE_MODE=0
+if [ "$1" = "--pipe" ] || [ "$1" = "-p" ]; then
+  PIPE_MODE=1
+  shift
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Search mode: claude-picker --search
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 
@@ -158,7 +340,7 @@ try:
 except: size_str = '?'
 
 total_sessions = sum(info['count'] for info in results.values())
-print(f'  {DG}{D}~/.claude  {total_sessions} sessions  {size_str}{R}  |  __INFO__')
+print(f'  {DG}{D}~/.claude  {DG}\u2502{D}  {total_sessions} sessions  {DG}\u2502{D}  {size_str}{R}  |  __INFO__')
 print()
 
 for path, info in sorted(results.items(), key=lambda x: x[1]['last_mod'], reverse=True):
@@ -230,7 +412,7 @@ fi
 proj_name=$(basename "$PWD")
 
 selected=$(echo "$session_list" | fzf \
-  --header=$"  \033[38;5;176m\033[1m$proj_name\033[0m  \033[38;5;242m│  enter open  │  ctrl-e export  │  ctrl-d delete  │  ctrl-c back\033[0m\n" \
+  --header=$"  \033[38;5;176m\033[1m$proj_name\033[0m  \033[38;5;242m│  enter open  │  ctrl-b bookmark  │  ctrl-e export  │  ctrl-d delete  │  ctrl-c back\033[0m\n" \
   --header-first \
   --delimiter="|" \
   --with-nth=1 \
@@ -245,6 +427,7 @@ selected=$(echo "$session_list" | fzf \
   --no-separator \
   --preview="PROJECT_DIR='$PROJECT_DIR' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
   --preview-window=right,45%,wrap,border-left \
+  --bind="ctrl-b:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && python3 '$SCRIPT_DIR/lib/session-bookmarks.py' \"\$sid\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
   --bind="ctrl-e:execute(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && path=\$(python3 '$SCRIPT_DIR/lib/session-export.py' \"\$sid\") && echo \"Exported to: \$path\")" \
   --bind="ctrl-d:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && rm -f \"$PROJECT_DIR/\$sid.jsonl\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
   --ansi)
@@ -252,8 +435,20 @@ selected=$(echo "$session_list" | fzf \
 if [ -n "$selected" ]; then
   session_id=$(echo "$selected" | awk -F'|' '{print $NF}' | xargs)
   case "$session_id" in
-    __NEW__) claude $CLAUDE_FLAGS ;;
+    __NEW__)
+      if [ "$PIPE_MODE" = "1" ]; then
+        echo "__NEW__"
+      else
+        claude $CLAUDE_FLAGS
+      fi
+      ;;
     __HDR1__|__HDR2__) exit 0 ;;
-    *) claude $CLAUDE_FLAGS --resume "$session_id" ;;
+    *)
+      if [ "$PIPE_MODE" = "1" ]; then
+        echo "$session_id"
+      else
+        claude $CLAUDE_FLAGS --resume "$session_id"
+      fi
+      ;;
   esac
 fi

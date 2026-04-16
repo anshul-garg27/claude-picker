@@ -44,6 +44,7 @@ messages = []
 name = None
 created = None
 msg_total = 0
+total_chars = 0
 
 for line in open(session_file):
     try:
@@ -61,6 +62,13 @@ for line in open(session_file):
 
         if msg_type in ('user', 'assistant') and data.get('message', {}).get('role') in ('user', 'assistant'):
             msg_total += 1
+            content_raw = data['message'].get('content', '')
+            if isinstance(content_raw, str):
+                total_chars += len(content_raw)
+            elif isinstance(content_raw, list):
+                for ci in content_raw:
+                    if isinstance(ci, dict) and ci.get('type') == 'text':
+                        total_chars += len(ci.get('text', ''))
 
         if msg_type == 'user' and data.get('message', {}).get('role') == 'user':
             content = data['message'].get('content', '')
@@ -103,13 +111,20 @@ else:
 print()
 
 # Meta
+token_est = max(1, total_chars // 4)
+if token_est >= 1000:
+    token_str = f'~{token_est // 1000}k'
+else:
+    token_str = f'~{token_est}'
+
 if created:
     print(f'  {DG}created  {GR}{created}{R}')
 print(f'  {DG}messages {GR}{msg_total}{R}')
+print(f'  {DG}tokens   {GR}{token_str}{R}')
 print()
 
-# Separator
-sep = '─' * 36
+# Horizontal rule between header and conversation
+sep = '\u2500' * 40
 print(f'  {DG}{D}{sep}{R}')
 print()
 
