@@ -1,6 +1,5 @@
 # hero.tape — main claude-picker flow
-# Project picker → session picker → preview → resume
-# Run: vhs tapes/hero.tape
+# Run: cd ~/Desktop/claude-picker && vhs tapes/hero.tape
 
 Output hero.gif
 Output hero.webm
@@ -14,13 +13,18 @@ Set Padding 30
 Set TypingSpeed 50ms
 Set CursorBlink false
 
+Hide
+Type "alias claude-picker='bash ./demo-mode.sh' ; clear"
+Enter
+Show
+
 Sleep 500ms
-Type "bash demo-mode.sh"
+Type "claude-picker"
 Sleep 800ms
 Enter
 Sleep 2500ms
 
-# Project picker — hover two options, then select architex
+# Project picker — hover options then select
 Sleep 500ms
 Down
 Sleep 400ms
@@ -29,7 +33,7 @@ Sleep 600ms
 Enter
 Sleep 2500ms
 
-# Session picker — browse down through named sessions
+# Session picker — browse sessions
 Sleep 500ms
 Down
 Sleep 300ms
@@ -44,12 +48,10 @@ Sleep 1500ms
 Down
 Sleep 1500ms
 
-# Back up to auth-refactor
 Up
 Sleep 400ms
 Up
 Sleep 1500ms
 
-# Resume
 Enter
 Sleep 2000ms

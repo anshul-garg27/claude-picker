@@ -15,8 +15,21 @@
   </p>
 </p>
 
-<!-- TODO: Replace with actual GIF after recording -->
-<!-- ![claude-picker demo](assets/demo.gif) -->
+![claude-picker demo](hero.gif)
+
+<details>
+<summary>More feature demos</summary>
+
+| Feature | Demo |
+|---------|------|
+| `--search` full-text across projects | ![](search.gif) |
+| `--stats` dashboard | ![](stats.gif) |
+| `--tree` with fork detection | ![](tree.gif) |
+| `--diff` two sessions side-by-side | ![](diff.gif) |
+| `Ctrl+B` bookmark | ![](bookmarks.gif) |
+| `Ctrl+E` export to markdown | ![](export.gif) |
+
+</details>
 
 ---
 

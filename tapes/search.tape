@@ -1,5 +1,5 @@
 # search.tape — claude-picker --search full-text across projects
-# Run: vhs tapes/search.tape
+# Run: cd ~/Desktop/claude-picker && vhs tapes/search.tape
 
 Output search.gif
 Output search.webm
@@ -13,18 +13,17 @@ Set Padding 30
 Set TypingSpeed 50ms
 Set CursorBlink false
 
+Hide
+Type "alias claude-picker='bash ./demo-mode-search.sh' ; clear"
+Enter
+Show
+
 Sleep 500ms
 Type "claude-picker --search"
 Sleep 600ms
 Enter
-Sleep 300ms
-Type@0 "bash demo-mode-search.sh"
-Hide
-Enter
-Show
 Sleep 2500ms
 
-# Browse results
 Down
 Sleep 700ms
 Down
@@ -38,6 +37,5 @@ Sleep 400ms
 Up
 Sleep 1000ms
 
-# Select first result (auth-refactor in architex)
 Enter
 Sleep 2000ms

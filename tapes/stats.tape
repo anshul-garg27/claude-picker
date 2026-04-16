@@ -1,5 +1,5 @@
 # stats.tape — claude-picker --stats dashboard
-# Run: vhs tapes/stats.tape
+# Run: cd ~/Desktop/claude-picker && vhs tapes/stats.tape
 
 Output stats.gif
 Output stats.webm
@@ -13,13 +13,13 @@ Set Padding 30
 Set TypingSpeed 45ms
 Set CursorBlink false
 
+Hide
+Type "alias claude-picker='bash ./demo-mode-stats.sh' ; clear"
+Enter
+Show
+
 Sleep 500ms
 Type "claude-picker --stats"
 Sleep 600ms
 Enter
-Sleep 300ms
-Type@0 "bash demo-mode-stats.sh"
-Hide
-Enter
-Show
-Sleep 4000ms
+Sleep 5000ms

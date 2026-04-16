@@ -1,5 +1,5 @@
 # tree.tape — claude-picker --tree with fork detection
-# Run: vhs tapes/tree.tape
+# Run: cd ~/Desktop/claude-picker && vhs tapes/tree.tape
 
 Output tree.gif
 Output tree.webm
@@ -13,13 +13,13 @@ Set Padding 30
 Set TypingSpeed 45ms
 Set CursorBlink false
 
+Hide
+Type "alias claude-picker='bash ./demo-mode-tree.sh' ; clear"
+Enter
+Show
+
 Sleep 500ms
 Type "claude-picker --tree"
 Sleep 600ms
 Enter
-Sleep 300ms
-Type@0 "bash demo-mode-tree.sh"
-Hide
-Enter
-Show
-Sleep 4500ms
+Sleep 5500ms
