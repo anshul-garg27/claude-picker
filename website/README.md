@@ -10,23 +10,35 @@ no framework. Edit, reload, ship.
 ```
 website/
 ├── index.html            main page
-├── style.css             custom CSS (Catppuccin Mocha)
-├── script.js             copy-button + smooth-scroll (~1.8 kB)
+├── style.css             custom CSS (Catppuccin Mocha, self-hosted Geist)
+├── script.js             picker-sim + cmd+k palette + scroll reveal + GH stats
 ├── vercel.json           headers + cache control for Vercel
 ├── netlify.toml          headers + cache control for Netlify
 ├── robots.txt            allow all + sitemap
 ├── sitemap.xml           single URL
 ├── CNAME                 empty — fill in for GitHub Pages custom domain
 └── assets/
-    ├── favicon.svg       SVG favicon (modern browsers)
+    ├── fonts/            self-hosted Geist + Geist Mono (.woff2, ~170KB)
+    ├── favicon.svg       SVG favicon (modern browsers) — 4-dot mark
     ├── favicon.ico       multi-size .ico (16, 32, 48, 64)
     ├── logo.svg          wordmark + mark
-    ├── mark.svg          glyph only (used in nav/footer)
-    ├── og-image.png      1200x630 social preview
-    ├── og-image.svg      source file for the OG image
-    ├── gifs/hero.gif     hero demo (copied from ../assets/)
-    └── mockups/          sessions, stats, before (copied from ../assets/)
+    ├── mark.svg          4-dot mark (used in nav/footer)
+    ├── og-image.png      1280x640 social preview
+    ├── og-image.svg      source file for the OG image (legacy)
+    ├── gifs/hero.gif     hero demo (used as no-JS fallback)
+    └── mockups/          sessions, stats, before
 ```
+
+## Interactive features
+
+Everything works without JS (progressive enhancement). With JS, you also get:
+
+- **Interactive picker** — hero centerpiece. Arrow keys, Enter to resume, type to fuzzy-filter, Escape to clear. Each session has a unique preview.
+- **Command palette** — `⌘K` or `/` opens. Filters sections, opens external links.
+- **Leader-key nav** — `g g` top, `g i` install, `g c` commands, `g f` features, `g h` GitHub.
+- **Live GitHub stats** — stars, forks, issues, last-commit age. Cached 10 min in `sessionStorage`.
+- **Scroll-reveal animations** — respects `prefers-reduced-motion`.
+- **Animated star count-up** when the GitHub stats section scrolls into view.
 
 Every image referenced by `index.html` lives inside `website/assets/`, so the
 site is fully self-contained and drag-and-drop deployable.
@@ -122,8 +134,30 @@ claude-picker.dev
   cp ../assets/mockups/{sessions,stats,before}.png assets/mockups/
   ```
 
+## Updating fonts
+
+Fonts are self-hosted to eliminate the Google Fonts network hop. They live in
+`assets/fonts/` as `.woff2` (Latin subsets, ~28 KB each). To refresh:
+
+```bash
+cd website/assets/fonts
+curl -sS -o Geist-Regular.woff2  https://cdn.jsdelivr.net/npm/geist@1.4.2/dist/fonts/geist-sans/Geist-Regular.woff2
+curl -sS -o Geist-Medium.woff2   https://cdn.jsdelivr.net/npm/geist@1.4.2/dist/fonts/geist-sans/Geist-Medium.woff2
+curl -sS -o Geist-SemiBold.woff2 https://cdn.jsdelivr.net/npm/geist@1.4.2/dist/fonts/geist-sans/Geist-SemiBold.woff2
+curl -sS -o Geist-Bold.woff2     https://cdn.jsdelivr.net/npm/geist@1.4.2/dist/fonts/geist-sans/Geist-Bold.woff2
+curl -sS -o GeistMono-Regular.woff2 https://cdn.jsdelivr.net/npm/geist@1.4.2/dist/fonts/geist-mono/GeistMono-Regular.woff2
+curl -sS -o GeistMono-Medium.woff2  https://cdn.jsdelivr.net/npm/geist@1.4.2/dist/fonts/geist-mono/GeistMono-Medium.woff2
+```
+
+## Performance
+
+At launch: desktop Lighthouse 100/100/100 (a11y/best-practices/SEO). LCP ~56 ms.
+CLS 0.00. Total initial download ~200 KB.
+
 ## What's deliberately missing
 
 - No analytics. No cookies. No popups. No newsletter form.
 - No React / Vue / Svelte / Astro / Tailwind build.
 - No dark/light toggle — dark only, by design.
+- No external CDN at runtime (fonts self-hosted). Only the GitHub API fetch
+  goes off-site, and it degrades gracefully.

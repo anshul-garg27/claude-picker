@@ -20,8 +20,8 @@
 <meta property="og:title" content="claude-picker — Terminal session manager for Claude Code">
 <meta property="og:description" content="Browse projects, preview conversations, track token cost per session, and resume with one keystroke. A fzf-powered picker for your Claude Code sessions.">
 <meta property="og:image" content="https://claude-picker.dev/assets/og-image.png">
-<meta property="og:image:width" content="1200">
-<meta property="og:image:height" content="630">
+<meta property="og:image:width" content="1774">
+<meta property="og:image:height" content="887">
 <meta property="og:site_name" content="claude-picker">
 
 <!-- Twitter -->
@@ -31,14 +31,13 @@
 <meta name="twitter:image" content="https://claude-picker.dev/assets/og-image.png">
 <meta name="twitter:creator" content="@anshul_garg27">
 
-<!-- Fonts: preconnect + preload critical weights -->
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link rel="preload" as="style" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
-<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500;600&display=swap">
+<!-- Fonts: self-hosted, preload critical body weight -->
+<link rel="preload" href="assets/fonts/Geist-Regular.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/Geist-Medium.woff2" as="font" type="font/woff2" crossorigin>
+<link rel="preload" href="assets/fonts/GeistMono-Regular.woff2" as="font" type="font/woff2" crossorigin>
 
-<!-- Hero image preload (LCP candidate) -->
-<link rel="preload" as="image" href="assets/gifs/hero.gif" fetchpriority="high">
+<!-- Hero image preload (LCP candidate — for no-JS fallback) -->
+<link rel="preload" as="image" href="assets/gifs/hero.gif">
 
 <link rel="stylesheet" href="style.css">
 
@@ -59,6 +58,10 @@
   "author": { "@type": "Person", "name": "Anshul Garg", "url": "https://github.com/anshul-garg27" }
 }
 </script>
+
+<!-- JS detection: sets .js class for progressive enhancement -->
+<script>document.documentElement.classList.add('js');</script>
+<style>.js .no-js-only { display: none; } html:not(.js) .js-only { display: none; }</style>
 </head>
 
 <body>
@@ -72,8 +75,13 @@
     </a>
     <nav class="nav-links" aria-label="Primary navigation">
       <a href="#features" class="hide-mob">Features</a>
+      <a href="#compare" class="hide-mob">Compare</a>
       <a href="#commands" class="hide-mob">Commands</a>
       <a href="#install">Install</a>
+      <button class="cmdk-hint js-only" id="cmdk-hint" type="button" title="Open command palette (Cmd+K)">
+        <kbd aria-hidden="true">⌘K</kbd>
+        <span class="sr-only">Open command palette</span>
+      </button>
       <a href="https://github.com/anshul-garg27/claude-picker" class="gh" rel="noopener" target="_blank" aria-label="View on GitHub (opens in new tab)">
         <svg width="15" height="15" viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8a8 8 0 0 0-8-8"/></svg>
         GitHub
@@ -87,17 +95,17 @@
 <!-- =================== Hero =================== -->
 <section class="hero" aria-labelledby="hero-title">
   <div class="wrap">
-    <span class="eyebrow">v1.0 · MIT · open-source</span>
-    <h1 id="hero-title">
+    <span class="eyebrow reveal">v1.0 · MIT · open-source</span>
+    <h1 id="hero-title" class="reveal">
       Your Claude Code<br>
-      <span class="accent">sessions, found.</span>
+      <span class="accent">sessions, found.</span><span class="cursor js-only" aria-hidden="true">_</span>
     </h1>
-    <p class="hero-sub">
+    <p class="hero-sub reveal">
       Browse projects, preview conversations, track token cost per session, and
       resume with one keystroke — a fzf-powered picker for your Claude Code sessions.
     </p>
 
-    <div class="hero-ctas">
+    <div class="hero-ctas reveal">
       <a href="#install" class="btn btn-primary">
         Install now
         <svg width="14" height="14" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 6l4 4 4-4"/></svg>
@@ -108,54 +116,131 @@
       </a>
     </div>
 
-    <div class="hero-badges" aria-label="Highlights">
+    <div class="hero-badges reveal" aria-label="Highlights">
       <span class="badge">MIT</span>
       <span class="badge">~800 lines</span>
       <span class="badge">bash + python + fzf</span>
       <span class="badge">Works in any terminal</span>
     </div>
 
-    <div class="hero-demo" aria-label="claude-picker demo">
+    <!-- Interactive picker (JS-only, falls back to GIF without JS) -->
+    <div class="picker-sim js-only reveal" id="picker-sim" tabindex="0"
+         role="application" aria-label="Interactive claude-picker demo. Use arrow keys to navigate, Enter to resume, type to filter.">
       <div class="terminal-bar" aria-hidden="true">
         <span class="tb-dot r"></span><span class="tb-dot y"></span><span class="tb-dot g"></span>
         <span class="tb-title">~ claude-picker</span>
       </div>
-      <img src="assets/gifs/hero.gif"
-           alt="Animated demo showing claude-picker in action: a two-step fzf picker with projects on top and sessions below with token counts and costs."
-           width="1400" height="800"
-           fetchpriority="high"
-           decoding="async">
+      <div class="picker-search" aria-hidden="true">
+        <span class="ps-prompt">&gt;</span>
+        <span class="ps-query" id="ps-query"><span class="ps-placeholder">type to filter…</span></span>
+        <span class="ps-count" id="ps-count">6 / 6</span>
+        <span class="ps-cursor"></span>
+      </div>
+      <div class="picker-body">
+        <ul class="picker-list" id="picker-list" role="listbox" aria-label="Sessions">
+          <li class="picker-row is-selected" role="option" aria-selected="true" data-idx="0" data-name="auth-refactor">
+            <span class="pr-arrow" aria-hidden="true">▸</span>
+            <span class="pr-name">auth-refactor</span>
+            <span class="pr-meta"><span class="cost">$0.41</span><span class="model">sonnet</span><span>2h ago</span></span>
+          </li>
+          <li class="picker-row" role="option" aria-selected="false" data-idx="1" data-name="fix-race-condition">
+            <span class="pr-arrow" aria-hidden="true">▸</span>
+            <span class="pr-name">fix-race-condition</span>
+            <span class="pr-meta"><span class="cost">$1.24</span><span class="model">opus</span><span>3h ago</span></span>
+          </li>
+          <li class="picker-row" role="option" aria-selected="false" data-idx="2" data-name="drizzle-migration">
+            <span class="pr-arrow" aria-hidden="true">▸</span>
+            <span class="pr-name">drizzle-migration</span>
+            <span class="pr-meta"><span class="cost">$0.18</span><span class="model">haiku</span><span>yesterday</span></span>
+          </li>
+          <li class="picker-row" role="option" aria-selected="false" data-idx="3" data-name="mcp-postgres-setup">
+            <span class="pr-arrow" aria-hidden="true">▸</span>
+            <span class="pr-name">mcp-postgres-setup</span>
+            <span class="pr-meta"><span class="cost">$0.62</span><span class="model">sonnet</span><span>yesterday</span></span>
+          </li>
+          <li class="picker-row" role="option" aria-selected="false" data-idx="4" data-name="fix-payment-webhook">
+            <span class="pr-arrow" aria-hidden="true">▸</span>
+            <span class="pr-name">fix-payment-webhook</span>
+            <span class="pr-meta"><span class="cost">$2.07</span><span class="model">opus</span><span>2 days</span></span>
+          </li>
+          <li class="picker-row" role="option" aria-selected="false" data-idx="5" data-name="session-tree-feature">
+            <span class="pr-arrow" aria-hidden="true">▸</span>
+            <span class="pr-name">session-tree-feature</span>
+            <span class="pr-meta"><span class="cost">$0.53</span><span class="model">sonnet</span><span>3 days</span></span>
+          </li>
+        </ul>
+        <aside class="picker-preview" id="picker-preview" aria-live="polite" aria-atomic="true">
+          <div class="pp-head">
+            <span>Preview</span>
+            <span class="pp-id" id="pp-id">4a2e8f1c</span>
+          </div>
+          <div class="pp-title" id="pp-title">auth-refactor</div>
+          <pre class="pp-body" id="pp-body"><span class="user">user</span> <span class="muted">→</span> Move session auth from cookies to signed JWTs.
+            Keep backwards compat with existing sessions for 30d.
+
+<span class="asst">claude</span> <span class="muted">→</span> I'll split this into three steps:
+  1. Add a new /auth/jwt route that accepts the old cookie
+  2. Migrate session middleware to read both
+  3. Expire cookie-only sessions after 30d…</pre>
+          <div class="pp-stats">
+            <span><span class="k">msgs</span>&nbsp;42</span>
+            <span><span class="k">tokens</span>&nbsp;18.2k</span>
+            <span><span class="k">model</span>&nbsp;sonnet</span>
+            <span><span class="k">cost</span>&nbsp;$0.41</span>
+          </div>
+        </aside>
+      </div>
+      <div class="picker-foot" aria-hidden="true">
+        <span><kbd>↑</kbd><kbd>↓</kbd>navigate</span>
+        <span><kbd>Enter</kbd>resume</span>
+        <span><kbd>a-z</kbd>filter</span>
+        <span><kbd>Esc</kbd>reset</span>
+      </div>
     </div>
+
+    <!-- GIF fallback for no-JS -->
+    <noscript>
+      <div class="hero-demo">
+        <div class="terminal-bar">
+          <span class="tb-dot r"></span><span class="tb-dot y"></span><span class="tb-dot g"></span>
+          <span class="tb-title">~ claude-picker</span>
+        </div>
+        <img src="assets/gifs/hero.gif"
+             alt="Animated demo showing claude-picker in action: a two-step fzf picker with projects on top and sessions below with token counts and costs."
+             width="1400" height="800"
+             decoding="async">
+      </div>
+    </noscript>
   </div>
 </section>
 
 <!-- =================== The Problem =================== -->
 <section id="problem" aria-labelledby="problem-title">
   <div class="wrap">
-    <span class="eyebrow">The problem</span>
-    <h2 id="problem-title" class="section-title">Claude Code saves every session. Finding them is the hard part.</h2>
-    <p class="section-sub">
+    <span class="eyebrow reveal">The problem</span>
+    <h2 id="problem-title" class="section-title reveal">Claude Code saves every session. Finding them is the hard part.</h2>
+    <p class="section-sub reveal">
       Native <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">claude --resume</code> shows a wall of UUIDs with no names, no previews, and no costs.
     </p>
 
     <div class="problem-grid">
-      <article class="compare-card">
+      <article class="compare-card reveal">
         <div class="head">
           <span>claude --resume</span>
           <span class="tag bad">no claude-picker</span>
         </div>
 <pre><span class="q">?</span> Pick a conversation to resume
-  <span class="uuid">4a2e8f1c-9b3d-4e7a-...</span> <span class="muted">(2 hours ago)</span>
-  <span class="uuid">b7c9d2e0-1f4a-8b6c-...</span> <span class="muted">(3 hours ago)</span>
-  <span class="uuid">e5f8a3b1-7c2d-9e0f-...</span> <span class="muted">(yesterday)</span>
-  <span class="uuid">9c1d4e7f-a3b8-2c5d-...</span> <span class="muted">(2 days ago)</span>
-  <span class="uuid">1f8e3a7b-5c9d-4a2e-...</span> <span class="muted">(last week)</span>
-  <span class="uuid">3b5d8f2a-e7c1-9d4f-...</span> <span class="muted">(last week)</span>
-  <span class="muted">...</span></pre>
+  <span class="uuid">4a2e8f1c-9b3d-4e7a-…</span> <span class="muted">(2 hours ago)</span>
+  <span class="uuid">b7c9d2e0-1f4a-8b6c-…</span> <span class="muted">(3 hours ago)</span>
+  <span class="uuid">e5f8a3b1-7c2d-9e0f-…</span> <span class="muted">(yesterday)</span>
+  <span class="uuid">9c1d4e7f-a3b8-2c5d-…</span> <span class="muted">(2 days ago)</span>
+  <span class="uuid">1f8e3a7b-5c9d-4a2e-…</span> <span class="muted">(last week)</span>
+  <span class="uuid">3b5d8f2a-e7c1-9d4f-…</span> <span class="muted">(last week)</span>
+  <span class="muted">…</span></pre>
         <div class="caption">UUIDs. No project context. No cost. No preview.</div>
       </article>
 
-      <article class="compare-card">
+      <article class="compare-card reveal">
         <div class="head">
           <span>claude-picker</span>
           <span class="tag good">with claude-picker</span>
@@ -173,86 +258,157 @@
 <!-- =================== Features =================== -->
 <section id="features" aria-labelledby="features-title">
   <div class="wrap">
-    <span class="eyebrow">Features</span>
-    <h2 id="features-title" class="section-title">Everything the native picker should do.</h2>
-    <p class="section-sub">Eight small tools that compose. One keystroke each.</p>
+    <span class="eyebrow reveal">Features</span>
+    <h2 id="features-title" class="section-title reveal">Everything the native picker should do.</h2>
+    <p class="section-sub reveal">Eight small tools that compose. One keystroke each.</p>
 
     <div class="features">
-      <!-- 1 fuzzy picker -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="10.5" cy="10.5" r="6.5"/><path d="M20 20l-4.8-4.8"/></svg>
         <h3>Fuzzy picker</h3>
         <p>Two-step fzf flow: project, then session. Type any fragment to filter. Rich-formatted preview panel on the right.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
 
-      <!-- 2 cost tracking -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M12 2v20"/><path d="M17 6H9.5a3.5 3.5 0 0 0 0 7h5a3.5 3.5 0 0 1 0 7H6"/></svg>
         <h3>Cost tracking</h3>
         <p>Per-session token estimate, priced per model. Opus, Sonnet, and Haiku each tallied separately. No guessing, no surprises.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
 
-      <!-- 3 stats dashboard -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M3 20V10M10 20V4M17 20v-7"/><path d="M3 20h18"/></svg>
         <h3>Stats dashboard</h3>
         <p><code style="font-family:var(--font-mono);color:var(--ctp-yellow);">--stats</code> shows tokens, cost, per-project breakdown, activity timeline, and your top sessions.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
 
-      <!-- 4 session tree -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="6" cy="6" r="2.2"/><circle cx="6" cy="18" r="2.2"/><circle cx="18" cy="12" r="2.2"/><path d="M6 8.2v7.6"/><path d="M8.2 6h3.3a4.5 4.5 0 0 1 4.5 4.5v.5"/><path d="M8.2 18h3.3a4.5 4.5 0 0 0 4.5-4.5v-.5"/></svg>
         <h3>Session tree</h3>
         <p><code style="font-family:var(--font-mono);color:var(--ctp-yellow);">--tree</code> groups sessions by project and detects fork relationships from <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">/branch</code>.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
 
-      <!-- 5 full-text search -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M4 5h16"/><path d="M4 12h16"/><path d="M4 19h10"/><rect x="15.5" y="15.5" width="6" height="6" rx="1" stroke-dasharray="1 2"/></svg>
         <h3>Full-text search</h3>
         <p><code style="font-family:var(--font-mono);color:var(--ctp-yellow);">--search</code> greps every message across every project. "That kubernetes convo last week" — found in 40ms.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
 
-      <!-- 6 diff sessions -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8 3v18"/><path d="M16 3v18"/><path d="M4 7h8"/><path d="M12 17h8"/></svg>
         <h3>Diff two sessions</h3>
         <p><code style="font-family:var(--font-mono);color:var(--ctp-yellow);">--diff</code> picks two sessions and compares topics side-by-side. Common themes, unique threads, snippets of both.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
 
-      <!-- 7 bookmarks -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h12v18l-6-4-6 4z"/></svg>
         <h3>Bookmarks</h3>
         <p><kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+B</kbd> pins a session to the top with a blue marker. Stays there until you unbookmark it.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
 
-      <!-- 8 markdown export -->
-      <article class="feature">
+      <article class="feature reveal">
         <svg class="feature-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M14 3H6a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2V9z"/><path d="M14 3v6h6"/><path d="M9 14l2 2 4-4"/></svg>
         <h3>Markdown export</h3>
         <p><kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+E</kbd> exports any session to clean markdown — drop it in a Git repo, paste it into a doc, or post it to a blog.</p>
-        <span class="arrow" aria-hidden="true">-&gt;</span>
+        <span class="arrow" aria-hidden="true">→</span>
       </article>
     </div>
+  </div>
+</section>
+
+<!-- =================== Comparison Table =================== -->
+<section id="compare" aria-labelledby="compare-title">
+  <div class="wrap">
+    <span class="eyebrow reveal">How it compares</span>
+    <h2 id="compare-title" class="section-title reveal">Small, local, and script-friendly.</h2>
+    <p class="section-sub reveal">Others in the space solve adjacent problems. Here's the honest delta.</p>
+
+    <div class="cmp-wrap reveal">
+      <table class="cmp-table">
+        <thead>
+          <tr>
+            <th scope="col">Feature</th>
+            <th scope="col" class="ours">claude-picker</th>
+            <th scope="col">claude-history</th>
+            <th scope="col">Claude Squad</th>
+          </tr>
+        </thead>
+        <tbody>
+          <tr>
+            <td class="feat-name">Per-session cost tracking</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+          </tr>
+          <tr>
+            <td class="feat-name">Full-text search across all projects</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="partial">partial</span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+          </tr>
+          <tr>
+            <td class="feat-name">Session tree with fork detection</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+          </tr>
+          <tr>
+            <td class="feat-name">Side-by-side session diff</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+          </tr>
+          <tr>
+            <td class="feat-name">Terminal bookmarks</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+          </tr>
+          <tr>
+            <td class="feat-name">Markdown export</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+            <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
+          </tr>
+          <tr>
+            <td class="feat-name">Compiled binary</td>
+            <td class="ours val">bash + python</td>
+            <td class="val">Rust</td>
+            <td class="val">Go</td>
+          </tr>
+          <tr>
+            <td class="feat-name">Lines of code</td>
+            <td class="ours val">~800</td>
+            <td class="val">~3,000</td>
+            <td class="val">~5,000+</td>
+          </tr>
+          <tr>
+            <td class="feat-name">MIT licensed</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+          </tr>
+        </tbody>
+      </table>
+    </div>
+    <p class="cmp-note reveal">claude-picker isn't a binary. It's a handful of bash and python you can read in an afternoon.</p>
   </div>
 </section>
 
 <!-- =================== Stats showcase =================== -->
 <section id="stats" aria-labelledby="stats-title">
   <div class="wrap">
-    <span class="eyebrow">--stats</span>
-    <h2 id="stats-title" class="section-title">Real token usage. Priced per model.</h2>
-    <p class="section-sub">No guessing. Every message tallied against Anthropic's public pricing. Your actual spend, in your terminal.</p>
+    <span class="eyebrow reveal">--stats</span>
+    <h2 id="stats-title" class="section-title reveal">Real token usage. Priced per model.</h2>
+    <p class="section-sub reveal">No guessing. Every message tallied against Anthropic's public pricing. Your actual spend, in your terminal.</p>
 
-    <div class="stats-card">
+    <div class="stats-card reveal">
       <div class="terminal-bar" aria-hidden="true">
         <span class="tb-dot r"></span><span class="tb-dot y"></span><span class="tb-dot g"></span>
         <span class="tb-title">claude-picker --stats</span>
@@ -263,7 +419,7 @@
            loading="lazy" decoding="async">
     </div>
 
-    <div class="stats-callouts" aria-label="Pricing used per model">
+    <div class="stats-callouts reveal" aria-label="Pricing used per model">
       <span><span class="k">Opus</span>&nbsp;&nbsp;$15 input / $75 output</span>
       <span><span class="k">Sonnet</span>&nbsp;&nbsp;$3 input / $15 output</span>
       <span><span class="k">Haiku</span>&nbsp;&nbsp;$0.80 input / $4 output</span>
@@ -272,14 +428,54 @@
   </div>
 </section>
 
+<!-- =================== GitHub stats bar =================== -->
+<section id="gh" aria-labelledby="gh-title">
+  <div class="wrap">
+    <span class="eyebrow reveal">On GitHub</span>
+    <h2 id="gh-title" class="section-title reveal">Open source, in the open.</h2>
+    <p class="section-sub reveal">Built in public. Issues welcome. PRs even more so.</p>
+
+    <div class="gh-stats reveal" id="gh-stats" aria-label="GitHub repository stats">
+      <div class="gh-stat">
+        <span class="gh-stat-label">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 .25a.75.75 0 0 1 .673.418l1.882 3.815 4.21.612a.75.75 0 0 1 .416 1.279l-3.046 2.97.719 4.192a.75.75 0 0 1-1.088.791L8 12.347l-3.766 1.98a.75.75 0 0 1-1.088-.79l.72-4.194L.818 6.374a.75.75 0 0 1 .416-1.28l4.21-.611L7.327.668A.75.75 0 0 1 8 .25z"/></svg>
+          Stars
+        </span>
+        <span class="gh-stat-value loading" id="gh-stars" data-countup>—</span>
+      </div>
+      <div class="gh-stat">
+        <span class="gh-stat-label">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M5 5.372v.878c0 .414.336.75.75.75h4.5a.75.75 0 0 0 .75-.75v-.878a2.25 2.25 0 1 1 1.5 0v.878a2.25 2.25 0 0 1-2.25 2.25h-1.5v2.128a2.251 2.251 0 1 1-1.5 0V8.5h-1.5A2.25 2.25 0 0 1 3.5 6.25v-.878a2.25 2.25 0 1 1 1.5 0zM5 3.25a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0zm6.75.75a.75.75 0 1 0 0-1.5.75.75 0 0 0 0 1.5zm-3 8.75a.75.75 0 1 0-1.5 0 .75.75 0 0 0 1.5 0z"/></svg>
+          Forks
+        </span>
+        <span class="gh-stat-value loading" id="gh-forks">—</span>
+      </div>
+      <div class="gh-stat">
+        <span class="gh-stat-label">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M8 9.5a1.5 1.5 0 1 0 0-3 1.5 1.5 0 0 0 0 3z"/><path d="M8 0a8 8 0 1 1 0 16A8 8 0 0 1 8 0zm0 1.5a6.5 6.5 0 1 0 0 13 6.5 6.5 0 0 0 0-13z"/></svg>
+          Issues
+        </span>
+        <span class="gh-stat-value loading" id="gh-issues">—</span>
+      </div>
+      <div class="gh-stat">
+        <span class="gh-stat-label">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path d="M11.93 8.5a4.002 4.002 0 0 1-7.86 0H.75a.75.75 0 0 1 0-1.5h3.32a4.002 4.002 0 0 1 7.86 0h3.32a.75.75 0 0 1 0 1.5zM8 10a2 2 0 1 0-.001-4.001A2 2 0 0 0 8 10z"/></svg>
+          Last commit
+        </span>
+        <span class="gh-stat-value loading" id="gh-commit">—</span>
+      </div>
+    </div>
+  </div>
+</section>
+
 <!-- =================== Install =================== -->
 <section id="install" aria-labelledby="install-title">
   <div class="wrap">
-    <span class="eyebrow">Install</span>
-    <h2 id="install-title" class="section-title">One line. No build step.</h2>
-    <p class="section-sub">Clones into <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">~/.claude-picker</code>, symlinks to <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">~/.local/bin</code>, adds a <kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+P</kbd> keybinding, detects Warp.</p>
+    <span class="eyebrow reveal">Install</span>
+    <h2 id="install-title" class="section-title reveal">One line. No build step.</h2>
+    <p class="section-sub reveal">Clones into <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">~/.claude-picker</code>, symlinks to <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">~/.local/bin</code>, adds a <kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+P</kbd> keybinding, detects Warp.</p>
 
-    <div class="install-block" role="group" aria-labelledby="install-title">
+    <div class="install-block reveal" role="group" aria-labelledby="install-title">
       <div class="terminal-bar" aria-hidden="true">
         <span class="tb-dot r"></span><span class="tb-dot y"></span><span class="tb-dot g"></span>
         <span class="tb-title">bash</span>
@@ -294,7 +490,7 @@
       </div>
     </div>
 
-    <div class="install-meta">
+    <div class="install-meta reveal">
       <span>Requires: fzf 0.58+ <span class="dot">·</span> python3 + rich <span class="dot">·</span> bash</span>
       <span>Works in any terminal. Warp gets a + menu entry. Installer adds Ctrl+P keybinding.</span>
     </div>
@@ -304,11 +500,11 @@
 <!-- =================== Commands reference =================== -->
 <section id="commands" aria-labelledby="commands-title">
   <div class="wrap">
-    <span class="eyebrow">Commands</span>
-    <h2 id="commands-title" class="section-title">Six commands. That's the whole API.</h2>
-    <p class="section-sub">Each one does exactly one thing. Pipe the output into whatever you want.</p>
+    <span class="eyebrow reveal">Commands</span>
+    <h2 id="commands-title" class="section-title reveal">Six commands. That's the whole API.</h2>
+    <p class="section-sub reveal">Each one does exactly one thing. Pipe the output into whatever you want.</p>
 
-    <div class="commands-block">
+    <div class="commands-block reveal">
       <div class="terminal-bar" aria-hidden="true">
         <span class="tb-dot r"></span><span class="tb-dot y"></span><span class="tb-dot g"></span>
         <span class="tb-title">claude-picker --help</span>
@@ -326,12 +522,12 @@
 <!-- =================== Keyboard shortcuts =================== -->
 <section id="shortcuts" aria-labelledby="shortcuts-title">
   <div class="wrap">
-    <span class="eyebrow">Keybindings</span>
-    <h2 id="shortcuts-title" class="section-title">Every shortcut. Muscle-memory friendly.</h2>
-    <p class="section-sub">Bindings work inside the picker. <kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+P</kbd> launches it from anywhere in your shell.</p>
+    <span class="eyebrow reveal">Keybindings</span>
+    <h2 id="shortcuts-title" class="section-title reveal">Every shortcut. Muscle-memory friendly.</h2>
+    <p class="section-sub reveal">Bindings work inside the picker. <kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+P</kbd> launches it from anywhere in your shell.</p>
 
     <div class="kb-grid">
-      <article class="kb-card">
+      <article class="kb-card reveal">
         <div class="kb-keys" aria-label="Control plus B">
           <span class="kb-key">Ctrl</span>
           <span class="kb-plus">+</span>
@@ -341,7 +537,7 @@
         <p>Pin a session to the top. Blue marker. Sticks around.</p>
       </article>
 
-      <article class="kb-card">
+      <article class="kb-card reveal">
         <div class="kb-keys" aria-label="Control plus E">
           <span class="kb-key">Ctrl</span>
           <span class="kb-plus">+</span>
@@ -351,7 +547,7 @@
         <p>Saves clean markdown to <code style="font-family:var(--font-mono);">~/Desktop/claude-exports/</code>.</p>
       </article>
 
-      <article class="kb-card">
+      <article class="kb-card reveal">
         <div class="kb-keys" aria-label="Control plus D">
           <span class="kb-key">Ctrl</span>
           <span class="kb-plus">+</span>
@@ -361,7 +557,7 @@
         <p>Removes the session file. Asks once. Never twice.</p>
       </article>
 
-      <article class="kb-card">
+      <article class="kb-card reveal">
         <div class="kb-keys" aria-label="Control plus P">
           <span class="kb-key">Ctrl</span>
           <span class="kb-plus">+</span>
@@ -377,10 +573,10 @@
 <!-- =================== Philosophy =================== -->
 <section class="philo" aria-labelledby="philo-title">
   <div class="wrap philo-inner">
-    <span class="eyebrow" id="philo-title">Why it's small</span>
-    <p class="lede">~800 lines. No compiled binary. No build step. No dependency you don't already have.</p>
-    <p>Read the whole source in ten minutes. Modify it. Pipe it into anything.</p>
-    <p>This is how Unix tools should work.</p>
+    <span class="eyebrow reveal" id="philo-title">Why it's small</span>
+    <p class="lede reveal">~800 lines. No compiled binary. No build step. No dependency you don't already have.</p>
+    <p class="reveal">Read the whole source in ten minutes. Modify it. Pipe it into anything.</p>
+    <p class="reveal">This is how Unix tools should work.</p>
   </div>
 </section>
 
@@ -388,34 +584,90 @@
 
 <!-- =================== Footer =================== -->
 <footer class="site-footer" role="contentinfo">
-  <div class="wrap footer-grid">
-    <div class="footer-left">
-      <a class="brand" href="#top" aria-label="claude-picker home">
-        <img class="brand-mark" src="assets/mark.svg" alt="" width="18" height="18" decoding="async" style="width:18px;height:18px;">
-        <span class="brand-name" style="font-size:13px;">claude-picker</span>
-      </a>
-      <span class="sep">·</span>
-      <span>MIT</span>
-      <span class="sep">·</span>
-      <span>© Anshul Garg</span>
+  <div class="wrap">
+    <div class="footer-grid">
+      <div class="footer-col footer-brand">
+        <a class="brand" href="#top" aria-label="claude-picker home">
+          <img class="brand-mark" src="assets/mark.svg" alt="" width="20" height="20" decoding="async">
+          <span class="brand-name">claude-picker</span>
+        </a>
+        <p>A fzf-powered picker for your Claude Code sessions. Small, local, and script-friendly.</p>
+      </div>
+
+      <div class="footer-col">
+        <h4>Product</h4>
+        <ul>
+          <li><a href="#features">Features</a></li>
+          <li><a href="#compare">Compare</a></li>
+          <li><a href="#commands">Commands</a></li>
+          <li><a href="#install">Install</a></li>
+          <li><a href="https://github.com/anshul-garg27/claude-picker/releases" rel="noopener" target="_blank">Changelog <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3L6.5 9.5"/><path d="M11 10v3H3V5h3"/></svg></a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Resources</h4>
+        <ul>
+          <li><a href="https://github.com/anshul-garg27/claude-picker" rel="noopener" target="_blank">GitHub <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3L6.5 9.5"/><path d="M11 10v3H3V5h3"/></svg></a></li>
+          <li><a href="https://github.com/anshul-garg27/claude-picker#readme" rel="noopener" target="_blank">Documentation <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3L6.5 9.5"/><path d="M11 10v3H3V5h3"/></svg></a></li>
+          <li><a href="https://medium.com/@anshul-garg27" rel="noopener" target="_blank">Medium article <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3L6.5 9.5"/><path d="M11 10v3H3V5h3"/></svg></a></li>
+          <li><a href="https://dev.to/anshul_garg27" rel="noopener" target="_blank">Dev.to article <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3L6.5 9.5"/><path d="M11 10v3H3V5h3"/></svg></a></li>
+        </ul>
+      </div>
+
+      <div class="footer-col">
+        <h4>Connect</h4>
+        <ul>
+          <li><a href="https://x.com/anshul_garg27" rel="noopener" target="_blank">Twitter / X <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3L6.5 9.5"/><path d="M11 10v3H3V5h3"/></svg></a></li>
+          <li><a href="https://github.com/anshul-garg27" rel="noopener" target="_blank">GitHub profile <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 3h7v7"/><path d="M13 3L6.5 9.5"/><path d="M11 10v3H3V5h3"/></svg></a></li>
+          <li><a href="mailto:anshul.garg27@gmail.com">Email</a></li>
+        </ul>
+      </div>
     </div>
-    <nav class="footer-center" aria-label="Footer">
-      <a href="#features">Features</a>
-      <a href="#install">Install</a>
-      <a href="https://github.com/anshul-garg27/claude-picker" rel="noopener" target="_blank">GitHub</a>
-      <a href="https://medium.com/@anshul-garg27" rel="noopener" target="_blank">Medium</a>
-      <a href="https://dev.to/anshul_garg27" rel="noopener" target="_blank">Dev.to</a>
-    </nav>
-    <div class="footer-right">
-      <a href="https://github.com/anshul-garg27/claude-picker" rel="noopener" target="_blank" aria-label="GitHub">
-        <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8a8 8 0 0 0-8-8"/></svg>
-      </a>
-      <a href="https://x.com/anshul_garg27" rel="noopener" target="_blank" aria-label="Twitter / X">
-        <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
-      </a>
+
+    <div class="footer-bottom">
+      <div class="meta">
+        <span>© 2026 Anshul Garg</span>
+        <span class="sep">·</span>
+        <span>MIT License</span>
+        <span class="sep">·</span>
+        <span class="joke">Built with fzf, python, bash, and too much caffeine.</span>
+      </div>
+      <div class="footer-social">
+        <a href="https://github.com/anshul-garg27/claude-picker" rel="noopener" target="_blank" aria-label="GitHub">
+          <svg viewBox="0 0 16 16" fill="currentColor" aria-hidden="true"><path fill-rule="evenodd" d="M8 0a8 8 0 0 0-2.53 15.59c.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.13 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.11.16 1.93.08 2.13.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.01 8.01 0 0 0 16 8a8 8 0 0 0-8-8"/></svg>
+        </a>
+        <a href="https://x.com/anshul_garg27" rel="noopener" target="_blank" aria-label="Twitter / X">
+          <svg viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"/></svg>
+        </a>
+      </div>
     </div>
   </div>
 </footer>
+
+<!-- =================== Command palette =================== -->
+<div class="cmdk-overlay js-only" id="cmdk-overlay" data-open="false" role="dialog" aria-modal="true" aria-labelledby="cmdk-label" hidden>
+  <div class="cmdk" role="document">
+    <div class="cmdk-search">
+      <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><circle cx="7" cy="7" r="5"/><path d="M14 14l-3.5-3.5"/></svg>
+      <input id="cmdk-input" type="text"
+             placeholder="Type to search sections, commands…"
+             autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+             aria-label="Search" aria-controls="cmdk-list">
+      <kbd aria-hidden="true">Esc</kbd>
+    </div>
+    <ul class="cmdk-list" id="cmdk-list" role="listbox" aria-label="Commands"></ul>
+    <div class="cmdk-foot" aria-hidden="true">
+      <span><kbd>↑↓</kbd>navigate</span>
+      <span><kbd>↵</kbd>select</span>
+      <span><kbd>esc</kbd>close</span>
+    </div>
+    <span id="cmdk-label" class="sr-only">Command palette</span>
+  </div>
+</div>
+
+<!-- =================== Keyboard toast =================== -->
+<div class="kb-toast" id="kb-toast" role="status" aria-live="polite"></div>
 
 <script src="script.js" defer></script>
 </body>

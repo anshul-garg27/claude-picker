@@ -1,18 +1,19 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  claude-picker — favicon (16×16 optimized).
-  Simplified single-shape variant: just the chevron, thickened and centered in a square.
-  Rationale: at 16px the pill collapses to a fuzzy 2px bar. The chevron alone remains
-  crisp and still carries the core brand gesture (> is the picker cursor). This is the
-  brand's shorthand — same pattern as Google → G or GitHub → octocat-silhouette.
-  Color: Catppuccin Mauve #CBA6F7. Square viewBox 32×32. Chevron 20u wide × 24u tall, centered.
+  claude-picker — favicon, pixel-crisp at 16x16.
+  Same 4-dot geometry as logo.svg, tuned for micro rendering.
+  Uses the full 16-unit viewBox so each dot aligns to integer pixels at 16x16:
+    - Rounded squares: 6x6, radius 1.5, at (1,1), (9,1), (1,9)
+    - Circle: cx=12, cy=12, r=2.5 (diameter 5px — one pixel smaller than a square
+      so the shape difference reads even at 16x16)
+    - Gap between dots: 2 units (2px at 16x16)
+    - 1-unit margin around the grid footprint
+
+  Color: #CBA6F7 on transparent. Place against dark or light as needed.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="#CBA6F7">
-  <!--
-    Thick chevron ">" centered in 32×32.
-    Outer-top-left (6,4) → tip (26,16) → outer-bottom-left (6,28)
-      → inner-bottom (6,22) → inner-notch (15,16) → inner-top (6,10) → close.
-    Band thickness 6u at the outer corners → crisp at 16×16.
-  -->
-  <path d="M 6 4 L 26 16 L 6 28 L 6 22 L 15 16 L 6 10 Z"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 16 16" fill="#CBA6F7">
+  <rect x="1" y="1" width="6" height="6" rx="1.5" ry="1.5"/>
+  <rect x="9" y="1" width="6" height="6" rx="1.5" ry="1.5"/>
+  <rect x="1" y="9" width="6" height="6" rx="1.5" ry="1.5"/>
+  <circle cx="12" cy="12" r="2.5"/>
 </svg>

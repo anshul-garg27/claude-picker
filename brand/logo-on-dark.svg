@@ -1,21 +1,29 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  claude-picker — primary mark on dark background (square tile).
-  Square 64×64 canvas, background #1E1E2E (Catppuccin base), mark #CBA6F7 (mauve).
-  Mark is centered with 1× glyph-height clearspace on all sides (scaled to fit).
-  Use for: GitHub social preview, OG image tile, profile avatar on dark.
+  claude-picker — primary mark on dark tile.
+  128x128 canvas: #1E1E2E background, 4-dot mark centered with 1x-dot clearspace.
+  Use for: GitHub profile avatar, OG image base, dark social preview tile.
+
+  The mark occupies a 64x64 region centered on a 128x128 canvas.
+  Grid cell size inside that inner region is identical to logo.svg — rect 24,
+  circle r=10 — preserving every proportion.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64">
-  <!-- Dark tile -->
-  <rect width="64" height="64" fill="#1E1E2E"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 128 128">
+  <!-- Dark Catppuccin Base tile -->
+  <rect width="128" height="128" fill="#1E1E2E"/>
   <!--
-    Mark placed inside the tile.
-    Original mark bbox is 52 × 40. Scale factor 0.75 → 39 × 30. Centered.
-    Offset: x = (64 - 39) / 2 = 12.5, y = (64 - 30) / 2 = 17.
-    Rewritten at actual coordinates for clarity (no transform).
+    Mark centered. Inner grid footprint 52x52, offset (38, 38) so that
+    the grid center lands at (64, 64).
+    Cell top-left corners:
+      top-left     (38, 38)
+      top-right    (66, 38)
+      bottom-left  (38, 66)
+      bottom-right (66, 66) - circle center (78, 78), r 10
   -->
-  <!-- Chevron path: scaled ×0.75, translated by (12.5, 17). Bezier-free. -->
-  <path fill="#CBA6F7" d="M 12.5 17 L 29 32 L 12.5 47 L 12.5 38.75 L 20.75 32 L 12.5 25.25 Z"/>
-  <!-- Pill: scaled ×0.75 from (28,15,24,10,r5) → (33.5,28.25,18,7.5,r3.75), then translated. -->
-  <rect fill="#CBA6F7" x="33.5" y="28.25" width="18" height="7.5" rx="3.75" ry="3.75"/>
+  <g fill="#CBA6F7">
+    <rect x="38" y="38" width="24" height="24" rx="6" ry="6"/>
+    <rect x="66" y="38" width="24" height="24" rx="6" ry="6"/>
+    <rect x="38" y="66" width="24" height="24" rx="6" ry="6"/>
+    <circle cx="78" cy="78" r="10"/>
+  </g>
 </svg>

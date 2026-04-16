@@ -1,10 +1,12 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
-  claude-picker — monochrome mark for light backgrounds / print / single-ink contexts.
-  Same geometry as logo.svg but filled with Catppuccin base #1E1E2E.
-  Use for: light-theme docs, print, single-color screen-printing, rubber stamps.
+  claude-picker — monochrome mark for light backgrounds / print / single-ink.
+  Same geometry as logo.svg but filled with Catppuccin Base #1E1E2E.
+  Use for: light-theme docs, print, single-color silkscreen, rubber stamps.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 40" fill="#1E1E2E">
-  <path d="M 0 0 L 22 20 L 0 40 L 0 29 L 11 20 L 0 11 Z"/>
-  <rect x="28" y="15" width="24" height="10" rx="5" ry="5"/>
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 64 64" fill="#1E1E2E">
+  <rect x="6"  y="6"  width="24" height="24" rx="6" ry="6"/>
+  <rect x="34" y="6"  width="24" height="24" rx="6" ry="6"/>
+  <rect x="6"  y="34" width="24" height="24" rx="6" ry="6"/>
+  <circle cx="46" cy="46" r="10"/>
 </svg>

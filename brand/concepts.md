@@ -1,6 +1,6 @@
-# claude-picker — Logo Concepts & Recommendation
+# claude-picker — Logo Concepts & Final Pick
 
-> Research, three concepts, and the final pick. All marks are monochrome, geometric, and built to survive at 16×16.
+> Research, three concepts, the honest story of how we got here, and why the 4-dot mark won.
 
 ---
 
@@ -18,13 +18,15 @@ I studied the leading marks in this space to understand the shared visual langua
 | **Starship** | Rocket chevron `>_` riff | The prompt symbol is the logo |
 | **bat** | Bat silhouette (emoji-adjacent) | Name puns can work if the shape is clean |
 | **lazygit / lazydocker** | Text wordmark, no mark | Tiny projects often skip the mark entirely |
+| **Notion** | Bracketed block grid `[::]` | A UI primitive can itself be the logo — the product is "blocks", the mark is a block |
+| **Arc Browser** | Minimal square + asymmetric dot | Abstract spatial composition, single color |
 
 ### Patterns I noted
 
 1. **Monochromatic.** 9 of 10 are one color on one bg. No gradients.
 2. **Geometric.** Straight lines, simple curves, primitive shapes.
 3. **One idea.** Every successful mark encodes exactly one concept.
-4. **Prompt-native.** Starship and many terminal tools borrow `>`, `_`, `$`, `❯` — the shell's own alphabet is free visual vocabulary.
+4. **Prompt-native OR UI-primitive.** Tools borrow either the shell's alphabet (`>`, `_`, `$`) OR the product's own UI primitive (Notion's block, Arc's canvas square).
 5. **No trademarked borrowing.** None of them riff on a parent-company mark (no fake OpenAI, no fake Anthropic). Doing so looks cheap and is legally shaky.
 
 ---
@@ -34,121 +36,119 @@ I studied the leading marks in this space to understand the shared visual langua
 - **Product essence:** A fuzzy picker over your Claude Code session history. You hit `Ctrl+P`, a list appears, you preview and resume.
 - **Brand associations:** terminal, picking/selecting, sessions, fast, native, Unix.
 - **Color:** Catppuccin Mauve `#CBA6F7` on base `#1E1E2E`.
-- **Must survive at 16×16** (favicon).
+- **Must survive at 16 x 16** (favicon).
 
 ---
 
-## Concept A — "cp" monogram (dropped)
+## Concept 1 — "Q + arrow" (retired)
 
-```
- ╭───╮
- │ c │ p
- ╰───╯
-```
+A stylised `Q` with an arrow descender, suggesting "query → result".
 
-Two letters, the `c` as a 270° open arc, the `p` as a filled descender. Clean enough, but:
-- Every tool with a two-word name uses a monogram.
-- Doesn't say anything about what the product DOES.
-- Risks looking like "copy-paste" because `cp` is already a Unix command.
+### Why it was tried
+Matched the hand-drawn feel of early CLI logos. Felt friendly.
 
-**Verdict:** Rejected. The existing Unix `cp` meaning is a liability, not an asset.
+### Why it's retired
+- The `Q` doesn't encode the product. It's just a letter. The arrow is a cliche.
+- At 16 x 16 the arrow collapses into a messy tail.
+- It looks like ten other "AI search" marks. Nothing about it says "session picker over your Claude Code history".
+- Most importantly: **the AI-generated LinkedIn / Product Hunt / Instagram slides don't use it**. Gemini produced them with the 4-dot mark. If we kept Q+arrow we'd have to regenerate every social asset.
 
----
-
-## Concept B — "picker bracket + cursor" (dropped)
-
-A magnifying-glass circle fused with a `>` chevron handle.
-
-```svg
-<!-- sketch -->
-<circle cx="24" cy="24" r="14" fill="none" stroke="#CBA6F7" stroke-width="4"/>
-<path d="M34 34 L44 44" stroke="#CBA6F7" stroke-width="4" stroke-linecap="round"/>
-<path d="M18 18 L26 24 L18 30" stroke="#CBA6F7" stroke-width="4" fill="none"/>
-```
-
-Tells the "find/pick" story. But:
-- Needs strokes to read, making it fussy at 16px.
-- Magnifying glasses are the most overused dev-tool icon.
-- Too close to Spotlight, Raycast, every search bar ever.
-
-**Verdict:** Rejected. Not distinctive enough.
+**Verdict:** Retired. Generic, doesn't encode purpose, and creates brand drift vs. the social material already in circulation.
 
 ---
 
-## Concept C — "stacked conversation" (dropped)
+## Concept 2 — "The Picker Caret" (chevron + pill)
 
-Three horizontal pills of varying widths, stacked with offsets — a session list.
+A filled right-pointing chevron next to a rounded pill — the fzf cursor landing on a selected row.
 
 ```
- ▮▮▮▮▮▮▮▮▮▮▮▮▮▮   ← selected (full width, filled)
-  ▮▮▮▮▮▮▮▮▮▮       ← unselected
-  ▮▮▮▮▮▮▮▮▮▮▮▮     ← unselected
+ >  ▄▄▄▄▄▄▄▄▄▄▄
+ >  █          █
+ >  ▀▀▀▀▀▀▀▀▀▀▀
 ```
 
-Great metaphor for the UI. But three pills at 16px collapse into a blurry block. And the mark reads as "text lines" more than "picker", pushing it toward generic "document" iconography.
+### Why it was designed first
+- `>` is the Unix shell's native selection glyph.
+- Two primitives, one line: cursor + selected row. Literal translation of the product gesture.
+- Scales cleanly. The chevron survives at 16 x 16.
+- Distinctive — no CLI tool owns "caret + row" silhouette.
 
-**Verdict:** Rejected on the 16px test.
+This concept was built out first and shipped as the original `logo.svg`, `logo-on-dark.svg`, `favicon.svg`, and wordmark lockup.
+
+### Why it's now secondary
+While building the social material, Gemini produced LinkedIn carousel slides, a Product Hunt thumbnail, and Instagram stories using a **4-dot grid** in place of a generic "logo glyph" placeholder. The slides were visually excellent and already public in our materials pipeline. We had two choices:
+
+1. Force the chevron mark back in, regenerate every slide, lose the gen-AI quality we liked.
+2. Adopt the 4-dot as canonical and retire the chevron to a secondary role.
+
+We chose option 2 because:
+
+- **Brand equity was already forming around the 4-dot mark** through the social carousel. Users who saw the LinkedIn post and then land on the site should see the same mark.
+- **The 4-dot encodes the product literally.** "A picker showing 4 items, with the cursor on one." You can't get more on-brief.
+- **The chevron still has a lane** — merch, interior branding, CLI-native surfaces. Keeping it as `logo-alt-chevron.svg` preserves the work without creating identity confusion.
+
+**Verdict:** Demoted to alternate / secondary mark. See `brand.md` § Alternate mark.
 
 ---
 
-## Concept D — Claude monogram riff
+## Concept 3 — RECOMMENDED: "The 4-Dot Picker"
 
-Explicitly listed in the brief as risky. Confirmed: no.
-
----
-
-## Concept E — RECOMMENDED: "The Picker Caret"
-
-A single composite glyph that reads simultaneously as:
-
-1. The **`>` chevron** — every Unix shell prompt, every fzf row cursor.
-2. The **horizontal line** to its right — the "selected session" row in fzf.
-3. A **caret selecting a line** — the exact gesture of the product.
-
-### Construction (on a 64×64 grid)
+A 2 x 2 grid of four dots: three rounded squares + one circle (bottom-right).
 
 ```
-     ┌─────────────────────────────┐
-     │                             │
-     │    ▲                        │
-     │   ╱ ╲                       │
-     │  ╱   ╲      ▄▄▄▄▄▄▄▄▄▄▄     │
-     │ ╱     ╲     █          █    │
-     │╱       ╲    ▀▀▀▀▀▀▀▀▀▀▀     │
-     │╲       ╱                    │
-     │ ╲     ╱                     │
-     │  ╲   ╱                      │
-     │   ╲ ╱                       │
-     │    ▼                        │
-     │                             │
-     └─────────────────────────────┘
+    ▢ ▢
+    ▢ ●
 ```
 
-- Left: a solid filled chevron `>` pointing right (the picker cursor).
-- Right: a horizontal pill (the selected session line).
-- Negative space between them is the visual "click point" — where the user's attention lives.
+### The reading
 
-### Geometry
+Every element has a meaning:
 
-- Chevron: isoceles triangle pointing right, 20×28 units, positioned top-left with stroke thickness `~6u` expressed as a filled polygon (no stroke — all fills).
-- Pill: rounded rectangle, width 28u, height 8u, radius 4u, vertically centered on the chevron's point.
-- Gap between chevron tip and pill: 6u — a deliberate negative-space column.
+- Each of the four dots = a session row in the picker.
+- The three rounded squares = unselected sessions.
+- The one circle in the bottom-right = the currently selected session. The cursor.
+
+The **shape difference** between square and circle does the work a highlight color would do in a real UI. The logo stays monochromatic and still communicates "one is selected".
+
+### Geometry (viewBox 64 x 64)
+
+| Element | Position | Size |
+|---------|----------|------|
+| Top-left square | (6, 6) | 24 x 24, r=6 |
+| Top-right square | (34, 6) | 24 x 24, r=6 |
+| Bottom-left square | (6, 34) | 24 x 24, r=6 |
+| Bottom-right circle | center (46, 46) | r=10 |
+| Gap between dots | 4u | |
+| Edge clearspace | 6u | |
+
+The circle is 20u in diameter vs. 24u for the squares — deliberately smaller so the difference reads. If they were the same size, the circle would feel like a rotated square. At 20/24 ratio, the circle reads as a distinct shape.
 
 ### Why this wins
 
-- **One shape.** A chevron + a bar. Two primitives, one idea.
-- **Semantically loaded.** Every developer reads `>` as "prompt / select / enter".
-- **Scales.** At 16px, the chevron survives and the pill remains a horizontal bar. The favicon variant just thickens the pill.
-- **Distinctive.** I looked — no major CLI tool owns this exact mark. Starship uses `>_` but with an underscore. Raycast uses an R. We'd own the "caret + row" silhouette.
-- **Matches product.** When a user hits `Ctrl+P` and sees fzf's `>` cursor move down a session list, the logo is a literal freeze-frame of that moment.
-- **Monochrome-friendly.** Pure fills, single color, no strokes, no gradients. Renders identically in every context.
+- **Matches the product literally.** The logo is a freeze-frame of the picker view.
+- **Brand continuity.** Same silhouette as the AI-generated LinkedIn / PH / IG assets already published.
+- **Monochrome-friendly.** Four shapes, one fill, no strokes, no gradients.
+- **Survives at 16 x 16.** All four dots remain distinguishable (tested by rendering `favicon.svg` at native 16px — the circle is 5px diameter, the squares are 6 x 6px with 1.5px corners; the contrast is clear).
+- **Distinct in the category.** No dev-tool mark I surveyed uses a 2 x 2 UI-grid. Notion's brackets come closest but read as brackets, not dots.
+- **Scales up beautifully.** At 512px the rounded corners (6u = ~48px at 512-scale) feel soft without being cartoonish.
 
-### Favicon simplification
+### Minimum-size behavior
 
-At 16×16, drop internal padding and thicken both shapes by ~20%. The chevron becomes a solid right-pointing triangle; the pill becomes a 2-unit-thick bar. Still one shape, still one idea.
+At 16 x 16 the dots are close to touching but remain distinct. The favicon variant tightens internal spacing (2px gaps, 1-unit outer margin) so the grid uses every pixel. No special simplification — same concept, same count.
 
 ---
 
 ## Final decision
 
-**Concept E — The Picker Caret.** Proceeding to build `logo.svg`, `logo-on-dark.svg`, `logo-mono.svg`, `wordmark.svg`, and `favicon.svg`.
+**Concept 3 — The 4-Dot Picker.** Shipped as:
+
+- `logo.svg` — primary mauve mark (64 x 64 viewBox)
+- `logo-on-dark.svg` — 128 x 128 dark tile
+- `logo-mono.svg` — dark mono on light
+- `wordmark.svg` — glyph + `claude-picker` in JetBrains Mono Bold
+- `favicon.svg` — pixel-aligned 16 x 16 viewBox variant
+- `logo-alt-chevron.svg` — preserved secondary mark
+
+PNGs at 16 / 32 / 64 / 128 / 240 / 256 / 512 px in `brand/exports/`.
+
+Q + arrow is retired. The Picker Caret chevron is kept as a secondary motif with a defined lane and is not interchangeable with the primary mark.

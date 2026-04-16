@@ -1,27 +1,41 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!--
   claude-picker — horizontal wordmark lockup.
-  Glyph (left) + "claude-picker" wordmark (right), set in JetBrains Mono Bold.
-  Glyph height 40u. Wordmark cap height ≈ 40u → font-size 44 (JetBrains Mono cap ≈ 0.73em).
-  Gap between glyph and wordmark ≈ 0.5× glyph width (13u).
+  4-dot glyph (left) + "claude-picker" wordmark (right).
+  Typeface: JetBrains Mono Bold. Cap height aligned to glyph height.
 
-  TEXT NOTE:
-  Uses <text> with font-family fallback chain. For distribution / embedded artifacts where
-  the font may not be available, outline the text before export (see brand.md §export).
+  Geometry:
+    - Glyph: 64 x 64, identical to logo.svg
+    - Gap: 32u (0.5 x glyph width)
+    - Font-size 68u chosen so JetBrains Mono Bold cap height (~0.73em
+      at bold weight) visually matches the 48u inner-square height of
+      the glyph (glyph's two rows of squares span y=6..58, effective
+      50u optical height). Text baseline y=54.
+    - Wordmark width at 68u font-size, monospace ~0.60em char width,
+      13 chars ('claude-picker'): ~530u. viewBox width 680 leaves room
+      for fallback fonts that are slightly wider than JetBrains Mono.
 
-  viewBox: 470 × 40 → glyph 52 + gap 13 + wordmark ~405. Right edge trimmed to the
-  last visible glyph of the wordmark so the lockup has no dead space.
+  TEXT NOTE (tradeoff):
+    Keeping the wordmark as <text> so the repo stays small and the
+    source stays human-editable. Downstream consumers that cannot embed
+    JetBrains Mono must outline the text before export (see brand.md
+    §Export). An outlined variant is NOT committed here to avoid font
+    licensing confusion.
+
+  Color: #CBA6F7 (mauve). Single fill.
 -->
-<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 470 40" fill="#CBA6F7">
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 680 64" fill="#CBA6F7">
   <!-- Glyph — identical to logo.svg -->
-  <path d="M 0 0 L 22 20 L 0 40 L 0 29 L 11 20 L 0 11 Z"/>
-  <rect x="28" y="15" width="24" height="10" rx="5" ry="5"/>
+  <rect x="6"  y="6"  width="24" height="24" rx="6" ry="6"/>
+  <rect x="34" y="6"  width="24" height="24" rx="6" ry="6"/>
+  <rect x="6"  y="34" width="24" height="24" rx="6" ry="6"/>
+  <circle cx="46" cy="46" r="10"/>
 
-  <!-- Wordmark -->
-  <text x="65" y="33"
+  <!-- Wordmark. x = 64 (glyph width) + 32 (gap) = 96. -->
+  <text x="96" y="54"
         font-family="'JetBrains Mono', 'Fira Code', ui-monospace, Menlo, Consolas, monospace"
         font-weight="700"
-        font-size="44"
+        font-size="68"
         letter-spacing="-1"
         fill="#CBA6F7">claude-picker</text>
 </svg>
