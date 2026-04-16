@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  claude-picker — primary mark "The Picker Caret"
+  A filled right-pointing chevron (>) next to a rounded pill (the selected row).
+  Concept: the fzf picker cursor landing on a selected session line.
+  Color: Catppuccin Mauve #CBA6F7. Single color. No strokes. No gradients.
+  viewBox matches the mark's bounding box (52 × 40). No internal padding.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 40" fill="#CBA6F7">
+  <!--
+    Chevron ">" — single filled polygon, clockwise:
+    outer-top-left (0,0) → tip (22,20) → outer-bottom-left (0,40)
+      → inner-bottom (0,29) → inner-notch (11,20) → inner-top (0,11) → close.
+    11u-thick right-pointing angle bracket.
+  -->
+  <path d="M 0 0 L 22 20 L 0 40 L 0 29 L 11 20 L 0 11 Z"/>
+  <!-- Selected-row pill: 24u × 10u, radius 5u, vertically centered on chevron tip (y=20) -->
+  <rect x="28" y="15" width="24" height="10" rx="5" ry="5"/>
+</svg>

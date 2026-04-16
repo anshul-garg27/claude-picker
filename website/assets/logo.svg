@@ -1,0 +1,16 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 240 48" fill="none" aria-label="claude-picker">
+  <!-- Mark: stacked picker rows on the left -->
+  <g transform="translate(4 10)">
+    <rect x="0"  y="0"  width="28" height="6" rx="1.5" fill="#CBA6F7"/>
+    <rect x="0"  y="11" width="22" height="6" rx="1.5" fill="#45475A"/>
+    <rect x="0"  y="22" width="16" height="6" rx="1.5" fill="#45475A"/>
+    <rect x="36" y="11" width="2"  height="6" rx="1"   fill="#F9E2AF"/>
+  </g>
+  <!-- Wordmark -->
+  <text x="54" y="31"
+        font-family="'JetBrains Mono', ui-monospace, SFMono-Regular, Menlo, monospace"
+        font-size="18"
+        font-weight="600"
+        fill="#CDD6F4"
+        letter-spacing="-0.3">claude-picker</text>
+</svg>

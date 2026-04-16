@@ -1,0 +1,18 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  claude-picker — favicon (16×16 optimized).
+  Simplified single-shape variant: just the chevron, thickened and centered in a square.
+  Rationale: at 16px the pill collapses to a fuzzy 2px bar. The chevron alone remains
+  crisp and still carries the core brand gesture (> is the picker cursor). This is the
+  brand's shorthand — same pattern as Google → G or GitHub → octocat-silhouette.
+  Color: Catppuccin Mauve #CBA6F7. Square viewBox 32×32. Chevron 20u wide × 24u tall, centered.
+-->
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" fill="#CBA6F7">
+  <!--
+    Thick chevron ">" centered in 32×32.
+    Outer-top-left (6,4) → tip (26,16) → outer-bottom-left (6,28)
+      → inner-bottom (6,22) → inner-notch (15,16) → inner-top (6,10) → close.
+    Band thickness 6u at the outer corners → crisp at 16×16.
+  -->
+  <path d="M 6 4 L 26 16 L 6 28 L 6 22 L 15 16 L 6 10 Z"/>
+</svg>
