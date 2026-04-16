@@ -1,0 +1,47 @@
+[workspace]
+members = ["cargo:."]
+
+# ────────────────────────────────────────────────────────────────────────────
+# cargo-dist configuration
+#
+# Produces prebuilt tarballs, a shell installer, and a Homebrew formula for
+# every git tag matching `v*`. See BREW-TAP.md for one-time Homebrew tap
+# setup (the HOMEBREW_TAP_TOKEN secret must exist before the first release).
+# ────────────────────────────────────────────────────────────────────────────
+[dist]
+# The preferred dist version to use in CI (Cargo.toml SemVer syntax).
+cargo-dist-version = "0.31.0"
+# CI backends to support.
+ci = "github"
+# The installers to generate for each app.
+#   shell     → one-line curl | sh installer hosted on GitHub Releases
+#   homebrew  → Formula auto-pushed to anshul-garg27/homebrew-tap
+installers = ["shell", "homebrew"]
+# Target platforms to build apps for (Rust target-triple syntax).
+#   macOS Apple Silicon + Intel, Linux x86_64 + aarch64.
+#   Windows MSVC is a bonus target; if it ever blocks a release, drop it.
+targets = ["aarch64-apple-darwin", "aarch64-unknown-linux-gnu", "x86_64-apple-darwin", "x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc"]
+# Path that the shell installer writes the binary into. Chosen so no sudo
+# is required on Linux; on macOS, Homebrew overrides this with its own prefix.
+install-path = "~/.local/bin"
+# Where to host releases.
+hosting = "github"
+# Whether to install an updater program (users re-run brew/curl to upgrade).
+install-updater = false
+# Whether to auto-include files like READMEs, LICENSEs, and CHANGELOGs (default true).
+auto-includes = true
+# A GitHub repo to push Homebrew formulas to.
+tap = "anshul-garg27/homebrew-tap"
+# Customize the Homebrew formula name.
+formula = "claude-picker"
+# Publish jobs to run in CI. `homebrew` pushes the generated Formula to the
+# tap above. npm is intentionally disabled.
+publish-jobs = ["homebrew"]
+# Which actions to run on pull requests: `plan` just validates config and
+# prints the planned artifacts without actually building them.
+pr-run-mode = "plan"
+# Preserve manual edits to the generated CI. We add a `preflight` job (cargo
+# test + cargo clippy -D warnings) at the top of release.yml that cargo-dist
+# would otherwise strip on every `dist init`. Keep `ci` in this list while
+# release.yml has handwritten steps.
+allow-dirty = ["ci"]

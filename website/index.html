@@ -7,7 +7,7 @@
 <meta name="theme-color" content="#1E1E2E">
 
 <title>claude-picker — Terminal session manager for Claude Code</title>
-<meta name="description" content="Browse projects, preview conversations, track token cost per session, and resume with one keystroke. A fzf-powered picker for your Claude Code sessions.">
+<meta name="description" content="Browse projects, preview conversations, track per-model token cost, and resume with one keystroke. A single static Rust binary for your Claude Code sessions — install via brew, curl, or cargo.">
 
 <link rel="canonical" href="https://claude-picker.dev/">
 <link rel="icon" href="assets/favicon.svg" type="image/svg+xml">
@@ -18,7 +18,7 @@
 <meta property="og:type" content="website">
 <meta property="og:url" content="https://claude-picker.dev/">
 <meta property="og:title" content="claude-picker — Terminal session manager for Claude Code">
-<meta property="og:description" content="Browse projects, preview conversations, track token cost per session, and resume with one keystroke. A fzf-powered picker for your Claude Code sessions.">
+<meta property="og:description" content="Browse projects, preview conversations, track per-model token cost, and resume with one keystroke. A single static Rust binary for your Claude Code sessions — install via brew, curl, or cargo.">
 <meta property="og:image" content="https://claude-picker.dev/assets/og-image.png">
 <meta property="og:image:width" content="1774">
 <meta property="og:image:height" content="887">
@@ -27,7 +27,7 @@
 <!-- Twitter -->
 <meta name="twitter:card" content="summary_large_image">
 <meta name="twitter:title" content="claude-picker — Terminal session manager for Claude Code">
-<meta name="twitter:description" content="Browse, preview, and resume Claude Code sessions from your terminal. fzf-powered, cost-aware, 100% local.">
+<meta name="twitter:description" content="Browse, preview, and resume Claude Code sessions from your terminal. Written in Rust, cost-aware, 100% local.">
 <meta name="twitter:image" content="https://claude-picker.dev/assets/og-image.png">
 <meta name="twitter:creator" content="@anshul_garg27">
 
@@ -47,9 +47,10 @@
   "@context": "https://schema.org",
   "@type": "SoftwareApplication",
   "name": "claude-picker",
-  "description": "Terminal session manager for Claude Code. Browse projects, preview conversations, track token cost per session, and resume with one keystroke.",
+  "description": "Terminal session manager for Claude Code, written in Rust. Browse projects, preview conversations, track per-model token cost, and resume with one keystroke. Single static binary, no runtime dependencies.",
   "url": "https://claude-picker.dev/",
-  "operatingSystem": "macOS, Linux",
+  "operatingSystem": "macOS, Linux, Windows",
+  "programmingLanguage": "Rust",
   "applicationCategory": "DeveloperApplication",
   "license": "https://opensource.org/licenses/MIT",
   "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
@@ -102,7 +103,7 @@
     </h1>
     <p class="hero-sub reveal">
       Browse projects, preview conversations, track token cost per session, and
-      resume with one keystroke — a fzf-powered picker for your Claude Code sessions.
+      resume with one keystroke — a Rust-powered picker for your Claude Code sessions.
     </p>
 
     <div class="hero-ctas reveal">
@@ -118,8 +119,8 @@
 
     <div class="hero-badges reveal" aria-label="Highlights">
       <span class="badge">MIT</span>
-      <span class="badge">~800 lines</span>
-      <span class="badge">bash + python + fzf</span>
+      <span class="badge">Written in Rust</span>
+      <span class="badge">Single binary</span>
       <span class="badge">Works in any terminal</span>
     </div>
 
@@ -377,14 +378,20 @@
             <td><span class="n" role="img" aria-label="No"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round"><path d="M4 4l8 8M12 4l-8 8"/></svg></span></td>
           </tr>
           <tr>
-            <td class="feat-name">Compiled binary</td>
-            <td class="ours val">bash + python</td>
+            <td class="feat-name">Language</td>
+            <td class="ours val">Rust</td>
             <td class="val">Rust</td>
             <td class="val">Go</td>
           </tr>
           <tr>
+            <td class="feat-name">Single static binary</td>
+            <td class="ours"><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+            <td><span class="y" role="img" aria-label="Yes"><svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 8.5l3.5 3.5L13 5"/></svg></span></td>
+          </tr>
+          <tr>
             <td class="feat-name">Lines of code</td>
-            <td class="ours val">~800</td>
+            <td class="ours val">~2,500</td>
             <td class="val">~3,000</td>
             <td class="val">~5,000+</td>
           </tr>
@@ -397,7 +404,7 @@
         </tbody>
       </table>
     </div>
-    <p class="cmp-note reveal">claude-picker isn't a binary. It's a handful of bash and python you can read in an afternoon.</p>
+    <p class="cmp-note reveal">claude-picker is a single static Rust binary — roughly 2,500 lines you can read in an afternoon. Install via <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">brew</code>, <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">curl | sh</code>, or <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">cargo install</code>.</p>
   </div>
 </section>
 
@@ -472,8 +479,8 @@
 <section id="install" aria-labelledby="install-title">
   <div class="wrap">
     <span class="eyebrow reveal">Install</span>
-    <h2 id="install-title" class="section-title reveal">One line. No build step.</h2>
-    <p class="section-sub reveal">Clones into <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">~/.claude-picker</code>, symlinks to <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">~/.local/bin</code>, adds a <kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+P</kbd> keybinding, detects Warp.</p>
+    <h2 id="install-title" class="section-title reveal">Four install paths. One static binary.</h2>
+    <p class="section-sub reveal">Written in Rust, packaged with <a href="https://axodotdev.github.io/cargo-dist/" style="color:var(--ctp-blue);">cargo-dist</a>. Pick whichever channel you already trust — the binary is identical.</p>
 
     <div class="install-block reveal" role="group" aria-labelledby="install-title">
       <div class="terminal-bar" aria-hidden="true">
@@ -482,8 +489,32 @@
       </div>
       <div class="install-row">
         <code id="install-cmd" class="install-cmd"
-              data-raw="git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh"><span class="prompt">$</span>git clone <span class="url">https://github.com/anshul-garg27/claude-picker.git</span> <span class="arg">~/.claude-picker</span> &amp;&amp; bash <span class="arg">~/.claude-picker/install.sh</span></code>
-        <button class="copy-btn" data-copy="#install-cmd" type="button" aria-label="Copy install command to clipboard">
+              data-raw="brew install anshul-garg27/tap/claude-picker"><span class="prompt">$</span>brew install <span class="arg">anshul-garg27/tap/claude-picker</span></code>
+        <button class="copy-btn" data-copy="#install-cmd" type="button" aria-label="Copy Homebrew install command to clipboard">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="9" height="9" rx="1.5"/><path d="M10.5 4V3a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1"/></svg>
+          <span data-label>Copy</span>
+        </button>
+      </div>
+      <div class="install-row">
+        <code id="install-cmd-curl" class="install-cmd"
+              data-raw="curl --proto '=https' --tlsv1.2 -sSf https://claude-picker.dev/install.sh | sh"><span class="prompt">$</span>curl --proto <span class="arg">'=https'</span> --tlsv1.2 -sSf <span class="url">https://claude-picker.dev/install.sh</span> | sh</code>
+        <button class="copy-btn" data-copy="#install-cmd-curl" type="button" aria-label="Copy shell installer command to clipboard">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="9" height="9" rx="1.5"/><path d="M10.5 4V3a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1"/></svg>
+          <span data-label>Copy</span>
+        </button>
+      </div>
+      <div class="install-row">
+        <code id="install-cmd-cargo" class="install-cmd"
+              data-raw="cargo install claude-picker"><span class="prompt">$</span>cargo install <span class="arg">claude-picker</span></code>
+        <button class="copy-btn" data-copy="#install-cmd-cargo" type="button" aria-label="Copy cargo install command to clipboard">
+          <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="9" height="9" rx="1.5"/><path d="M10.5 4V3a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1"/></svg>
+          <span data-label>Copy</span>
+        </button>
+      </div>
+      <div class="install-row">
+        <code id="install-cmd-src" class="install-cmd"
+              data-raw="git clone https://github.com/anshul-garg27/claude-picker.git && cd claude-picker && cargo install --path ."><span class="prompt">$</span>git clone <span class="url">https://github.com/anshul-garg27/claude-picker.git</span> &amp;&amp; cd <span class="arg">claude-picker</span> &amp;&amp; cargo install <span class="arg">--path .</span></code>
+        <button class="copy-btn" data-copy="#install-cmd-src" type="button" aria-label="Copy source build command to clipboard">
           <svg viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><rect x="4" y="4" width="9" height="9" rx="1.5"/><path d="M10.5 4V3a1 1 0 0 0-1-1h-6a1 1 0 0 0-1 1v6a1 1 0 0 0 1 1h1"/></svg>
           <span data-label>Copy</span>
         </button>
@@ -491,8 +522,8 @@
     </div>
 
     <div class="install-meta reveal">
-      <span>Requires: fzf 0.58+ <span class="dot">·</span> python3 + rich <span class="dot">·</span> bash</span>
-      <span>Works in any terminal. Warp gets a + menu entry. Installer adds Ctrl+P keybinding.</span>
+      <span>macOS (Apple Silicon + Intel), Linux (x86_64 + aarch64), Windows MSVC <span class="dot">·</span> no runtime deps</span>
+      <span>Installer symlinks to <code style="font-family:var(--font-mono);color:var(--ctp-yellow);">~/.local/bin</code>, adds a <kbd style="font-family:var(--font-mono);color:var(--ctp-blue);">Ctrl+P</kbd> keybinding, detects Warp.</span>
     </div>
   </div>
 </section>
@@ -574,9 +605,9 @@
 <section class="philo" aria-labelledby="philo-title">
   <div class="wrap philo-inner">
     <span class="eyebrow reveal" id="philo-title">Why it's small</span>
-    <p class="lede reveal">~800 lines. No compiled binary. No build step. No dependency you don't already have.</p>
-    <p class="reveal">Read the whole source in ten minutes. Modify it. Pipe it into anything.</p>
-    <p class="reveal">This is how Unix tools should work.</p>
+    <p class="lede reveal">~2,500 lines of Rust. One static binary. No runtime deps. No build step for users.</p>
+    <p class="reveal">Read the whole source in an afternoon. Modify it. Pipe it into anything.</p>
+    <p class="reveal">This is how Unix tools should work — written in a language that won't surprise you at 2 a.m.</p>
   </div>
 </section>
 
@@ -591,7 +622,7 @@
           <img class="brand-mark" src="assets/mark.svg" alt="" width="20" height="20" decoding="async">
           <span class="brand-name">claude-picker</span>
         </a>
-        <p>A fzf-powered picker for your Claude Code sessions. Small, local, and script-friendly.</p>
+        <p>A Rust-powered picker for your Claude Code sessions. Small, local, and script-friendly.</p>
       </div>
 
       <div class="footer-col">

@@ -1,3 +1,5 @@
 .DS_Store
 content/
 lib/__pycache__/
+/target/
+# Cargo.lock kept in version control for binary crates

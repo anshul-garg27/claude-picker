@@ -1,8 +1,19 @@
-#!/bin/bash
-# claude-picker — Find, preview, and resume your Claude Code sessions
+#!/usr/bin/env bash
+# claude-picker — Terminal session manager for Claude Code.
 # https://github.com/anshul-garg27/claude-picker
+#
+# Wrapper that routes to the best available backend:
+#   1. ~/.local/share/claude-picker/bin/claude-picker-rust   (installed binary)
+#   2. cargo run --release --quiet --                        (local dev build)
+#   3. Python + fzf classic flow                             (gated by --classic)
+#
+# In-repo:        ./claude-picker           → cargo run
+# Brew install:   /opt/homebrew/bin/...     → the formula-installed binary
+# install.sh:     ~/.local/bin/claude-picker → symlink to the extracted binary
 
-# Resolve symlinks to find the real script directory
+set -o pipefail
+
+# ── Resolve the real script directory (supports symlinks) ────────────────
 SOURCE="$0"
 while [ -L "$SOURCE" ]; do
   DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
@@ -10,6 +21,55 @@ while [ -L "$SOURCE" ]; do
   [[ $SOURCE != /* ]] && SOURCE="$DIR/$SOURCE"
 done
 SCRIPT_DIR="$(cd "$(dirname "$SOURCE")" && pwd)"
+
+# ── Classic-mode dispatch ────────────────────────────────────────────────
+# If the user explicitly asks for the legacy Python + fzf flow, jump there.
+CLASSIC_MODE=0
+CLASSIC_FALLBACK=0
+if [ "${1:-}" = "--classic" ]; then
+  CLASSIC_MODE=1
+  shift
+fi
+
+# ── Try Rust backends first (unless --classic was requested) ──────────────
+if [ "$CLASSIC_MODE" = "0" ]; then
+  # 1. Installed prebuilt binary (install.sh drops it here).
+  RUST_BIN="${HOME}/.local/share/claude-picker/bin/claude-picker-rust"
+  if [ -x "$RUST_BIN" ]; then
+    exec "$RUST_BIN" "$@"
+  fi
+
+  # 2. Local dev build — only when we're inside the repo and cargo is present.
+  if [ -f "$SCRIPT_DIR/Cargo.toml" ] \
+     && grep -q '^name = "claude-picker"' "$SCRIPT_DIR/Cargo.toml" 2>/dev/null \
+     && command -v cargo >/dev/null 2>&1; then
+    exec cargo run --manifest-path "$SCRIPT_DIR/Cargo.toml" --release --quiet -- "$@"
+  fi
+
+  # 3. No Rust backend reachable → fall through to classic with a warning
+  # unless we're in a CI-style non-interactive context.
+  CLASSIC_FALLBACK=1
+fi
+
+# ── Classic Python + fzf flow ────────────────────────────────────────────
+# (Everything below is the legacy implementation, preserved verbatim.)
+
+if [ "$CLASSIC_FALLBACK" = "1" ] && [ "$CLASSIC_MODE" = "0" ]; then
+  cat <<EOF >&2
+claude-picker: no Rust backend found.
+
+Install options:
+  brew install anshul-garg27/tap/claude-picker
+  curl --proto '=https' --tlsv1.2 -sSf https://claude-picker.dev/install.sh | sh
+  cargo install claude-picker
+
+Or run the classic Python + fzf flow:
+  claude-picker --classic
+
+EOF
+  exit 127
+fi
+
 CLAUDE_FLAGS="${CLAUDE_PICKER_FLAGS:---dangerously-skip-permissions}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━

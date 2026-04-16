@@ -1,21 +1,26 @@
 ---
 name: claude-picker
-description: Browse, preview, and resume Claude Code sessions with fzf. Full-text search, token/cost estimates, bookmarks, export, and stats dashboard.
+description: Browse, preview, and resume Claude Code sessions from a single Rust binary. Full-text search, per-model token cost, bookmarks, export, stats dashboard, and fork-aware tree view.
 ---
 
 # Claude Picker — Session Manager
 
-Use this skill to manage your Claude Code sessions. It provides a terminal-native session browser powered by fzf.
+Use this skill to manage your Claude Code sessions. It runs a Ratatui-powered
+session browser written in Rust — one static binary, no runtime deps.
 
 ## Installation
 
-If claude-picker is not installed, run:
+If `claude-picker` is not on your PATH, install it with whichever you prefer:
 
 ```bash
-git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
+brew install anshul-garg27/tap/claude-picker                                    # Homebrew
+curl --proto '=https' --tlsv1.2 -sSf https://claude-picker.dev/install.sh | sh  # Shell installer
+cargo install claude-picker                                                     # From crates.io
 ```
 
-Requirements: `fzf` and `python3`.
+Requirements: `claude` CLI on PATH. No other runtime deps for the Rust binary.
+(Legacy classic mode still needs `fzf` 0.58+ and `python3` with `rich` — see
+`claude-picker --classic`.)
 
 ## Available Commands
 

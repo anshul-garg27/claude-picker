@@ -1,21 +1,26 @@
 <p align="center">
   <h1 align="center">claude-picker</h1>
   <p align="center">
-    <strong>Terminal session manager for Claude Code.</strong><br>
-    Browse projects, preview conversations, track token cost per session, and resume with one keystroke — a fzf-powered picker for your Claude sessions.
+    <strong>Terminal session manager for Claude Code — written in Rust.</strong><br>
+    Browse projects, preview conversations, track per-model token cost, and resume with one keystroke. Single static binary, zero runtime deps.
   </p>
   <p align="center">
-    A fast, terminal-native <a href="https://claude.ai/code">Claude Code</a> session manager. Find any Claude conversation by content, see what each session cost, fork-aware tree view, side-by-side diff, full-text search — no build step, no dependency you don't already have.
+    <a href="https://crates.io/crates/claude-picker"><img src="https://img.shields.io/crates/v/claude-picker.svg" alt="Crates.io"></a>
+    <a href="https://github.com/anshul-garg27/claude-picker/releases"><img src="https://img.shields.io/github/v/release/anshul-garg27/claude-picker.svg" alt="Release"></a>
+    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
   </p>
   <p align="center">
     <a href="#install">Install</a> &bull;
     <a href="#features">Features</a> &bull;
     <a href="#commands">Commands</a> &bull;
-    <a href="#how-it-works">How it works</a>
+    <a href="#how-it-works">How it works</a> &bull;
+    <a href="#classic-mode">Classic mode</a>
   </p>
 </p>
 
 ![claude-picker demo](assets/gifs/hero.gif)
+
+> **Written in Rust. Single static binary. Per-model cost tracking, fork-aware tree view, side-by-side diff, full-text search. No Python, no fzf, no dependencies.**
 
 <details>
 <summary>More feature demos</summary>
@@ -46,26 +51,40 @@ Claude Code saves every conversation, but finding them again is painful:
 
 No project filtering. No preview. No names. Just UUIDs.
 
-**claude-picker** gives you a two-step fzf picker with labeled borders, conversation preview, cost tracking, bookmarks, full-text search, and 20+ features no other tool has together.
+**claude-picker** gives you a Ratatui-powered picker with labeled borders, conversation preview, per-model cost tracking, bookmarks, full-text search, and 20+ features no other tool has together — all from one ~5 MB binary.
 
 ---
 
 ## Install
 
+Pick whichever one you already trust the most. The binary is identical.
+
 ```bash
-git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
+# Homebrew (macOS and Linux)
+brew install anshul-garg27/tap/claude-picker
+
+# Shell installer (downloads a prebuilt binary from GitHub Releases)
+curl --proto '=https' --tlsv1.2 -sSf https://claude-picker.dev/install.sh | sh
+
+# Cargo (builds from source, needs a Rust toolchain)
+cargo install claude-picker
+
+# From source (for contributors)
+git clone https://github.com/anshul-garg27/claude-picker.git
+cd claude-picker && cargo install --path .
 ```
 
+Direct downloads for every platform live on the
+[Releases page](https://github.com/anshul-garg27/claude-picker/releases).
+
 **Requirements:**
-- [Claude Code](https://claude.ai/code)
-- [fzf](https://github.com/junegunn/fzf) 0.58+ (`brew install fzf`)
-- Python 3 with [Rich](https://github.com/Textualize/rich) (auto-installed by installer)
+- [Claude Code](https://claude.ai/code) CLI on your PATH
+- macOS, Linux, or Windows — no runtime deps
 
 **What the installer does:**
-- Symlinks `claude-picker` to `~/.local/bin/`
-- Installs Python `rich` for styled preview panels
-- Adds `Ctrl+P` shell keybinding to `.zshrc`
-- Auto-detects [Warp](https://warp.dev) and installs tab config
+- Drops the Rust binary into `~/.local/bin/claude-picker`
+- Adds `Ctrl+P` shell keybinding to `.zshrc` / `.bashrc`
+- Auto-detects [Warp](https://warp.dev) and installs a tab config
 
 ---
 
@@ -276,6 +295,24 @@ claude-picker/
 ```bash
 bash ~/.claude-picker/uninstall.sh
 ```
+
+---
+
+## Classic mode
+
+Prefer the original Python + fzf flow? Run `claude-picker --classic`.
+Requires Python 3.10+, fzf 0.58+, and `rich`. Still supported, still works,
+will be maintained indefinitely for users who don't want the Rust binary.
+
+```bash
+# Install the classic scripts side-by-side with the Rust binary:
+git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker
+~/.claude-picker/claude-picker --classic
+```
+
+The classic wrapper preserves every legacy flag: `--pipe`, `--search`,
+`--stats`, `--tree`, `--diff`, and the `Ctrl+B` / `Ctrl+E` / `Ctrl+D`
+keybindings inside fzf.
 
 ---
 
