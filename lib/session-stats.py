@@ -44,22 +44,30 @@ def term_width():
         return 100
 
 # Cap dashboard width so it doesn't stretch ugly on ultra-wide terminals.
-MAX_W = 110
+MAX_W = 120
 MIN_W = 90
 
 def sparkline(values, width=8):
+    """Render a sparkline. Zero values render as `·` so sparse data still fills the card visually."""
     if not values:
-        return ' ' * width
+        return '·' * width
     if len(values) > width:
         step = len(values) / width
         sampled = [values[min(int(i * step), len(values) - 1)] for i in range(width)]
     else:
         sampled = list(values) + [0] * (width - len(values))
-    lo, hi = min(sampled), max(sampled)
+    nonzero = [v for v in sampled if v > 0]
+    if not nonzero:
+        return '·' * width
+    lo, hi = min(nonzero), max(nonzero)
     rng = (hi - lo) if hi > lo else 1
     out = ''
     for v in sampled:
-        idx = int(((v - lo) / rng) * (len(SPARK_CHARS) - 1))
+        if v <= 0:
+            out += '·'
+            continue
+        # Lift the minimum visible bar so lone peaks read clearly
+        idx = max(2, int(((v - lo) / rng) * (len(SPARK_CHARS) - 1)))
         out += SPARK_CHARS[idx]
     return out
 
@@ -253,9 +261,10 @@ daily_sessions = [daily[d]['sessions'] for d in days_series]
 daily_tokens   = [daily[d]['input'] + daily[d]['output'] for d in days_series]
 daily_cost     = [daily[d]['cost']   for d in days_series]
 
-last7_sessions = daily_sessions[-7:]
-last7_tokens   = daily_tokens[-7:]
-last7_cost     = daily_cost[-7:]
+# Use full 30-day window for sparklines so trends are visible even on sparse data.
+spark_sessions = daily_sessions
+spark_tokens   = daily_tokens
+spark_cost     = daily_cost
 
 sum_sessions_30 = sum(daily_sessions)
 sum_tokens_30   = sum(daily_tokens)
@@ -328,7 +337,7 @@ kpi1 = boxed_kpi(
     big_value=format_tokens(total_tokens),
     big_color=TEXT,
     spark_color=TEAL,
-    spark_vals=last7_tokens or [0],
+    spark_vals=spark_tokens or [0],
     subtitle=f'{format_tokens(total_input_tokens)} input · {format_tokens(total_output_tokens)} output',
 )
 kpi2 = boxed_kpi(
@@ -337,7 +346,7 @@ kpi2 = boxed_kpi(
     big_value=format_cost(total_cost),
     big_color=GREEN,
     spark_color=GREEN,
-    spark_vals=last7_cost or [0],
+    spark_vals=spark_cost or [0],
     subtitle=f'avg {format_cost(avg_cost_per_day)} / day',
 )
 kpi3 = boxed_kpi(
@@ -346,7 +355,7 @@ kpi3 = boxed_kpi(
     big_value=str(total_sessions),
     big_color=YELLOW,
     spark_color=YELLOW,
-    spark_vals=last7_sessions or [0],
+    spark_vals=spark_sessions or [0],
     subtitle=f'{named_count} named · {unnamed_count} unnamed',
 )
 
@@ -376,7 +385,10 @@ if project_data:
 
     for i, (name, info) in enumerate(sorted_proj):
         color = project_color(i)
-        filled = int((info['cost'] / max_cost) * bar_w) if max_cost else 0
+        if max_cost > 0 and info['cost'] > 0:
+            filled = max(1, int((info['cost'] / max_cost) * bar_w))
+        else:
+            filled = 0
         bar = color + BAR_FULL * filled + R + LINE + BAR_EMPTY * (bar_w - filled) + R
         toks = info['input'] + info['output']
         # Right-side column — keep total visible width == RIGHT_COL_W (35 chars)
@@ -402,7 +414,12 @@ dynamic_labels = [days_series[i].strftime('%b %d') for i in label_indices]
 def day_bar(count, is_today, is_spike):
     if count == 0:
         return f'{LINE}{D}·{R}'
-    idx = int((count / max_day) * (len(SPARK_CHARS) - 1))
+    # Stretch the height so even low-activity days are visible (min ▃)
+    if max_day == 1:
+        idx = 4  # single-activity day renders as a solid mid-bar
+    else:
+        norm = (count / max_day)
+        idx = max(2, int(norm * (len(SPARK_CHARS) - 1)))
     ch = SPARK_CHARS[idx]
     if is_today:
         return f'{GREEN}{B}{ch}{R}'
