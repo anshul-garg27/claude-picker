@@ -9,8 +9,9 @@ project_dir = os.environ.get('PROJECT_DIR', '')
 sessions_meta_dir = os.environ.get('SESSIONS_META_DIR', os.path.expanduser('~/.claude/sessions'))
 now = time.time()
 
-if not project_dir:
-    import sys
+import sys
+if not project_dir or not os.path.isdir(project_dir):
+    # Silently exit — main script handles "no sessions" message
     sys.exit(0)
 
 # Catppuccin Mocha palette
