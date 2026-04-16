@@ -31,9 +31,14 @@ SPARK_CHARS = '▁▂▃▄▅▆▇█'
 BAR_FULL    = '█'
 BAR_EMPTY   = '░'
 
-# Pricing (blended Sonnet 4 approximation per token)
-INPUT_COST_PER_TOKEN  = 0.000003
-OUTPUT_COST_PER_TOKEN = 0.000015
+# Pricing per token (Sonnet 4 / 4.5 approximate).
+# Claude Code logs per-message usage in the assistant message's `usage` field.
+# We use those actual token counts + differentiated cache pricing for accurate cost.
+PRICE_INPUT         = 3.00  / 1_000_000   # plain input
+PRICE_OUTPUT        = 15.00 / 1_000_000
+PRICE_CACHE_WRITE_5 = 3.75  / 1_000_000   # ephemeral_5m cache creation
+PRICE_CACHE_WRITE_1 = 6.00  / 1_000_000   # ephemeral_1h cache creation
+PRICE_CACHE_READ    = 0.30  / 1_000_000   # cache hits — 10x cheaper
 
 # ── Helpers ───────────────────────────────────────────────────────────────
 
@@ -121,16 +126,24 @@ for mf in glob.glob(os.path.join(sessions_dir, '*.json')):
         pass
 
 total_sessions = 0
-total_input_tokens = 0
-total_output_tokens = 0
+total_input_tokens = 0      # actual input (non-cache)
+total_output_tokens = 0     # actual output
+total_cache_read = 0        # cache reads (counted as cheap input)
+total_cache_write_5 = 0     # cache writes — 5m ephemeral
+total_cache_write_1 = 0     # cache writes — 1h ephemeral
+total_cost = 0.0
 total_size = 0
 named_count = 0
 unnamed_count = 0
 
-project_data = defaultdict(lambda: {'sessions': 0, 'input': 0, 'output': 0, 'cost': 0.0})
+project_data = defaultdict(lambda: {
+    'sessions': 0, 'input': 0, 'output': 0,
+    'cache_read': 0, 'cache_write_5': 0, 'cache_write_1': 0,
+    'cost': 0.0,
+})
 
 # Daily buckets for last 30 days
-daily = defaultdict(lambda: {'sessions': 0, 'input': 0, 'output': 0, 'cost': 0.0})
+daily = defaultdict(lambda: {'sessions': 0, 'tokens': 0, 'cost': 0.0})
 thirty_days_ago = today - timedelta(days=29)
 
 noise_prefixes = (
@@ -193,73 +206,95 @@ for d in os.listdir(projects_dir):
             continue
 
         session_name = None
-        input_chars = 0
-        output_chars = 0
         msg_count = 0
+        s_input = 0
+        s_output = 0
+        s_cache_read = 0
+        s_cache_write_5 = 0
+        s_cache_write_1 = 0
+        s_cost = 0.0
+
         try:
             with open(jf) as fh:
                 for line in fh:
                     data = json.loads(line.strip())
+
                     if data.get('type') == 'custom-title' and data.get('customTitle'):
                         session_name = data['customTitle']
 
                     if data.get('type') in ('user', 'assistant'):
-                        role = data.get('message', {}).get('role')
+                        msg = data.get('message', {}) or {}
+                        role = msg.get('role')
                         if role not in ('user', 'assistant'):
                             continue
                         msg_count += 1
-                        content = data['message'].get('content', '')
-                        text = ''
-                        if isinstance(content, str):
-                            text = content
-                        elif isinstance(content, list):
-                            for item in content:
-                                if isinstance(item, dict) and item.get('type') == 'text':
-                                    text += item.get('text', '')
-                        if role == 'user':
-                            if any(text.startswith(p) for p in noise_prefixes):
-                                continue
-                            input_chars += len(text)
-                        else:
-                            output_chars += len(text)
+
+                        # Read real token usage from the assistant message.
+                        # Claude Code logs per-message usage including cache split.
+                        if role == 'assistant':
+                            usage = msg.get('usage') or {}
+                            it = int(usage.get('input_tokens', 0))
+                            ot = int(usage.get('output_tokens', 0))
+                            cr = int(usage.get('cache_read_input_tokens', 0))
+                            # Cache creation breakdown
+                            cc = usage.get('cache_creation', {}) or {}
+                            cw5 = int(cc.get('ephemeral_5m_input_tokens', 0))
+                            cw1 = int(cc.get('ephemeral_1h_input_tokens', 0))
+                            # Fall back if breakdown missing — treat all cache_creation as 5m
+                            if cw5 == 0 and cw1 == 0:
+                                cw5 = int(usage.get('cache_creation_input_tokens', 0))
+
+                            s_input          += it
+                            s_output         += ot
+                            s_cache_read     += cr
+                            s_cache_write_5  += cw5
+                            s_cache_write_1  += cw1
+                            s_cost += (
+                                it  * PRICE_INPUT        +
+                                ot  * PRICE_OUTPUT       +
+                                cr  * PRICE_CACHE_READ   +
+                                cw5 * PRICE_CACHE_WRITE_5 +
+                                cw1 * PRICE_CACHE_WRITE_1
+                            )
         except Exception:
             pass
 
         if msg_count < 2:
             continue
 
-        in_tok  = max(1, input_chars // 4)
-        out_tok = max(1, output_chars // 4)
-        cost = in_tok * INPUT_COST_PER_TOKEN + out_tok * OUTPUT_COST_PER_TOKEN
-
         total_size += file_size
         total_sessions += 1
-        total_input_tokens += in_tok
-        total_output_tokens += out_tok
+        total_input_tokens    += s_input
+        total_output_tokens   += s_output
+        total_cache_read      += s_cache_read
+        total_cache_write_5   += s_cache_write_5
+        total_cache_write_1   += s_cache_write_1
+        total_cost            += s_cost
 
         if session_name:
             named_count += 1
         else:
             unnamed_count += 1
 
-        project_data[project_name]['sessions'] += 1
-        project_data[project_name]['input']    += in_tok
-        project_data[project_name]['output']   += out_tok
-        project_data[project_name]['cost']     += cost
+        project_data[project_name]['sessions']      += 1
+        project_data[project_name]['input']         += s_input
+        project_data[project_name]['output']        += s_output
+        project_data[project_name]['cache_read']    += s_cache_read
+        project_data[project_name]['cache_write_5'] += s_cache_write_5
+        project_data[project_name]['cache_write_1'] += s_cache_write_1
+        project_data[project_name]['cost']          += s_cost
 
         if mod_date >= thirty_days_ago:
-            key = mod_date
-            daily[key]['sessions'] += 1
-            daily[key]['input']    += in_tok
-            daily[key]['output']   += out_tok
-            daily[key]['cost']     += cost
+            daily[mod_date]['sessions'] += 1
+            daily[mod_date]['tokens']   += s_input + s_output + s_cache_read + s_cache_write_5 + s_cache_write_1
+            daily[mod_date]['cost']     += s_cost
 
 # ── Build 30-day series ──
 
 days_series = [thirty_days_ago + timedelta(days=i) for i in range(30)]
 daily_sessions = [daily[d]['sessions'] for d in days_series]
-daily_tokens   = [daily[d]['input'] + daily[d]['output'] for d in days_series]
-daily_cost     = [daily[d]['cost']   for d in days_series]
+daily_tokens   = [daily[d]['tokens']   for d in days_series]
+daily_cost     = [daily[d]['cost']     for d in days_series]
 
 # Use full 30-day window for sparklines so trends are visible even on sparse data.
 spark_sessions = daily_sessions
@@ -272,8 +307,11 @@ sum_cost_30     = sum(daily_cost)
 days_with_activity = sum(1 for c in daily_cost if c > 0) or 1
 avg_cost_per_day = sum_cost_30 / 30.0
 
-total_tokens = total_input_tokens + total_output_tokens
-total_cost   = sum(p['cost'] for p in project_data.values())
+total_tokens = (
+    total_input_tokens + total_output_tokens +
+    total_cache_read + total_cache_write_5 + total_cache_write_1
+)
+# total_cost already accumulated accurately per-message
 
 # ── Render ──
 
@@ -338,7 +376,7 @@ kpi1 = boxed_kpi(
     big_color=TEXT,
     spark_color=TEAL,
     spark_vals=spark_tokens or [0],
-    subtitle=f'{format_tokens(total_input_tokens)} input · {format_tokens(total_output_tokens)} output',
+    subtitle=f'{format_tokens(total_input_tokens + total_cache_read + total_cache_write_5 + total_cache_write_1)} in · {format_tokens(total_output_tokens)} out',
 )
 kpi2 = boxed_kpi(
     label_color=SUB,
@@ -390,7 +428,8 @@ if project_data:
         else:
             filled = 0
         bar = color + BAR_FULL * filled + R + LINE + BAR_EMPTY * (bar_w - filled) + R
-        toks = info['input'] + info['output']
+        # Total billable tokens for this project
+        toks = info['input'] + info['output'] + info['cache_read'] + info['cache_write_5'] + info['cache_write_1']
         # Right-side column — keep total visible width == RIGHT_COL_W (35 chars)
         right = f'{format_cost(info["cost"]):>7}  ·  {format_tokens(toks):>5} tok  ·  {info["sessions"]:>3} ses'
         print(f'  {color}{B}{name:<{name_w}}{R}  {bar}  {SUB}{right}{R}')
