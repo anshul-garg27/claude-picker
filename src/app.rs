@@ -462,8 +462,13 @@ fn delete_session_file(session: &Session) -> anyhow::Result<()> {
 /// Walk up from the current binary's directory looking for the repo root
 /// (identified by the `lib/` directory we ship the Python tools in). Used to
 /// locate the legacy exporter until it's ported.
+///
+/// We canonicalize first so a symlinked install (`~/.local/bin/claude-picker`
+/// → `~/Desktop/claude-picker/target/release/claude-picker`) still resolves
+/// to the real binary location, from which we can walk up to find `lib/`.
 fn find_repo_root() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
+    let exe = std::fs::canonicalize(&exe).unwrap_or(exe);
     let mut dir = exe.parent()?.to_path_buf();
     for _ in 0..6 {
         if dir.join("lib").join("session-export.py").is_file() {

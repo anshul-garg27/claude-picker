@@ -16,7 +16,7 @@
 //! The flatten + render logic lives in [`crate::ui::tree`]; this module
 //! is the event loop + data-loading glue.
 
-use std::io::{self, Stdout, Write};
+use std::io::{self, Stdout};
 use std::path::PathBuf;
 
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
@@ -71,7 +71,7 @@ pub fn run() -> anyhow::Result<()> {
     let _ = restore_terminal(&mut terminal);
 
     if let Some(sel) = result? {
-        emit_selection(&sel)?;
+        crate::resume::resume_session(&sel.session_id, &sel.project_cwd); // diverges
     }
     Ok(())
 }
@@ -263,19 +263,6 @@ fn render_footer(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
     ]);
     let p = Paragraph::new(vec![keys, legend]);
     f.render_widget(p, area);
-}
-
-/// Write `__SELECTION__ <id>\t<cwd>` so the bash wrapper can pick it up.
-/// Stdout (not stderr) because the wrapper greps stdout.
-fn emit_selection(sel: &Selection) -> io::Result<()> {
-    let mut stdout = io::stdout();
-    writeln!(
-        stdout,
-        "__SELECTION__ {}\t{}",
-        sel.session_id,
-        sel.project_cwd.display()
-    )?;
-    stdout.flush()
 }
 
 // ── Terminal lifecycle ─────────────────────────────────────────────────

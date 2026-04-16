@@ -126,9 +126,7 @@ pub fn run() -> anyhow::Result<()> {
 
     match result? {
         Some((id, cwd)) => {
-            // Bash wrapper contract — consumed by a tab-separated parser.
-            println!("__SELECTION__ {id}\t{}", cwd.display());
-            Ok(())
+            crate::resume::resume_session(&id, &cwd); // diverges
         }
         None => Ok(()),
     }

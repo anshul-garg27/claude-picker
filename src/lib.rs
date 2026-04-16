@@ -15,5 +15,6 @@ pub mod commands;
 pub mod data;
 pub mod error;
 pub mod events;
+pub mod resume;
 pub mod theme;
 pub mod ui;

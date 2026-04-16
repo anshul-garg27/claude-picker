@@ -7,7 +7,7 @@
 
 use clap::{Parser, Subcommand};
 
-use claude_picker::commands;
+use claude_picker::{commands, resume};
 
 #[derive(Parser, Debug)]
 #[command(
@@ -53,8 +53,11 @@ fn main() -> anyhow::Result<()> {
 
     match cli.command {
         None => {
-            // Default: the picker.
-            let _ = commands::pick::run()?;
+            // Default: the picker. If the user made a selection, hand off to
+            // claude itself rather than just printing the id.
+            if let Some((id, cwd)) = commands::pick::run()? {
+                resume::resume_session(&id, &cwd); // diverges
+            }
             Ok(())
         }
         Some(Command::Pipe) => commands::pipe_cmd::run(),
