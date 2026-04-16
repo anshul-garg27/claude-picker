@@ -1,11 +1,11 @@
 <p align="center">
   <h1 align="center">claude-picker</h1>
   <p align="center">
-    <strong>Find, preview, and resume your Claude Code sessions.</strong>
+    <strong>Terminal session manager for Claude Code.</strong><br>
+    Browse projects, preview conversations, track token cost per session, and resume with one keystroke — a fzf-powered picker for your Claude sessions.
   </p>
   <p align="center">
-    A terminal-native session manager for <a href="https://claude.ai/code">Claude Code</a>.<br>
-    Browse projects, preview conversations, track costs, and jump back in — from any terminal.
+    A fast, terminal-native <a href="https://claude.ai/code">Claude Code</a> session manager. Find any Claude conversation by content, see what each session cost, fork-aware tree view, side-by-side diff, full-text search — no build step, no dependency you don't already have.
   </p>
   <p align="center">
     <a href="#install">Install</a> &bull;
