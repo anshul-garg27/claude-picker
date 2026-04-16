@@ -102,8 +102,13 @@ for proj_dir_name in sorted(os.listdir(projects_dir)):
                 if data.get('type') == 'custom-title' and data.get('customTitle'):
                     name = data['customTitle'][:35]
 
-                # Check for fork/parent session reference
-                if data.get('type') == 'fork' and data.get('parentSessionId'):
+                # Check for fork via forkedFrom field (the actual Claude format)
+                fork_info = data.get('forkedFrom')
+                if fork_info and isinstance(fork_info, dict) and fork_info.get('sessionId'):
+                    parent_session = fork_info['sessionId']
+
+                # Legacy: check parentSessionId too
+                if data.get('parentSessionId') and not parent_session:
                     parent_session = data['parentSessionId']
 
                 # Collect message UUIDs for fork detection
