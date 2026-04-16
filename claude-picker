@@ -427,7 +427,7 @@ selected=$(echo "$session_list" | fzf \
   --no-separator \
   --preview="PROJECT_DIR='$PROJECT_DIR' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
   --preview-window=right,45%,wrap,border-left \
-  --bind="ctrl-b:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && python3 '$SCRIPT_DIR/lib/session-bookmarks.py' \"\$sid\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
+  --bind="ctrl-b:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR0__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__SEP__' ] && [ \"\$sid\" != '__INFO__' ] && python3 '$SCRIPT_DIR/lib/session-bookmarks.py' \"\$sid\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
   --bind="ctrl-e:execute(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && path=\$(python3 '$SCRIPT_DIR/lib/session-export.py' \"\$sid\") && echo \"Exported to: \$path\")" \
   --bind="ctrl-d:execute-silent(sid=\$(echo {} | awk -F'|' '{print \$NF}' | xargs) && [ \"\$sid\" != '__NEW__' ] && [ \"\$sid\" != '__HDR1__' ] && [ \"\$sid\" != '__HDR2__' ] && [ \"\$sid\" != '__INFO__' ] && rm -f \"$PROJECT_DIR/\$sid.jsonl\")+reload(PROJECT_DIR='$PROJECT_DIR' SESSIONS_META_DIR='$SESSIONS_META_DIR' bash '$SCRIPT_DIR/lib/session-list.sh')" \
   --ansi)
@@ -442,7 +442,7 @@ if [ -n "$selected" ]; then
         claude $CLAUDE_FLAGS
       fi
       ;;
-    __HDR1__|__HDR2__) exit 0 ;;
+    __HDR0__|__HDR1__|__HDR2__|__SEP__|__INFO__) exit 0 ;;
     *)
       if [ "$PIPE_MODE" = "1" ]; then
         echo "$session_id"
