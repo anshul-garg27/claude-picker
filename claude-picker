@@ -231,12 +231,20 @@ if [ "$1" = "--search" ] || [ "$1" = "-s" ]; then
     --color="pointer:#cba6f7,prompt:#f9e2af,info:#6c7086" \
     --color="gutter:#1e1e2e" \
     --preview-label=" Preview " \
-    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'\t' '{print \$NF}' | xargs)" \
+    --preview="hidden=\$(echo {} | awk -F'\t' '{print \$NF}' | xargs) && sid=\"\${hidden%%::*}\" && PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \"\$sid\"" \
     --preview-window=right,45%,wrap,border-rounded \
     --ansi)
 
   if [ -n "$selected" ]; then
-    session_id=$(echo "$selected" | awk -F'\t' '{print $NF}' | xargs)
+    # Extract session_id::project_cwd from the hidden field
+    hidden=$(echo "$selected" | awk -F'\t' '{print $NF}' | xargs)
+    session_id="${hidden%%::*}"
+    proj_cwd="${hidden#*::}"
+
+    # cd to the project directory so claude --resume can find the session
+    if [ -d "$proj_cwd" ]; then
+      cd "$proj_cwd"
+    fi
     claude $CLAUDE_FLAGS --resume "$session_id"
   fi
   exit 0

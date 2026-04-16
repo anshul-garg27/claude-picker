@@ -70,25 +70,30 @@ for proj_dir in sorted(os.listdir(projects_dir)):
             meta = meta_by_sid.get(session_id, {})
             session_name = meta.get('name', '')[:30] if meta.get('name') else None
 
-        # Resolve project name
+        # Resolve project name and real cwd path
         proj_name = None
+        proj_cwd = None
         for sid_key, meta in meta_by_sid.items():
             cwd = meta.get('cwd', '')
             if cwd and cwd.replace('/', '-').replace('_', '-') == proj_dir:
                 proj_name = os.path.basename(cwd)
+                proj_cwd = cwd
                 break
         # Fallback: try cwd from jsonl
-        if not proj_name:
+        if not proj_cwd:
             try:
                 for line in open(jf):
                     data = json.loads(line.strip())
                     if 'cwd' in data and data['cwd']:
                         proj_name = os.path.basename(data['cwd'])
+                        proj_cwd = data['cwd']
                         break
             except:
                 pass
         if not proj_name:
             proj_name = proj_dir.split('-')[-1][:20]
+        if not proj_cwd:
+            proj_cwd = full_proj  # fallback to encoded path
 
         # Extract searchable messages
         try:
@@ -122,8 +127,8 @@ for proj_dir in sorted(os.listdir(projects_dir)):
                 name_label = f'{GN}{session_name}{R}' if session_name else f'{DG}session{R}'
                 proj_label = f'{MG}{proj_name}{R}'
 
-                # Format: visible content [TAB] session_id (TAB is fzf delimiter)
+                # Format: visible content [TAB] session_id::real_cwd_path
                 visible = f'  {proj_label}  {DG}\u2502{R}  {name_label}  {DG}\u2502{R}  {role_label}  {DG}\u2502{R}  {GR}{clean}{R}'
-                print(visible + '\t' + session_id)
+                print(visible + '\t' + session_id + '::' + proj_cwd)
         except:
             pass
