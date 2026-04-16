@@ -6,6 +6,43 @@ SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
 CLAUDE_FLAGS="${CLAUDE_PICKER_FLAGS:---dangerously-skip-permissions}"
 
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+# Search mode: claude-picker --search
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
+
+if [ "$1" = "--search" ] || [ "$1" = "-s" ]; then
+  search_results=$(python3 "$SCRIPT_DIR/lib/session-search.py")
+
+  if [ -z "$search_results" ]; then
+    echo "No sessions found to search."
+    exit 0
+  fi
+
+  selected=$(echo "$search_results" | fzf \
+    --header=$'  \033[38;5;176m\033[1msearch sessions\033[0m  \033[38;5;242m│  type to filter across all conversations\033[0m\n' \
+    --header-first \
+    --delimiter="|" \
+    --with-nth=1 \
+    --layout=reverse \
+    --height=85% \
+    --border=rounded \
+    --margin=1,3 \
+    --padding=1,1 \
+    --prompt="  search > " \
+    --pointer=" ▸" \
+    --color="fg:249,fg+:114,bg+:-1,hl:222,hl+:222,pointer:176,prompt:176,header:176,border:238,gutter:-1" \
+    --no-separator \
+    --preview="PROJECT_DIR='' python3 '$SCRIPT_DIR/lib/session-preview.py' \$(echo {} | awk -F'|' '{print \$NF}' | xargs)" \
+    --preview-window=right,45%,wrap,border-left \
+    --ansi)
+
+  if [ -n "$selected" ]; then
+    session_id=$(echo "$selected" | awk -F'|' '{print $NF}' | xargs)
+    claude $CLAUDE_FLAGS --resume "$session_id"
+  fi
+  exit 0
+fi
+
+# ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 # Step 1: Pick a project directory
 # ━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━
 

@@ -29,6 +29,13 @@ encoded_path = os.getcwd().replace('/', '-').replace('_', '-')
 project_dir = os.environ.get('PROJECT_DIR', os.path.expanduser(f'~/.claude/projects/{encoded_path}'))
 session_file = os.path.join(project_dir, f'{session_id}.jsonl')
 
+# Search mode fallback: find session across all projects
+if not os.path.exists(session_file):
+    import glob
+    for f in glob.glob(os.path.expanduser(f'~/.claude/projects/*/{session_id}.jsonl')):
+        session_file = f
+        break
+
 if not os.path.exists(session_file):
     print(f'  {DG}Session not found{R}')
     sys.exit(0)
