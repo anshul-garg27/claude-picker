@@ -4,64 +4,74 @@
 
 ## Reddit: r/ClaudeAI
 
-**Title:** I built a session manager for Claude Code — browse, preview, and resume conversations from any project
+**Title:** I kept losing track of my Claude Code sessions, so I dug into how they're stored and built a browser for them (432 lines, open source)
 
 **Body:**
 
-Hey everyone,
+I've been using Claude Code daily for the past few months across 4-5 projects. My biggest frustration wasn't the model or the tooling — it was finding old sessions.
 
-I've been using Claude Code daily for the past few months. One thing that kept bugging me: session management is basically non-existent.
+`claude --resume` shows a flat list of UUIDs with timestamps. That's it. No project filtering, no preview, no names. Every time I needed to get back to a specific conversation, I'd click through 3-4 wrong sessions before finding the right one. Sometimes I'd give up and start a new one, losing all that context.
 
-`claude --resume` shows a flat list of UUIDs across all projects. No preview, no filtering, no way to tell sessions apart unless you named them.
+So last week I got nerd-sniped and spent an afternoon reverse-engineering how Claude Code stores sessions.
 
-So I built **claude-picker** — a terminal tool that:
+Turns out they're JSONL files in `~/.claude/projects/`, organized by an encoded version of your directory path. Session names (if you use `claude --name`) are buried as `custom-title` entries inside the JSONL. And there's an `entrypoint` field that lets you filter out SDK-based tools.
 
-- Shows all your projects with Claude sessions (sorted by recent activity)
-- Lists sessions per project with names, timestamps, and message counts
-- Shows a **conversation preview** panel so you can see what a session was about before opening it
-- Lets you fuzzy-search and delete sessions
-- Filters out non-Claude sessions (SDK tools, etc.)
+I built **claude-picker** — a terminal tool that:
 
-**How it works:** I reverse-engineered Claude Code's session storage format (`~/.claude/projects/` has JSONL files, `~/.claude/sessions/` has metadata). The tool reads these files and presents them in a polished fzf interface.
+- Shows all your project directories that have Claude sessions (sorted by recent activity)
+- Lists sessions per project with names, message counts, and relative timestamps
+- Previews the last few messages in a side panel so you know what a session is about before opening it
+- Fuzzy search with fzf
+- Ctrl+D to delete sessions you don't need
+- Filters out non-Claude sessions automatically (I use Wibey too, those were cluttering things up)
 
-**432 lines total.** No dependencies beyond fzf and python3. Works in any terminal.
+432 lines. Bash + Python + fzf. Works in any terminal.
 
 Install:
 
 ```bash
-git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
+git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker
+bash ~/.claude-picker/install.sh
 ```
+
+The thing that actually changed my workflow more than the tool itself: I started naming every session. `claude --name "auth-refactor"` takes two seconds and makes sessions instantly findable.
 
 GitHub: [github.com/anshul-garg27/claude-picker](https://github.com/anshul-garg27/claude-picker)
 
-Would love feedback. If you use Claude Code regularly, give it a try and let me know what you think.
+Still rough around the edges but it works. Would love to hear if others have the same pain point or if there's a better way I'm missing.
 
 ---
 
 ## Reddit: r/commandline
 
-**Title:** claude-picker: a fzf-based session manager for Claude Code (browse, preview, resume conversations)
+**Title:** Built a session browser for Claude Code with fzf — two-step project→session picker with conversation previews
 
 **Body:**
 
-Built a session manager for Claude Code using bash, python3, and fzf.
+Quick share for anyone using Claude Code from the terminal.
 
-**The problem:** Claude Code stores sessions as JSONL files in `~/.claude/projects/` but the built-in `--resume` flag just shows a flat list of UUIDs. No project filtering, no preview, no names.
+Claude Code saves sessions as JSONL files in `~/.claude/projects/` but the built-in `--resume` only shows UUIDs. No filtering, no preview.
 
-**What it does:**
+I put together a tool that:
 
-- Two-step fzf picker: project → session
-- Conversation preview in fzf's preview window (extracts last few messages from JSONL)
-- Named sessions (via `claude --name "..."`) appear on top
-- Ctrl+D to delete, fuzzy search to filter
-- 256-color ANSI output with visual hierarchy
-- Auto-detects Warp terminal for tab config integration
+1. Discovers all directories with Claude sessions, resolves their real paths (Claude's encoding is lossy — `/` and `_` both become `-`)
+2. Presents a fzf picker with relative timestamps and session counts
+3. After picking a project, shows sessions with names, message counts, and a conversation preview in fzf's `--preview` window
+4. `ctrl-d` to delete, fuzzy search to filter, `execute-silent` + `reload` for the delete-refresh combo
 
-**How it works:**
+The technically interesting bits:
 
-Claude encodes directory paths by replacing `/` and `_` with `-`. Sessions are JSONL files with `custom-title` entries for names and `entrypoint` fields to distinguish CLI sessions from SDK tools. The tool uses three fallback strategies to resolve encoded paths back to real directories.
+- Three-layer path resolution (metadata lookup → JSONL `cwd` field scan → encode-and-compare)
+- ANSI 256-color output with visual hierarchy (named sessions green + bold, unnamed dimmed)
+- Preview renderer that strips system noise from JSONL (hook outputs, command metadata, system reminders)
+- Entrypoint-based filtering to separate Claude CLI sessions from SDK tool sessions
 
-432 lines. bash + python3 + fzf. MIT licensed.
+432 lines across 3 files. Bash orchestrator + bash list builder + Python preview renderer.
+
+```bash
+git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker
+bash ~/.claude-picker/install.sh
+```
 
 GitHub: [github.com/anshul-garg27/claude-picker](https://github.com/anshul-garg27/claude-picker)
 
@@ -69,83 +79,105 @@ GitHub: [github.com/anshul-garg27/claude-picker](https://github.com/anshul-garg2
 
 ## Reddit: r/terminal
 
-**Title:** Built a polished fzf picker for browsing Claude Code sessions — with conversation previews and ANSI colors
+**Title:** Terminal UI for browsing Claude Code sessions — fzf with 256-color output, conversation preview panel, and activity bars
 
 **Body:**
 
-Sharing a tool I built to manage Claude Code sessions from the terminal.
+Sharing a tool I built for managing Claude Code sessions. Posting here because the terminal UI aspect might be interesting regardless of whether you use Claude Code.
 
-The interesting part (from a terminal UI perspective):
+The design uses:
 
-- Full 256-color palette using `\033[38;5;XXXm` codes
-- fzf with `--preview` running a Python script for conversation rendering
-- `--bind` with `execute-silent` + `reload` for delete-and-refresh
-- Visual activity bars (`████████`) showing session counts per project
-- Relative timestamps, section headers, icons
+- fzf with `--preview` pointing to a Python renderer
+- 256-color ANSI codes (`\033[38;5;XXXm`) for a refined palette — soft cyan for project names, warm yellow for saved indicators, dimmed gray for timestamps
+- `--bind` with `execute-silent` + `reload` for delete-and-refresh in one keystroke
+- `--delimiter` and `--with-nth` to hide internal IDs while keeping them accessible for the preview command
+- Activity bars (`████████`) rendered inline showing session counts per project
+- Section headers ("saved" / "recent") as non-functional separator rows
+- `--color` overrides for pointer, prompt, border, and gutter to achieve a cohesive dark-theme look
 
-It's 432 lines across 3 files (bash orchestrator + bash list builder + python preview renderer). Works in any terminal that supports 256 colors.
+The preview panel extracts conversation messages from JSONL files and renders them with role-colored labels (cyan for user, yellow for AI), stripping system noise.
+
+432 lines. bash + python3 + fzf.
 
 GitHub: [github.com/anshul-garg27/claude-picker](https://github.com/anshul-garg27/claude-picker)
+
+Happy to answer questions about the fzf configuration — took a fair amount of trial and error to get `--bind`, `--preview`, and ANSI colors to play nice together.
 
 ---
 
 ## Hacker News: Show HN
 
-**Title:** Show HN: Claude-Picker – Terminal session manager for Claude Code (fzf + bash)
+**Title:** Show HN: Claude-Picker – Browse and resume Claude Code sessions from your terminal
 
 **URL:** https://github.com/anshul-garg27/claude-picker
 
-**Text (optional):**
+**Text:**
 
-Claude Code stores conversations as JSONL files in ~/.claude/projects/ but the built-in --resume flag shows a flat list of UUIDs with no project filtering or preview.
+Hi HN. I've been using Claude Code daily and kept running into the same problem: the built-in --resume shows a flat list of session UUIDs with no project filtering or preview.
 
-claude-picker is a 432-line terminal tool (bash + python3 + fzf) that adds:
+I spent an afternoon reverse-engineering how Claude Code stores sessions. They're JSONL files in ~/.claude/projects/, keyed by an encoded directory path. Session names are custom-title entries in the JSONL. Each message has an entrypoint field that distinguishes CLI sessions from SDK-based tools.
 
-- Project-level session browsing
-- Conversation preview (extracts messages from JSONL)
-- Named session support
-- Fuzzy search and delete
-- Smart filtering (CLI sessions only, excludes SDK tools)
+claude-picker is a 432-line tool (bash + python3 + fzf) that reads these files and gives you:
 
-I reverse-engineered the session storage format to build this. The interesting technical bits: lossy path encoding (/ and _ both become -), three-layer path resolution, and JSONL noise filtering for clean previews.
+- A project picker showing all directories with Claude sessions
+- A session browser with names, message counts, and relative timestamps
+- A conversation preview panel (strips system noise from JSONL, shows the last few user/AI messages)
+- Fuzzy search and Ctrl+D to delete
 
-Works in any terminal. Optional Warp tab config integration.
+The technically tricky part was path resolution. Claude's encoding replaces both / and _ with -, making it lossy. I use three fallback strategies: metadata lookup, scanning JSONL for cwd fields, and encode-then-compare against known paths.
+
+No dependencies beyond fzf and python3. Works in any terminal. MIT licensed.
+
+I'd appreciate feedback, especially from anyone who's worked with Claude Code's session format. Curious if there's a cleaner way to resolve the encoded paths.
 
 ---
 
-## Warp Community Post
+## Warp Community / Discord
 
-**Title:** Claude Picker — Browse and resume Claude Code sessions from the + menu
+**Title:** Claude Picker — Browse Claude Code sessions from the + menu
 
 **Body:**
 
-Hey Warp community!
+Hey Warp fam,
 
-I built a session manager for Claude Code that integrates with Warp's tab configs.
+Built a session manager for Claude Code that plugs right into Warp's tab configs.
 
-**What it does:**
-Click `+` → "Claude Picker" and you get a two-step fzf flow:
-1. Pick a project directory (shows all dirs with Claude sessions)
-2. Browse sessions with names, message counts, and a **live conversation preview**
+**The problem:** Claude Code's `--resume` shows UUIDs across all projects. When you have 15+ sessions across multiple repos, finding the right one is painful.
 
-**Features:**
-- Named sessions appear on top (use `claude --name "feature-x"` to name them)
-- Fuzzy search to find sessions instantly
-- Ctrl+D to delete old sessions
-- Preview panel shows the last few messages so you know what a session was about
-- Only shows Claude Code sessions (filters out SDK-based tools)
-- Activity bars showing how many sessions each project has
+**What it does:** Click `+` → "Claude Picker" and you get:
+
+1. A project picker (all directories where you've used Claude Code)
+2. A session browser with conversation preview, fuzzy search, and delete
+
+Named sessions (created with `claude --name "something"`) show on top. Everything is fzf-powered with 256-color output.
 
 **Install:**
 
 ```bash
-git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
+git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker
+bash ~/.claude-picker/install.sh
 ```
 
-The installer auto-detects Warp and adds the tab config to `~/.warp/tab_configs/`.
+The installer auto-detects Warp and drops a tab config into `~/.warp/tab_configs/`. You'll see "Claude Picker" in the `+` menu immediately.
 
-It also works in any other terminal — the Warp integration is a bonus, not a requirement.
+Also works in any other terminal — the Warp integration is a bonus.
 
 GitHub: [github.com/anshul-garg27/claude-picker](https://github.com/anshul-garg27/claude-picker)
 
-Would love to hear what you think!
+---
+
+## Posting Strategy
+
+**Order:**
+1. Reddit r/ClaudeAI first (Tuesday morning) — biggest relevant audience
+2. Twitter thread same day, 2-3 hours later
+3. Hacker News Show HN next morning (Wednesday 8-11 AM ET)
+4. Reddit r/commandline and r/terminal same day as HN
+5. Warp community anytime after
+
+**Critical:**
+- Attach demo GIF to every Reddit post and tweet 1
+- On Reddit, engage with EVERY comment in the first 2 hours
+- On HN, answer technical questions with depth
+- Don't cross-post the exact same text — each post is written for its platform
+- Don't post to all subreddits on the same day (looks spammy)

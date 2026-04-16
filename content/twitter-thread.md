@@ -1,109 +1,102 @@
 # Twitter/X Thread
 
----
-
-## Tweet 1 (Hook)
-
-I use Claude Code every day.
-
-But I had 50+ sessions scattered across projects with no way to find them.
-
-So I built claude-picker — a session manager that lets you browse, preview, and resume any Claude Code conversation.
-
-Open source. 432 lines. Zero config.
-
-Here's how it works:
-
-[ATTACH: demo GIF showing full flow]
+Post Tuesday-Thursday, 9-11 AM EST for maximum reach.
+ATTACH A DEMO GIF TO TWEET 1. Without it, engagement drops 3-5x.
 
 ---
 
-## Tweet 2 (The Problem)
+## Tweet 1 (Hook — MUST stand alone)
 
-The problem with Claude Code sessions:
+You know that thing where you have 15 Claude Code sessions and can't remember which one had the fix you need?
 
-- `claude --resume` shows ALL sessions globally
-- No preview — just UUIDs and timestamps
-- No project filtering
-- Can't delete old sessions
+I got tired of clicking through UUIDs. So I built a session browser.
 
-You end up clicking through 5 wrong sessions to find the one you need.
+432 lines. fzf. Works in any terminal.
 
----
-
-## Tweet 3 (The Solution)
-
-claude-picker fixes this with a two-step flow:
-
-Step 1: Pick your project (with activity bars)
-Step 2: Browse sessions with names + message counts
-
-Named sessions appear on top.
-Unnamed sessions are grouped below.
-
-All fuzzy-searchable with fzf.
-
-[ATTACH: screenshot of session picker]
+[ATTACH: 15-second demo GIF — full flow from project picker to session resume]
 
 ---
 
-## Tweet 4 (Preview)
+## Tweet 2 (Problem — relatable)
 
-The killer feature: conversation preview.
+The built-in `claude --resume` gives you this:
 
-Hover over any session and see the last few messages — before opening it.
+```
+4a2e8f1c-9b3d... (2 hours ago)
+b7c9d2e0-1f4a... (3 hours ago)
+e5f8a3b1-7c2d... (yesterday)
+```
 
-No more guessing which session had that brilliant fix.
+No project names. No preview. No way to tell sessions apart.
 
-[ATTACH: screenshot showing preview panel]
-
----
-
-## Tweet 5 (How It Works)
-
-How it works under the hood:
-
-I reverse-engineered Claude Code's session storage:
-
-~/.claude/projects/ → JSONL files per session
-~/.claude/sessions/ → metadata (name, cwd, pid)
-
-Path encoding: / and _ both become -
-Session names: stored as "custom-title" in JSONL
-Filtering: "entrypoint" field distinguishes Claude CLI from SDK tools
+I was clicking through 4-5 wrong sessions every time.
 
 ---
 
-## Tweet 6 (Install)
+## Tweet 3 (Solution — show, don't tell)
 
-Install in 10 seconds:
+claude-picker gives you this instead:
+
+- Pick a project (with session counts)
+- Browse sessions (named ones on top)
+- Preview the conversation before opening
+- Fuzzy search to filter
+- Ctrl+D to delete
+
+Two-step flow. Under 500ms.
+
+[ATTACH: screenshot of session list with preview panel]
+
+---
+
+## Tweet 4 (Interesting technical bit)
+
+The fun part: reverse-engineering Claude Code's session storage.
+
+Sessions are JSONL files in ~/.claude/projects/
+
+But the path encoding is lossy — both / and _ become -
+
+So /my_project and /my/project encode to the same thing.
+
+Had to write 3 fallback strategies to crack it.
+
+---
+
+## Tweet 5 (The real insight)
+
+Honestly, the tool wasn't the real win.
+
+The real win: I started naming every session.
+
+```
+claude --name "auth-refactor"
+claude --name "fix-race-condition"
+```
+
+2 seconds of effort. Now I find any conversation in under 3 seconds.
+
+---
+
+## Tweet 6 (CTA)
+
+It's open source. Works in any terminal.
 
 ```
 git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
 ```
 
-Requirements: fzf + python3 (that's it)
+All you need: fzf + python3.
 
-Works in ANY terminal. Warp users get a bonus tab config.
+Warp users get a bonus tab config in the + menu.
 
----
-
-## Tweet 7 (CTA)
-
-Pro tip that changed my workflow:
-
-Always name your Claude Code sessions:
-
-```
-claude --name "auth-refactor"
-claude --name "fix-bug-123"
-```
-
-Takes 2 seconds. Saves you 10 minutes of searching later.
-
-Star on GitHub if useful: github.com/anshul-garg27/claude-picker
+github.com/anshul-garg27/claude-picker
 
 ---
 
-## Suggested hashtags
-#ClaudeCode #DeveloperTools #CLI #OpenSource #Anthropic #Productivity
+## Posting Notes
+- Schedule tweet 1 at peak time (Tue-Thu 9-11 AM EST)
+- Reply-chain the rest immediately after
+- Quote-tweet #1 with the GIF again 6-8 hours later for second wave
+- Pin the thread to your profile for a week
+- Hashtags (only on tweet 1 or 6): #ClaudeCode #DeveloperTools #OpenSource

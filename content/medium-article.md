@@ -1,229 +1,135 @@
-# I Built a Session Manager for Claude Code Because I Was Drowning in 50+ Conversations
+# I Reverse-Engineered How Claude Code Stores Sessions and Built a 432-Line Tool to Browse Them
 
-## I kept losing my best Claude Code sessions. So I reverse-engineered how Claude stores them and built a tool to fix it.
+*How one frustrating afternoon led me to dig through JSONL files, crack a lossy path encoding scheme, and ship a session manager I now use 20 times a day.*
 
 ---
 
-If you use Claude Code daily, you know the feeling.
+Let me be upfront: I didn't set out to build this.
 
-You're deep in a debugging session. Claude just helped you untangle a gnarly race condition. The fix is working. You close the terminal, grab lunch, come back — and now you have no idea which session that was.
+Last Tuesday, I was three projects deep into Claude Code — debugging a Drizzle ORM migration in one, setting up MCP servers in another, and somewhere in between I'd had this brilliant 2am conversation about restructuring my entire auth middleware. 
 
-`claude --resume` shows you a list of UUIDs. Helpful.
+I needed to get back to that auth conversation. So I ran `claude --resume`.
+
+And got this:
 
 ```
 ? Pick a conversation to resume
   4a2e8f1c-9b3d-4e7a... (2 hours ago)
-  b7c9d2e0-1f4a-8b6c... (3 hours ago)  
+  b7c9d2e0-1f4a-8b6c... (3 hours ago)
   e5f8a3b1-7c2d-9e0f... (yesterday)
+  ...14 more
 ```
 
-Which one had the race condition fix? Which one was the auth refactor? Which one was that brilliant idea at 2am that you definitely need to find again?
+UUIDs. Timestamps. Nothing else. No project names, no conversation preview, no way to tell which session had what. I clicked through four wrong ones before finding the auth conversation. Then I did something I do too often — I got nerd-sniped by the problem instead of actually doing my work.
 
-You click through three wrong sessions before finding it. Or worse — you give up and start a new one, losing all that context.
-
-**I got tired of this.** So I built `claude-picker`.
+Two hours later, I had a working session manager. (The auth middleware is still half-done. Don't judge.)
 
 ---
 
-## What is claude-picker?
+## What I Actually Built
 
-It's a terminal-native session manager for Claude Code. In 432 lines of bash and Python, it gives you:
+**claude-picker** is a terminal tool that does three things:
 
-1. **A project picker** — see every directory where you've used Claude Code
-2. **A session browser** — with names, timestamps, message counts
-3. **A conversation preview** — see the last few messages *before* opening
-4. **Fuzzy search** — powered by fzf, type to filter instantly
-5. **Delete sessions** — Ctrl+D to clean up what you don't need
+1. Shows you every project directory where you've used Claude Code
+2. Lets you browse sessions per project — with names, message counts, and timestamps
+3. Shows a conversation preview before you open anything
 
-The whole thing runs in your terminal. No Electron app, no web UI, no dependencies beyond `fzf` and `python3`.
+It's 432 lines across three files. Bash, Python, and fzf. No frameworks, no build step, no config files. You run `claude-picker` and it works.
 
----
-
-## The Problem in Detail
-
-Claude Code is incredible for development work. But it has a session management blind spot.
-
-**Problem 1: No project filtering.** `claude --resume` shows sessions from every directory. If you work on multiple projects (who doesn't?), you're scrolling through a mixed bag of unrelated conversations.
-
-**Problem 2: No preview.** You can't see what a session was about until you open it. Each session shows a timestamp and a UUID. That's it.
-
-**Problem 3: No names by default.** Claude Code supports `--name` flags, but most people don't use them. So all sessions look identical.
-
-**Problem 4: Mixed sessions.** If you use other tools built on Claude's SDK (like Wibey or custom agents), those sessions appear in the same list. There's no way to filter.
+<!-- TODO: Insert terminal recording GIF here -->
 
 ---
 
-## Reverse-Engineering Claude's Session Storage
+## Digging Into Claude's Session Storage
 
-The first thing I needed to figure out: where does Claude Code actually store sessions?
-
-After some digging, I found the answer:
+The fun part was figuring out where Claude Code actually keeps your conversations. There's no documentation for this (or at least I couldn't find any). Here's what I found by poking around `~/.claude/`:
 
 ```
 ~/.claude/
-├── projects/              # Session data, organized by directory
-│   ├── -Users-you-project-a/
-│   │   ├── abc123.jsonl   # Each session is a JSONL file
+├── projects/                    # Your sessions live here
+│   ├── -Users-you-my-project/   # One directory per project
+│   │   ├── abc123.jsonl         # One file per session
 │   │   └── def456.jsonl
-│   └── -Users-you-project-b/
-│       └── ghi789.jsonl
-└── sessions/              # Session metadata (name, cwd, pid)
-    ├── 12345.json
-    └── 67890.json
+│   └── -Users-you-other-thing/
+└── sessions/                    # Metadata (when it exists)
+    └── 12345.json               # Name, cwd, start time
 ```
 
-**Key discoveries:**
+Three things tripped me up.
 
-**1. Path encoding.** Claude encodes directory paths by replacing `/` and `_` with `-`. So `/Users/you/my_project` becomes `-Users-you-my-project`. This is important for mapping sessions back to real directories.
+**The path encoding is lossy.** Claude turns `/Users/you/my_project` into `-Users-you-my-project`. Both `/` and `_` become `-`. Which means you can't reliably reverse it — `-my-project` could be `/my/project` or `/my_project` or `/my-project`. I ended up writing three fallback strategies to resolve paths: metadata lookup, scanning JSONL files for `cwd` fields, and encode-then-compare against known paths. Ugly? Yes. Works for 100% of my sessions? Also yes.
 
-**2. JSONL format.** Each session is a JSONL (JSON Lines) file where every line is a message or event. User messages, assistant responses, tool calls — everything is here.
-
-**3. Session names.** When you use `claude --name "something"`, the name is stored as a `custom-title` entry inside the JSONL file:
+**Session names are buried.** When you do `claude --name "auth-refactor"`, the name isn't in any obvious metadata file. It's a `custom-title` entry inside the JSONL:
 
 ```json
 {"type": "custom-title", "customTitle": "auth-refactor", "sessionId": "abc123..."}
 ```
 
-**4. Metadata files.** The `~/.claude/sessions/` directory has JSON files with metadata: the real `cwd`, `startedAt` timestamp, and `name` (if set from the CLI). But these only exist for sessions that were active in the current boot — older sessions don't have metadata.
+I only found this by grep-ing through session files after nothing else worked.
 
-**5. Entrypoint field.** Each message has an `entrypoint` field. Claude Code CLI uses `"cli"` or `"sdk-cli"`. SDK-based tools use `"sdk-ts"`. This is how I filter out non-Claude sessions.
-
----
-
-## The Architecture
-
-The tool is split into three scripts:
-
-### 1. `claude-picker` (main entry point)
-
-The orchestrator. It runs two sequential fzf pickers:
-
-- **Step 1:** Discover all project directories with Claude sessions, resolve their real paths, and present them in a fuzzy-searchable list.
-- **Step 2:** For the selected project, list all sessions with names, timestamps, and message counts.
-
-### 2. `lib/session-list.sh`
-
-Builds the formatted session list for fzf. It:
-- Reads all `.jsonl` files in the project directory
-- Extracts session names from `custom-title` entries
-- Falls back to metadata files for names
-- Counts user/assistant messages
-- Filters out non-Claude sessions by checking `entrypoint`
-- Separates named ("saved") and unnamed ("recent") sessions
-- Applies ANSI colors for visual hierarchy
-
-### 3. `lib/session-preview.py`
-
-Generates the conversation preview panel. When you hover over a session in fzf, it:
-- Reads the JSONL file
-- Extracts the last 8 meaningful user/AI messages
-- Filters out system noise (hook outputs, command metadata)
-- Formats with colors: cyan for "you", yellow for "ai"
+**The entrypoint field saved me.** I also use Wibey (another tool built on Claude's SDK), and its sessions were showing up mixed in with my Claude Code conversations. Turns out every message has an `entrypoint` field — Claude Code uses `"cli"`, print mode uses `"sdk-cli"`, and SDK tools use `"sdk-ts"`. One filter and the noise was gone.
 
 ---
 
-## The Hardest Parts
+## How the Pieces Fit Together
 
-### Resolving real directory paths
+The tool has three parts:
 
-Claude's path encoding is lossy. Both `/` and `_` become `-`, so you can't reliably reverse the encoding. `-Users-you-my-project` could be `/Users/you/my-project` or `/Users/you/my_project`.
+**The main script** (`claude-picker`) runs two sequential fzf pickers. First you pick a project, then you pick a session. It handles the directory discovery, path resolution, and launches Claude when you make a selection.
 
-My solution uses three fallback strategies:
+**The list builder** (`lib/session-list.sh`) reads JSONL files, extracts names and message counts, filters non-Claude sessions, and outputs ANSI-colored lines for fzf. Named sessions (the ones you created with `--name`) go on top under a "saved" header. Everything else goes under "recent."
 
-1. **Match session IDs against metadata** — session metadata files have the real `cwd`. Find any session ID in the JSONL, look it up in metadata.
-2. **Read `cwd` from JSONL entries** — some messages have a top-level `cwd` field with the real path.
-3. **Encode-and-compare** — take all known `cwd` values from metadata, encode them, and see if any match the directory name.
+**The preview renderer** (`lib/session-preview.py`) is where most of the annoying work went. Claude's JSONL files are noisy — hook outputs, system reminders, command metadata, tool call results. The preview strips all of that and shows you just the last few human messages. The conversation you actually care about.
 
-This three-layer approach resolves paths for 100% of my sessions.
-
-### Filtering noise from previews
-
-Claude Code's JSONL files contain *everything* — hook outputs, system reminders, command metadata, tool results. The raw content looks like:
-
-```
-<local-command-caveat>Caveat: The messages below were generated...
-<system-reminder>The task tools haven't been used recently...
-<bash-stdout>npm install completed</bash-stdout>
-```
-
-The preview script has a noise filter that strips all of this, showing only the actual human conversation.
-
-### fzf integration
-
-fzf is incredibly powerful but tricky to configure for this use case:
-
-- `--delimiter` and `--with-nth` to hide session IDs from the display while keeping them accessible
-- `--preview` with a shell command that extracts the session ID and passes it to the preview script
-- `--bind` for Ctrl+D delete with `execute-silent` + `reload` to delete and refresh in one action
-- `--color` with 256-color codes for a polished visual design
-- `--layout=reverse` to put the cursor on the most recent item
+I'm not going to pretend the code is beautiful. The path resolution function has three nested fallback loops. The JSONL noise filter is basically a list of string prefixes I don't want to see. But it's fast (under 500ms to scan 50+ sessions) and I haven't hit a bug since the first day.
 
 ---
 
-## How to Use It
+## The Workflow Change Nobody Talks About
 
-### Install
+Here's the thing that actually surprised me. The tool itself isn't the insight — it's what happened to my workflow after I started using it.
 
-```bash
-git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
-```
-
-### Run
+I started naming sessions. Every time.
 
 ```bash
-claude-picker
+claude --name "drizzle-migration"
+claude --name "fix-race-condition"  
+claude --name "mcp-postgres-setup"
 ```
 
-### Pro tips
+It takes two seconds. And now when I open claude-picker, I see this:
 
-**Name your important sessions:**
-
-```bash
-claude --name "auth-refactor"
-claude --name "fix-bug-123"
+```
+●  ui-redesign                    5m ago   2 msgs
+●  auth-refactor                  2h ago  45 msgs
+●  drizzle-migration              1d ago  28 msgs
+○  session                        3h ago  12 msgs
+○  session                        1d ago   6 msgs
 ```
 
-Named sessions appear at the top of the picker with a `●` indicator. This is the single best workflow improvement — you'll always find your important sessions instantly.
-
-**Customize Claude flags:**
-
-```bash
-export CLAUDE_PICKER_FLAGS=""                    # no special flags
-export CLAUDE_PICKER_FLAGS="--model sonnet"      # use a specific model
-```
-
-**Warp terminal users** get a bonus: the installer automatically adds a tab config so you can access claude-picker from the `+` menu.
-
----
-
-## What I Learned
-
-Building this taught me a few things:
-
-1. **Claude Code's session format is well-structured.** JSONL is a great choice — you can stream-read without loading entire files, and each line is independently parseable.
-
-2. **fzf is an underrated UI framework.** With `--preview`, `--bind`, and ANSI colors, you can build remarkably polished TUI experiences with just shell scripts.
-
-3. **The best developer tools solve small, specific pain points.** This tool doesn't do anything revolutionary. It just makes session management — something you do dozens of times a day — feel effortless.
-
-4. **Always name your sessions.** Seriously. `claude --name "descriptive-name"` takes two seconds and saves you minutes of searching later.
+The named sessions are instantly scannable. I can find any conversation in under three seconds. Before this, I was spending actual minutes clicking through UUIDs. Multiple times a day. The math works out to something embarrassing.
 
 ---
 
 ## Try It
 
-The tool is open source and works in any terminal:
-
-**GitHub:** [github.com/anshul-garg27/claude-picker](https://github.com/anshul-garg27/claude-picker)
+If you use Claude Code and you've ever lost track of a session:
 
 ```bash
-git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker && bash ~/.claude-picker/install.sh
+git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker
+bash ~/.claude-picker/install.sh
 ```
 
-If you use Claude Code daily, give it a try. And if you find it useful, a star on GitHub would mean a lot.
+You need `fzf` and `python3` (that's it). Works in any terminal. If you use Warp, the installer adds a tab config automatically — you'll see "Claude Picker" in the `+` menu.
+
+The whole thing is MIT licensed. 432 lines. If something breaks, you can read the entire codebase in ten minutes.
+
+One request: start naming your Claude Code sessions. `claude --name "whatever"`. Future you will be grateful.
 
 ---
 
-*Built by [Anshul Garg](https://github.com/anshul-garg27). Licensed under MIT.*
+**GitHub:** [github.com/anshul-garg27/claude-picker](https://github.com/anshul-garg27/claude-picker)
 
-*Tags: Claude Code, Anthropic, CLI, Developer Tools, fzf, Terminal, Productivity*
+---
+
+*Tags: Claude Code, Developer Tools, CLI, Terminal, Productivity, AI Coding*
