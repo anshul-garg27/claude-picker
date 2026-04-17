@@ -36,6 +36,7 @@ use ratatui::Frame;
 
 use crate::data::{Project, Session};
 use crate::theme::Theme;
+use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
 /// Hard cap on how wide the tree panel renders. Anything wider is centred
 /// so sessions on 160+ column monitors don't stretch to an unreadable
@@ -59,6 +60,20 @@ pub struct TreeNode {
     ///
     /// `ancestor_bars.len() == depth.saturating_sub(1)` for session rows.
     pub ancestor_bars: Vec<bool>,
+    /// For session rows that have fork children in this project: the
+    /// total count of *descendants* underneath this node (transitive).
+    /// Zero for leaves and non-session rows. Used by the renderer to
+    /// show a `(+N forks)` hint when the node is collapsed, and by the
+    /// event loop to decide whether `→`/`←` do anything meaningful.
+    pub fork_descendants: usize,
+    /// True when this session row has at least one direct or transitive
+    /// fork child AND is currently expanded. Drives the `▾`/`▸` glyph
+    /// shown in the gutter.
+    pub is_expanded: bool,
+    /// When this node is a session with children, its parent's id lives
+    /// here so `←` on a collapsed root can jump to the parent (if any).
+    /// `None` for project headers, spacers, and leaf sessions.
+    pub parent_session_id: Option<String>,
 }
 
 /// Kind of row.
@@ -83,6 +98,20 @@ impl TreeNode {
     pub fn is_selectable(&self) -> bool {
         matches!(self.kind, NodeKind::SessionRow { .. })
     }
+
+    /// True when this session has fork children that can be shown/hidden.
+    /// Leaves, headers and spacers all return false.
+    pub fn is_collapsible(&self) -> bool {
+        matches!(self.kind, NodeKind::SessionRow { .. }) && self.fork_descendants > 0
+    }
+
+    /// Session id under this node, if it is a session row.
+    pub fn session_id(&self) -> Option<&str> {
+        match &self.kind {
+            NodeKind::SessionRow { session } => Some(session.id.as_str()),
+            _ => None,
+        }
+    }
 }
 
 /// Build the flattened list for one or more projects.
@@ -96,7 +125,28 @@ impl TreeNode {
 ///
 /// Orphaned forks (their claimed parent id is missing) are promoted to
 /// roots so they still render — they keep the `◆` glyph for clarity.
+///
+/// Every session row that has fork children renders in either an
+/// expanded or collapsed state. This free function has historically been
+/// "everything is expanded" — it still is, for back-compat. Callers that
+/// want drill-down use [`build_tree_with_collapsed`].
 pub fn build_tree(projects: &[Project], sessions_by_project: &[Vec<Session>]) -> Vec<TreeNode> {
+    build_tree_with_collapsed(projects, sessions_by_project, &Default::default())
+}
+
+/// Same as [`build_tree`] but with an explicit "these session ids are
+/// collapsed" set. Collapsed nodes still emit their own row (so the
+/// cursor can land on them and the user knows they exist) — their fork
+/// descendants are simply omitted from the output.
+///
+/// This is the form the live `--tree` screen uses. The default on entry
+/// is *every fork root collapsed*; the `→` / `Space` / `l` keys remove
+/// the node's id from the set, and `←` / `h` put it back.
+pub fn build_tree_with_collapsed(
+    projects: &[Project],
+    sessions_by_project: &[Vec<Session>],
+    collapsed: &std::collections::HashSet<String>,
+) -> Vec<TreeNode> {
     assert_eq!(
         projects.len(),
         sessions_by_project.len(),
@@ -116,6 +166,9 @@ pub fn build_tree(projects: &[Project], sessions_by_project: &[Vec<Session>]) ->
                 depth: 0,
                 is_last_child: true,
                 ancestor_bars: Vec::new(),
+                fork_descendants: 0,
+                is_expanded: false,
+                parent_session_id: None,
             });
         }
         first = false;
@@ -128,16 +181,54 @@ pub fn build_tree(projects: &[Project], sessions_by_project: &[Vec<Session>]) ->
             depth: 0,
             is_last_child: true,
             ancestor_bars: Vec::new(),
+            fork_descendants: 0,
+            is_expanded: false,
+            parent_session_id: None,
         });
 
-        append_project_sessions(&mut out, sessions);
+        append_project_sessions(&mut out, sessions, collapsed);
     }
 
     out
 }
 
+/// Session ids (inside a single project) that are fork roots — i.e.
+/// session rows at depth 1 that have at least one fork child.
+///
+/// Returned as a fresh `HashSet` so the caller can merge with existing
+/// collapsed state (e.g., the live `--tree` seeds its collapsed set with
+/// everything this returns).
+pub fn collapsible_fork_root_ids(
+    sessions_by_project: &[Vec<Session>],
+) -> std::collections::HashSet<String> {
+    let mut out = std::collections::HashSet::new();
+    for sessions in sessions_by_project.iter() {
+        let mut id_to_index: std::collections::HashMap<&str, usize> =
+            std::collections::HashMap::new();
+        for (i, s) in sessions.iter().enumerate() {
+            id_to_index.insert(s.id.as_str(), i);
+        }
+        let mut has_child = vec![false; sessions.len()];
+        for s in sessions.iter() {
+            if let Some(&parent_idx) = s.forked_from.as_deref().and_then(|p| id_to_index.get(p)) {
+                has_child[parent_idx] = true;
+            }
+        }
+        for (i, s) in sessions.iter().enumerate() {
+            if has_child[i] {
+                out.insert(s.id.clone());
+            }
+        }
+    }
+    out
+}
+
 /// Append all session rows for one project into `out`.
-fn append_project_sessions(out: &mut Vec<TreeNode>, sessions: &[Session]) {
+fn append_project_sessions(
+    out: &mut Vec<TreeNode>,
+    sessions: &[Session],
+    collapsed: &std::collections::HashSet<String>,
+) {
     // Index sessions by id for parent lookups.
     let mut id_to_index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
     for (i, s) in sessions.iter().enumerate() {
@@ -165,13 +256,31 @@ fn append_project_sessions(out: &mut Vec<TreeNode>, sessions: &[Session]) {
         kids.sort_by(|a, b| sort_by_recency(a, b, sessions));
     }
 
+    // Pre-compute transitive descendant counts so every session row can
+    // report "(+N forks)" when collapsed.
+    let mut descendant_count = vec![0usize; sessions.len()];
+    fn count_desc(idx: usize, children_of: &[Vec<usize>], out: &mut [usize]) -> usize {
+        let mut total = 0;
+        for &c in &children_of[idx] {
+            total += 1 + count_desc(c, children_of, out);
+        }
+        out[idx] = total;
+        total
+    }
+    for &r in &roots {
+        count_desc(r, &children_of, &mut descendant_count);
+    }
+
     for (i, &root_idx) in roots.iter().enumerate() {
         let is_last = i + 1 == roots.len();
         walk(
             out,
             sessions,
             &children_of,
+            &descendant_count,
+            collapsed,
             root_idx,
+            None, // roots have no parent in-project.
             1,
             is_last,
             &[], // roots have no ancestors above them in the in-project tree
@@ -179,16 +288,26 @@ fn append_project_sessions(out: &mut Vec<TreeNode>, sessions: &[Session]) {
     }
 }
 
-/// Depth-first recursion emitting one [`TreeNode`] per visit.
+/// Depth-first recursion emitting one [`TreeNode`] per visit. Skips the
+/// subtree under any session whose id is in `collapsed`.
+#[allow(clippy::too_many_arguments)]
 fn walk(
     out: &mut Vec<TreeNode>,
     sessions: &[Session],
     children_of: &[Vec<usize>],
+    descendant_count: &[usize],
+    collapsed: &std::collections::HashSet<String>,
     idx: usize,
+    parent_id: Option<&str>,
     depth: usize,
     is_last_child: bool,
     ancestor_bars: &[bool],
 ) {
+    let this_id = sessions[idx].id.clone();
+    let descendants = descendant_count[idx];
+    let is_collapsed = descendants > 0 && collapsed.contains(&this_id);
+    let is_expanded = descendants > 0 && !is_collapsed;
+
     out.push(TreeNode {
         kind: NodeKind::SessionRow {
             session: sessions[idx].clone(),
@@ -196,10 +315,13 @@ fn walk(
         depth,
         is_last_child,
         ancestor_bars: ancestor_bars.to_vec(),
+        fork_descendants: descendants,
+        is_expanded,
+        parent_session_id: parent_id.map(|s| s.to_string()),
     });
 
     let kids = &children_of[idx];
-    if kids.is_empty() {
+    if kids.is_empty() || is_collapsed {
         return;
     }
 
@@ -214,7 +336,10 @@ fn walk(
             out,
             sessions,
             children_of,
+            descendant_count,
+            collapsed,
             child,
+            Some(&this_id),
             depth + 1,
             child_last,
             &child_bars,
@@ -293,23 +418,13 @@ fn format_cost(cost: f64) -> String {
     }
 }
 
-/// Cap `s` to `max_chars` characters, appending `…` if truncated.
-fn truncate(s: &str, max_chars: usize) -> String {
-    if max_chars == 0 {
-        return String::new();
-    }
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(max_chars);
-    for (i, ch) in s.chars().enumerate() {
-        if i + 1 >= max_chars {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    out
+/// Cap `s` to `max_cols` **display columns**, appending `…` if truncated.
+///
+/// Delegates to the unicode-aware helper so CJK / emoji session names never
+/// exceed the column budget allotted by the row layout.
+#[inline]
+fn truncate(s: &str, max_cols: usize) -> String {
+    truncate_to_width(s, max_cols)
 }
 
 /// Find the centred sub-rect inside `area` capped at [`MAX_WIDTH`] cols.
@@ -456,8 +571,9 @@ fn render_project_header(
     );
 
     // Space padding between name (left) and count (right-aligned).
-    // `2` accounts for the leading gutter + trailing space.
-    let used = 2 + label.chars().count() + meta.chars().count();
+    // `2` accounts for the leading gutter + trailing space. Use column width
+    // so wide glyphs don't overflow.
+    let used = 2 + display_width(&label) + display_width(&meta);
     let pad = width.saturating_sub(used).max(1);
 
     Line::from(vec![
@@ -493,6 +609,29 @@ fn render_session_row<'a>(
     };
     let cursor = if selected { "▸" } else { " " };
 
+    // ── Expand marker ────────────────────────────────────────────────
+    // Only nodes with fork children get a marker; leaves get a space so
+    // columns line up. `▾` when expanded, `▸` when collapsed. We also
+    // show the marker on depth-0 fork roots only — inner descendants
+    // (depth >= 2) are always visible by virtue of being rendered at
+    // all, so they don't need a twisty.
+    let expand_marker = if node.fork_descendants > 0 {
+        if node.is_expanded {
+            "▾"
+        } else {
+            "▸"
+        }
+    } else {
+        " "
+    };
+    let expand_style = if node.fork_descendants > 0 {
+        Style::default()
+            .fg(theme.mauve)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.surface2)
+    };
+
     // ── Tree connector ────────────────────────────────────────────────
     let connector = connector_prefix(node);
     let connector_style = Style::default().fg(theme.surface2);
@@ -527,12 +666,29 @@ fn render_session_row<'a>(
     let age_col = 10;
     let msgs_col = 9;
     let cost_col = 9;
-    let meta_width = age_col + msgs_col + cost_col + 3; // +3 interior spacing
+    // "(+N forks)" hint when collapsed — shown between name and meta,
+    // right-aligned against the meta block. Lets the user see at a
+    // glance "this root has things under it" without peeking.
+    let fork_hint = if !node.is_expanded && node.fork_descendants > 0 {
+        Some(format!(
+            "(+{} fork{})",
+            node.fork_descendants,
+            if node.fork_descendants == 1 { "" } else { "s" }
+        ))
+    } else {
+        None
+    };
+    let fork_hint_width = fork_hint.as_deref().map(display_width).unwrap_or(0);
+    let fork_hint_pad = if fork_hint.is_some() { 2 } else { 0 };
+    let meta_width = age_col + msgs_col + cost_col + 3 + fork_hint_width + fork_hint_pad;
 
     // Truncate the name so meta always fits. The left-side prefix consumes:
-    //   cursor (2) + connector (variable chars) + glyph+space (2) + leading gutter (2)
+    //   cursor (2) + expand (2) + connector (variable cols) + glyph+space (2) + leading gutter (2)
+    //
+    // `display_width` so connector box-drawing glyphs and any future
+    // ornamental unicode are counted in actual terminal cells.
     let prefix_chars =
-        2 /* cursor + space */ + connector.chars().count() + 2 /* glyph + space */ + 2 /* gutter */;
+        2 /* cursor + space */ + 2 /* expand + space */ + display_width(&connector) + 2 /* glyph + space */ + 2 /* gutter */;
     let name_budget = width
         .saturating_sub(prefix_chars)
         .saturating_sub(meta_width)
@@ -543,6 +699,7 @@ fn render_session_row<'a>(
 
     // Colors for meta.
     let meta_muted = Style::default().fg(theme.overlay0);
+    let fork_hint_style = Style::default().fg(theme.overlay0);
     let cost_style = if session.total_cost_usd >= 1.0 {
         Style::default().fg(theme.peach)
     } else if session.total_cost_usd >= 0.10 {
@@ -554,17 +711,27 @@ fn render_session_row<'a>(
     let mut spans: Vec<Span<'_>> = vec![
         Span::styled(format!(" {cursor}"), cursor_style),
         Span::raw(" "),
+        Span::styled(expand_marker.to_string(), expand_style),
+        Span::raw(" "),
         Span::styled(connector, connector_style),
         Span::styled(glyph.to_string(), glyph_style),
         Span::raw(" "),
         Span::styled(label_padded, name_base),
-        Span::raw(" "),
+    ];
+    if let Some(hint) = fork_hint {
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled(hint, fork_hint_style));
+        spans.push(Span::raw(" "));
+    } else {
+        spans.push(Span::raw(" "));
+    }
+    spans.extend([
         Span::styled(format!("{:>width$}", age, width = age_col), meta_muted),
         Span::raw(" "),
         Span::styled(format!("{:>width$}", msgs, width = msgs_col), meta_muted),
         Span::raw(" "),
         Span::styled(format!("{:>width$}", cost, width = cost_col), cost_style),
-    ];
+    ]);
 
     if selected {
         // Paint the row background so the cursor row pops.
@@ -576,18 +743,11 @@ fn render_session_row<'a>(
     Line::from(spans)
 }
 
-/// Pad `s` with spaces to `width` chars.
+/// Pad `s` to exactly `width` **display columns**. Delegates to the
+/// unicode-aware helper.
+#[inline]
 fn pad_right(s: &str, width: usize) -> String {
-    let c = s.chars().count();
-    if c >= width {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len() + (width - c));
-    out.push_str(s);
-    for _ in 0..(width - c) {
-        out.push(' ');
-    }
-    out
+    pad_to_width(s, width)
 }
 
 #[cfg(test)]
@@ -702,6 +862,9 @@ mod tests {
             depth: 1,
             is_last_child: false,
             ancestor_bars: vec![],
+            fork_descendants: 0,
+            is_expanded: false,
+            parent_session_id: None,
         };
         assert_eq!(connector_prefix(&node), "├─ ");
 
@@ -712,6 +875,9 @@ mod tests {
             depth: 1,
             is_last_child: true,
             ancestor_bars: vec![],
+            fork_descendants: 0,
+            is_expanded: false,
+            parent_session_id: None,
         };
         assert_eq!(connector_prefix(&last), "└─ ");
     }
@@ -728,6 +894,9 @@ mod tests {
             // Ordered root → down: the first bar is the root-level
             // ancestor ("was last child?"), then the parent.
             ancestor_bars: vec![false, true],
+            fork_descendants: 0,
+            is_expanded: false,
+            parent_session_id: None,
         };
         // Root ancestor not last → `│  `, parent was last → `   `, then `├─ `.
         assert_eq!(connector_prefix(&node), "│     ├─ ");
@@ -828,9 +997,15 @@ mod tests {
 
     #[test]
     fn truncate_unicode_safe() {
+        // 😀 = 2 cols, so in a 3-col budget we fit "a" (1) + "…" (1) = 2 cols
+        // and still stay under the cap. Check columns, not codepoints.
         let s = "a\u{1F600}b\u{0928}c";
         let out = truncate(s, 3);
-        assert!(out.chars().count() <= 3);
+        assert!(
+            display_width(&out) <= 3,
+            "got width {}: {out}",
+            display_width(&out)
+        );
         assert!(out.ends_with('…'));
     }
 
@@ -858,6 +1033,9 @@ mod tests {
             depth: 0,
             is_last_child: true,
             ancestor_bars: vec![],
+            fork_descendants: 0,
+            is_expanded: false,
+            parent_session_id: None,
         };
         assert!(!header.is_selectable());
         let spacer = TreeNode {
@@ -865,6 +1043,9 @@ mod tests {
             depth: 0,
             is_last_child: true,
             ancestor_bars: vec![],
+            fork_descendants: 0,
+            is_expanded: false,
+            parent_session_id: None,
         };
         assert!(!spacer.is_selectable());
         let row = TreeNode {
@@ -874,7 +1055,77 @@ mod tests {
             depth: 1,
             is_last_child: true,
             ancestor_bars: vec![],
+            fork_descendants: 0,
+            is_expanded: false,
+            parent_session_id: None,
         };
         assert!(row.is_selectable());
+    }
+
+    #[test]
+    fn collapsed_root_hides_descendants_but_counts_them() {
+        let project = mk_project("p");
+        let sessions = vec![
+            mk_session("root", None, Some("root")),
+            mk_session("fork1", Some("root"), Some("f1")),
+            mk_session("fork2", Some("root"), Some("f2")),
+        ];
+        let mut collapsed = std::collections::HashSet::new();
+        collapsed.insert("root".to_string());
+        let nodes = build_tree_with_collapsed(&[project], &[sessions], &collapsed);
+        // header + 1 root row (forks hidden)
+        assert_eq!(nodes.len(), 2);
+        let row = &nodes[1];
+        match &row.kind {
+            NodeKind::SessionRow { session } => assert_eq!(session.id, "root"),
+            _ => panic!("expected session row"),
+        }
+        assert_eq!(row.fork_descendants, 2, "descendant count preserved");
+        assert!(!row.is_expanded);
+    }
+
+    #[test]
+    fn expanded_root_shows_descendants() {
+        let project = mk_project("p");
+        let sessions = vec![
+            mk_session("root", None, Some("root")),
+            mk_session("fork1", Some("root"), Some("f1")),
+        ];
+        let empty = std::collections::HashSet::new();
+        let nodes = build_tree_with_collapsed(&[project], &[sessions], &empty);
+        // header + root + fork1
+        assert_eq!(nodes.len(), 3);
+        let root_row = &nodes[1];
+        assert!(root_row.is_expanded);
+        assert_eq!(root_row.fork_descendants, 1);
+    }
+
+    #[test]
+    fn collapsible_ids_returns_only_fork_parents() {
+        let sessions = vec![
+            mk_session("root_with_child", None, Some("a")),
+            mk_session("leaf_fork", Some("root_with_child"), Some("b")),
+            mk_session("lonely_root", None, Some("c")),
+        ];
+        let ids = collapsible_fork_root_ids(&[sessions]);
+        assert!(ids.contains("root_with_child"));
+        assert!(!ids.contains("leaf_fork"));
+        assert!(!ids.contains("lonely_root"));
+    }
+
+    #[test]
+    fn parent_session_id_set_for_forks_not_roots() {
+        let project = mk_project("p");
+        let sessions = vec![
+            mk_session("root", None, Some("r")),
+            mk_session("fork", Some("root"), Some("f")),
+        ];
+        let empty = std::collections::HashSet::new();
+        let nodes = build_tree_with_collapsed(&[project], &[sessions], &empty);
+        // nodes[1] = root (parent = None), nodes[2] = fork (parent = "root")
+        let root = &nodes[1];
+        let fork = &nodes[2];
+        assert!(root.parent_session_id.is_none());
+        assert_eq!(fork.parent_session_id.as_deref(), Some("root"));
     }
 }

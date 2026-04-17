@@ -12,6 +12,7 @@ pub mod pricing;
 pub mod project;
 pub mod session;
 pub mod session_rename;
+pub mod transcript;
 
 pub use project::Project;
 pub use session::{PermissionMode, Session, SessionKind, Usage};

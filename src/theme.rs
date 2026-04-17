@@ -543,6 +543,23 @@ pub fn save_persisted_theme(name: ThemeName) -> std::io::Result<()> {
 /// source; they don't crash. A CLI-level error path can still be wired in by
 /// pre-validating the flag — this function is the fallback chain.
 pub fn resolve_theme_name(cli: Option<&str>) -> ThemeName {
+    resolve_theme_name_with_config(cli, "")
+}
+
+/// Same as [`resolve_theme_name`] but accepts a config-file value as a third
+/// source, inserted between env var and the one-liner persistence file.
+///
+/// Precedence when called from `main`:
+///
+///   1. CLI flag (e.g. `--theme dracula`)
+///   2. `CLAUDE_PICKER_THEME` env var
+///   3. Config file `[ui] theme = "…"`
+///   4. One-line `~/.config/claude-picker/theme` persistence
+///   5. Built-in default (Catppuccin Mocha)
+///
+/// Pass an empty string for `config_value` when no config is loaded; that
+/// collapses the behaviour back to the pre-config precedence chain.
+pub fn resolve_theme_name_with_config(cli: Option<&str>, config_value: &str) -> ThemeName {
     if let Some(raw) = cli {
         if let Some(t) = ThemeName::from_str(raw) {
             return t;
@@ -550,6 +567,11 @@ pub fn resolve_theme_name(cli: Option<&str>) -> ThemeName {
     }
     if let Ok(raw) = std::env::var(THEME_ENV_VAR) {
         if let Some(t) = ThemeName::from_str(&raw) {
+            return t;
+        }
+    }
+    if !config_value.is_empty() {
+        if let Some(t) = ThemeName::from_str(config_value) {
             return t;
         }
     }

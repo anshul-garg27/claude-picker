@@ -36,8 +36,14 @@ use crate::commands::pick::load_sessions_for;
 use crate::data::{clipboard, editor, project, Project, Session};
 use crate::events::{self, Event};
 use crate::theme::Theme;
+use crate::ui::command_palette::{self, CommandPalette};
+use crate::ui::conversation_viewer::{
+    self as viewer_ui, ToastKind as ViewerToastKind, ViewerAction, ViewerState,
+};
 use crate::ui::help_overlay::{self, Screen as HelpScreen};
-use crate::ui::tree::{build_tree, render as render_tree, NodeKind, TreeNode};
+use crate::ui::tree::{
+    build_tree_with_collapsed, collapsible_fork_root_ids, render as render_tree, NodeKind, TreeNode,
+};
 
 /// Window in which two `g` presses become a jump-to-top chord.
 const G_CHORD_WINDOW: Duration = Duration::from_millis(500);
@@ -74,7 +80,11 @@ impl Toast {
 /// Entry point for `claude-picker tree`.
 pub fn run() -> anyhow::Result<()> {
     let (projects, sessions_by_project) = load_data()?;
-    let nodes = build_tree(&projects, &sessions_by_project);
+
+    // Seed the collapsed set with every fork root so the default view is
+    // drill-down-ready: roots only, hit `→` to open the subtree.
+    let initial_collapsed = collapsible_fork_root_ids(&sessions_by_project);
+    let nodes = build_tree_with_collapsed(&projects, &sessions_by_project, &initial_collapsed);
 
     // Special-case the empty state: no alt-screen dance, just print and
     // exit so scripted callers don't need to toggle a terminal.
@@ -87,14 +97,14 @@ pub fn run() -> anyhow::Result<()> {
     }
 
     let theme = Theme::mocha();
-    let mut state = TreeState::new(nodes);
+    let mut state = TreeState::new(nodes, projects, sessions_by_project, initial_collapsed);
 
     let mut terminal = setup_terminal()?;
     install_panic_hook();
 
     let result: anyhow::Result<Option<Selection>> = (|| {
         while !state.should_quit {
-            terminal.draw(|f| render_screen(f, &state, &theme))?;
+            terminal.draw(|f| render_screen(f, &mut state, &theme))?;
             state.tick();
             if let Some(ev) = events::next()? {
                 state.handle_event(ev);
@@ -149,13 +159,30 @@ fn print_empty_and_exit() {
 
 /// Per-screen event-loop state.
 struct TreeState {
+    /// The *flat* rendered node list. Rebuilt from `projects` +
+    /// `sessions_by_project` + `collapsed` whenever the user expands
+    /// or collapses something.
     nodes: Vec<TreeNode>,
+    /// Raw project list — retained so we can re-flatten after an
+    /// expand/collapse without going back to disk.
+    projects: Vec<Project>,
+    /// Raw per-project session lists, same shape as above.
+    sessions_by_project: Vec<Vec<Session>>,
+    /// Session ids whose fork subtrees should be hidden. Starts with
+    /// *every* collapsible root (so only top-level rows are visible by
+    /// default); `→`/`Space`/`l` remove ids from this set, `←`/`h` add
+    /// them back.
+    collapsed: std::collections::HashSet<String>,
     /// Index into `nodes`. Constrained to a selectable row.
     cursor: usize,
     should_quit: bool,
     selection: Option<Selection>,
     /// `?` help overlay visible.
     show_help: bool,
+    /// Space-leader command palette. `Some` while open.
+    palette: Option<CommandPalette>,
+    /// Full-screen conversation viewer — `Some` while reading a transcript.
+    viewer: Option<ViewerState>,
     /// Transient status message (clipboard / editor feedback).
     toast: Option<Toast>,
     /// Timestamp of the last `g` press for the `gg` chord.
@@ -163,18 +190,124 @@ struct TreeState {
 }
 
 impl TreeState {
-    fn new(nodes: Vec<TreeNode>) -> Self {
+    fn new(
+        nodes: Vec<TreeNode>,
+        projects: Vec<Project>,
+        sessions_by_project: Vec<Vec<Session>>,
+        collapsed: std::collections::HashSet<String>,
+    ) -> Self {
         let mut s = Self {
             nodes,
+            projects,
+            sessions_by_project,
+            collapsed,
             cursor: 0,
             should_quit: false,
             selection: None,
             show_help: false,
+            palette: None,
+            viewer: None,
             toast: None,
             pending_g: None,
         };
         s.cursor = s.first_selectable().unwrap_or(0);
         s
+    }
+
+    /// Re-flatten the tree after a collapse/expand change. Tries to keep
+    /// the cursor on the session that was selected before the rebuild;
+    /// falls back to the first selectable row when that session is no
+    /// longer visible (e.g., the user collapsed its parent).
+    fn rebuild(&mut self) {
+        let prev_id = self
+            .nodes
+            .get(self.cursor)
+            .and_then(|n| n.session_id().map(|s| s.to_string()));
+        self.nodes =
+            build_tree_with_collapsed(&self.projects, &self.sessions_by_project, &self.collapsed);
+        if let Some(id) = prev_id {
+            if let Some(i) = self
+                .nodes
+                .iter()
+                .position(|n| n.session_id() == Some(id.as_str()))
+            {
+                self.cursor = i;
+                return;
+            }
+        }
+        self.cursor = self.first_selectable().unwrap_or(0);
+    }
+
+    /// Toggle expand/collapse on the cursor row. No-op for non-collapsible
+    /// rows (headers, spacers, leaf sessions).
+    fn toggle_expand(&mut self) {
+        let Some(node) = self.nodes.get(self.cursor) else {
+            return;
+        };
+        if !node.is_collapsible() {
+            return;
+        }
+        let id = match node.session_id() {
+            Some(s) => s.to_string(),
+            None => return,
+        };
+        if self.collapsed.contains(&id) {
+            self.collapsed.remove(&id);
+        } else {
+            self.collapsed.insert(id);
+        }
+        self.rebuild();
+    }
+
+    /// `→` / `l` — expand the current node if it has children.
+    fn expand_current(&mut self) {
+        let Some(node) = self.nodes.get(self.cursor) else {
+            return;
+        };
+        if !node.is_collapsible() {
+            return;
+        }
+        let id = match node.session_id() {
+            Some(s) => s.to_string(),
+            None => return,
+        };
+        if self.collapsed.contains(&id) {
+            self.collapsed.remove(&id);
+            self.rebuild();
+        }
+    }
+
+    /// `←` / `h` — if the current node is an expanded collapsible, close
+    /// it. If it's already collapsed (or a leaf), jump to the parent.
+    fn collapse_or_parent(&mut self) {
+        let Some(node) = self.nodes.get(self.cursor).cloned() else {
+            return;
+        };
+        let is_collapsible = node.is_collapsible();
+        let id = node.session_id().map(|s| s.to_string());
+        let parent = node.parent_session_id.clone();
+
+        // Expanded collapsible → collapse it in place.
+        if is_collapsible {
+            if let Some(id) = &id {
+                if !self.collapsed.contains(id) {
+                    self.collapsed.insert(id.clone());
+                    self.rebuild();
+                    return;
+                }
+            }
+        }
+
+        // Otherwise jump to the parent row (if one is visible).
+        if let Some(pid) = parent {
+            if let Some(i) = self
+                .nodes
+                .iter()
+                .position(|n| n.session_id() == Some(pid.as_str()))
+            {
+                self.cursor = i;
+            }
+        }
     }
 
     fn tick(&mut self) {
@@ -241,7 +374,15 @@ impl TreeState {
     }
 
     fn handle_event(&mut self, ev: Event) {
-        // Help overlay steals input while visible.
+        // Modal overlays steal input. Viewer → palette → help → normal dispatch.
+        if self.viewer.is_some() {
+            self.handle_viewer_event(ev);
+            return;
+        }
+        if self.palette.is_some() {
+            self.handle_palette_event(ev);
+            return;
+        }
         if self.show_help {
             match ev {
                 Event::Escape => self.show_help = false,
@@ -285,6 +426,31 @@ impl TreeState {
                 self.pending_g = None;
                 self.jump_end();
             }
+            // Drill-down: `→` / `l` expand, `←` / `h` collapse-or-parent.
+            Event::Right | Event::Key('l') => {
+                self.pending_g = None;
+                self.expand_current();
+            }
+            Event::Left | Event::Key('h') => {
+                self.pending_g = None;
+                self.collapse_or_parent();
+            }
+            // Space toggles expansion on the current row; if the cursor
+            // isn't on a collapsible node, it opens the palette instead
+            // so the key still feels useful.
+            Event::Key(' ') => {
+                self.pending_g = None;
+                let is_collapsible = self
+                    .nodes
+                    .get(self.cursor)
+                    .map(|n| n.is_collapsible())
+                    .unwrap_or(false);
+                if is_collapsible {
+                    self.toggle_expand();
+                } else {
+                    self.palette = Some(CommandPalette::new(command_palette::Context::Tree));
+                }
+            }
             Event::Enter => self.confirm(),
             Event::Key('?') => self.show_help = true,
             Event::Key('G') => {
@@ -306,9 +472,80 @@ impl TreeState {
             Event::Key('y') => self.copy_session_id(),
             Event::Key('Y') => self.copy_project_path(),
             Event::Key('o') => self.open_in_editor(),
+            Event::Key('v') => self.open_viewer(),
             _ => {
                 self.pending_g = None;
             }
+        }
+    }
+
+    /// Open the conversation viewer for the session under the cursor.
+    fn open_viewer(&mut self) {
+        let Some(session) = self.selected_session().cloned() else {
+            return;
+        };
+        self.viewer = Some(ViewerState::open(&session));
+    }
+
+    /// Forward an event into the open viewer and react to its reply.
+    fn handle_viewer_event(&mut self, ev: Event) {
+        let Some(viewer) = self.viewer.as_mut() else {
+            return;
+        };
+        match viewer.handle_event(ev) {
+            ViewerAction::None => {}
+            ViewerAction::Close => self.viewer = None,
+            ViewerAction::Toast(message, kind) => {
+                let local_kind = match kind {
+                    ViewerToastKind::Info => ToastKind::Info,
+                    ViewerToastKind::Success => ToastKind::Success,
+                    ViewerToastKind::Error => ToastKind::Error,
+                };
+                self.toast = Some(Toast::new(message, local_kind));
+            }
+        }
+    }
+
+    /// Route an event into the command palette, then run any action it
+    /// yielded back against `self`. The palette closes itself on Enter
+    /// or Escape — we just check whether it produced an action after.
+    fn handle_palette_event(&mut self, ev: Event) {
+        let Some(palette) = self.palette.as_mut() else {
+            return;
+        };
+        let outcome = palette.handle_event(ev);
+        match outcome {
+            command_palette::Outcome::Continue => {}
+            command_palette::Outcome::Close => {
+                self.palette = None;
+            }
+            command_palette::Outcome::Execute(action_id) => {
+                self.palette = None;
+                self.execute_palette_action(action_id);
+            }
+        }
+    }
+
+    /// Map palette action ids to state mutations. Limited to actions
+    /// that make sense on the tree screen.
+    fn execute_palette_action(&mut self, id: &'static str) {
+        match id {
+            "resume" => self.confirm(),
+            "copy_session_id" => self.copy_session_id(),
+            "copy_project_path" => self.copy_project_path(),
+            "open_editor" => self.open_in_editor(),
+            "toggle_expand" => self.toggle_expand(),
+            "expand_all" => {
+                self.collapsed.clear();
+                self.rebuild();
+            }
+            "collapse_all" => {
+                self.collapsed = collapsible_fork_root_ids(&self.sessions_by_project);
+                self.rebuild();
+            }
+            "help" => self.show_help = true,
+            "quit" => self.should_quit = true,
+            _ => {}
         }
     }
 
@@ -388,9 +625,22 @@ impl TreeState {
     }
 }
 
-/// Draw one frame: tree body + footer hint line.
-fn render_screen(f: &mut Frame<'_>, state: &TreeState, theme: &Theme) {
+/// Draw one frame: tree body + footer hint line. Takes `&mut state` because
+/// the conversation viewer caches flattened lines on its state as it
+/// renders, and that cache is invalidated by width / search changes.
+fn render_screen(f: &mut Frame<'_>, state: &mut TreeState, theme: &Theme) {
     let area = f.area();
+
+    // Viewer takes over the whole frame when open — short-circuit to avoid
+    // drawing the tree behind it.
+    if let Some(viewer) = state.viewer.as_mut() {
+        viewer_ui::render(f, area, viewer, theme);
+        if let Some(toast) = &state.toast {
+            render_toast(f, area, toast, theme);
+        }
+        return;
+    }
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([Constraint::Min(5), Constraint::Length(2)])
@@ -404,6 +654,9 @@ fn render_screen(f: &mut Frame<'_>, state: &TreeState, theme: &Theme) {
     if state.show_help {
         let content = help_overlay::help_for(HelpScreen::Tree);
         help_overlay::render(f, area, content, theme);
+    }
+    if let Some(palette) = &state.palette {
+        command_palette::render(f, area, palette, theme);
     }
 }
 
@@ -543,6 +796,7 @@ mod tests {
     use super::*;
     use crate::data::pricing::TokenCounts;
     use crate::data::session::SessionKind;
+    use crate::ui::tree::build_tree_with_collapsed;
 
     fn mk_session(id: &str) -> Session {
         Session {
@@ -565,6 +819,13 @@ mod tests {
         }
     }
 
+    fn mk_fork(id: &str, parent: &str) -> Session {
+        let mut s = mk_session(id);
+        s.forked_from = Some(parent.to_string());
+        s.is_fork = true;
+        s
+    }
+
     fn mk_project(name: &str) -> Project {
         Project {
             name: name.to_string(),
@@ -576,21 +837,27 @@ mod tests {
         }
     }
 
+    /// Convenience factory for tests: projects, sessions, empty collapsed
+    /// set — matches the historical "expand everything" behaviour.
+    fn mk_state(projects: Vec<Project>, sessions_by_project: Vec<Vec<Session>>) -> TreeState {
+        let collapsed = std::collections::HashSet::new();
+        let nodes = build_tree_with_collapsed(&projects, &sessions_by_project, &collapsed);
+        TreeState::new(nodes, projects, sessions_by_project, collapsed)
+    }
+
     #[test]
     fn cursor_lands_on_first_session_not_header() {
-        let nodes = build_tree(&[mk_project("p")], &[vec![mk_session("s1")]]);
-        let state = TreeState::new(nodes);
+        let state = mk_state(vec![mk_project("p")], vec![vec![mk_session("s1")]]);
         // nodes[0] = header, nodes[1] = session row.
         assert_eq!(state.cursor, 1);
     }
 
     #[test]
     fn arrow_keys_skip_headers_and_wrap() {
-        let nodes = build_tree(
-            &[mk_project("p")],
-            &[vec![mk_session("s1"), mk_session("s2"), mk_session("s3")]],
+        let mut state = mk_state(
+            vec![mk_project("p")],
+            vec![vec![mk_session("s1"), mk_session("s2"), mk_session("s3")]],
         );
-        let mut state = TreeState::new(nodes);
 
         state.handle_event(Event::Down);
         // The header is at index 0, sessions at 1, 2, 3.
@@ -608,8 +875,7 @@ mod tests {
 
     #[test]
     fn enter_records_selection() {
-        let nodes = build_tree(&[mk_project("p")], &[vec![mk_session("abc123")]]);
-        let mut state = TreeState::new(nodes);
+        let mut state = mk_state(vec![mk_project("p")], vec![vec![mk_session("abc123")]]);
         state.handle_event(Event::Enter);
         assert!(state.should_quit);
         let sel = state.selection.expect("selection set");
@@ -624,8 +890,7 @@ mod tests {
             Event::Ctrl('c'),
             Event::Quit,
         ] {
-            let nodes = build_tree(&[mk_project("p")], &[vec![mk_session("s")]]);
-            let mut state = TreeState::new(nodes);
+            let mut state = mk_state(vec![mk_project("p")], vec![vec![mk_session("s")]]);
             state.handle_event(ev);
             assert!(state.should_quit, "{ev:?} should quit");
             assert!(state.selection.is_none(), "{ev:?} should not select");
@@ -634,15 +899,116 @@ mod tests {
 
     #[test]
     fn j_and_k_navigate() {
-        let nodes = build_tree(
-            &[mk_project("p")],
-            &[vec![mk_session("s1"), mk_session("s2")]],
+        let mut state = mk_state(
+            vec![mk_project("p")],
+            vec![vec![mk_session("s1"), mk_session("s2")]],
         );
-        let mut state = TreeState::new(nodes);
         let start = state.cursor;
         state.handle_event(Event::Key('j'));
         assert_ne!(state.cursor, start);
         state.handle_event(Event::Key('k'));
         assert_eq!(state.cursor, start);
+    }
+
+    #[test]
+    fn right_arrow_expands_collapsed_fork_root() {
+        // Start with the root collapsed — only header + root are visible.
+        let projects = vec![mk_project("p")];
+        let sessions = vec![vec![
+            mk_session("root"),
+            mk_fork("fork1", "root"),
+            mk_fork("fork2", "root"),
+        ]];
+        let mut collapsed = std::collections::HashSet::new();
+        collapsed.insert("root".to_string());
+        let nodes = build_tree_with_collapsed(&projects, &sessions, &collapsed);
+        let mut state = TreeState::new(nodes, projects, sessions, collapsed);
+
+        // Cursor lands on the root (nodes[1]).
+        assert_eq!(state.cursor, 1);
+        // With the root collapsed, we have: header + root = 2 nodes.
+        assert_eq!(state.nodes.len(), 2);
+
+        state.handle_event(Event::Right);
+        // Now expanded: header + root + fork1 + fork2 = 4 nodes.
+        assert_eq!(state.nodes.len(), 4);
+        // Cursor still on root.
+        assert_eq!(state.nodes[state.cursor].session_id(), Some("root"));
+    }
+
+    #[test]
+    fn left_arrow_collapses_expanded_fork_root() {
+        let projects = vec![mk_project("p")];
+        let sessions = vec![vec![mk_session("root"), mk_fork("child", "root")]];
+        // Start fully expanded.
+        let mut state = mk_state(projects, sessions);
+        // Park cursor on the root row.
+        let root_idx = state
+            .nodes
+            .iter()
+            .position(|n| n.session_id() == Some("root"))
+            .expect("root present");
+        state.cursor = root_idx;
+        let before_len = state.nodes.len();
+
+        state.handle_event(Event::Left);
+        assert!(
+            state.nodes.len() < before_len,
+            "left arrow on expanded root must collapse it"
+        );
+        assert!(state.collapsed.contains("root"));
+    }
+
+    #[test]
+    fn left_arrow_on_child_jumps_to_parent() {
+        let projects = vec![mk_project("p")];
+        let sessions = vec![vec![mk_session("root"), mk_fork("child", "root")]];
+        let mut state = mk_state(projects, sessions);
+        let child_idx = state
+            .nodes
+            .iter()
+            .position(|n| n.session_id() == Some("child"))
+            .expect("child visible when expanded");
+        state.cursor = child_idx;
+
+        state.handle_event(Event::Left);
+        // Cursor should have moved to parent row.
+        assert_eq!(state.nodes[state.cursor].session_id(), Some("root"));
+    }
+
+    #[test]
+    fn space_toggles_expand() {
+        let projects = vec![mk_project("p")];
+        let sessions = vec![vec![mk_session("root"), mk_fork("fork1", "root")]];
+        let mut collapsed = std::collections::HashSet::new();
+        collapsed.insert("root".to_string());
+        let nodes = build_tree_with_collapsed(&projects, &sessions, &collapsed);
+        let mut state = TreeState::new(nodes, projects, sessions, collapsed);
+
+        let before = state.nodes.len();
+        state.handle_event(Event::Key(' '));
+        assert!(state.nodes.len() > before, "space expands collapsed root");
+        state.handle_event(Event::Key(' '));
+        assert_eq!(state.nodes.len(), before, "space again collapses");
+    }
+
+    #[test]
+    fn space_on_leaf_opens_palette() {
+        // Single root with no forks — space should fall through to
+        // opening the command palette rather than a no-op.
+        let mut state = mk_state(vec![mk_project("p")], vec![vec![mk_session("lonely")]]);
+        assert!(state.palette.is_none());
+        state.handle_event(Event::Key(' '));
+        assert!(state.palette.is_some());
+    }
+
+    #[test]
+    fn palette_execute_quit() {
+        let mut state = mk_state(vec![mk_project("p")], vec![vec![mk_session("s")]]);
+        state.handle_event(Event::Key(' '));
+        assert!(state.palette.is_some());
+        // Dispatch directly through the palette handler path.
+        state.execute_palette_action("quit");
+        assert!(state.should_quit);
     }
 }

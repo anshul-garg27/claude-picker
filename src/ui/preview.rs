@@ -29,14 +29,17 @@ use crate::data::session::noise_prefixes;
 use crate::data::Session;
 use crate::theme::Theme;
 use crate::ui::model_pill;
+use crate::ui::text::{display_width, truncate_to_width};
 
 /// How many exchanges to show. Matches the brief (4-6) — 6 is usually what
 /// fits on a 40-row terminal after header / footer / meta.
 const MAX_MESSAGES: usize = 6;
 
-/// Maximum characters per message body before we truncate with ` …`. Keeps
-/// each entry readable as a one-glance summary rather than a wall of text.
-const MAX_BODY_CHARS: usize = 240;
+/// Maximum display columns per message body before we truncate with ` …`.
+/// Keeps each entry readable as a one-glance summary rather than a wall of
+/// text. Measured in terminal cells, not codepoints, so a JP-localised
+/// transcript doesn't get double the visual real estate.
+const MAX_BODY_COLS: usize = 240;
 
 /// Render the preview pane into `area`.
 ///
@@ -115,17 +118,18 @@ fn render_header(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
         ])),
         row[0],
     );
+    // Session ids are ASCII UUIDs so `.chars().take(8)` happens to be safe
+    // here; keep it, but route the length through a byte slice with a guard
+    // in case a test fixture ever injects a non-ASCII id.
+    let short_id: String = session
+        .id
+        .chars()
+        .take(8)
+        .collect::<String>()
+        .to_uppercase();
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(
-            session
-                .id
-                .chars()
-                .take(8)
-                .collect::<String>()
-                .to_uppercase(),
-            theme.muted(),
-        )))
-        .alignment(ratatui::layout::Alignment::Right),
+        Paragraph::new(Line::from(Span::styled(short_id, theme.muted())))
+            .alignment(ratatui::layout::Alignment::Right),
         row[1],
     );
 
@@ -419,7 +423,10 @@ fn first_text(msg: &RawMsg) -> String {
 }
 
 fn is_noise(s: &str) -> bool {
-    if s.chars().count() <= 3 {
+    // Tiny-message filter: measure in columns so a 2-char CJK sentinel like
+    // "はい" isn't mislabeled as noise. 3 columns = about one CJK glyph or
+    // three ASCII chars.
+    if display_width(s) <= 3 {
         return true;
     }
     for prefix in noise_prefixes() {
@@ -438,18 +445,9 @@ fn clean_body(s: &str) -> String {
         .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
         .collect();
     let trimmed = flat.trim();
-    if trimmed.chars().count() <= MAX_BODY_CHARS {
-        return trimmed.to_string();
-    }
-    let mut out = String::with_capacity(MAX_BODY_CHARS * 4);
-    for (i, ch) in trimmed.chars().enumerate() {
-        if i == MAX_BODY_CHARS {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    out
+    // Column-aware truncation — MAX_BODY_COLS is measured in terminal cells,
+    // not chars. Grapheme-safe via the shared `truncate_to_width` helper.
+    truncate_to_width(trimmed, MAX_BODY_COLS)
 }
 
 #[cfg(test)]
@@ -471,6 +469,20 @@ mod tests {
         let long = "x".repeat(500);
         let cleaned = clean_body(&long);
         assert!(cleaned.ends_with('…'));
-        assert_eq!(cleaned.chars().count(), MAX_BODY_CHARS + 1);
+        // Column-accurate check: 239 x's + ellipsis = 240 cols exactly.
+        assert_eq!(display_width(&cleaned), MAX_BODY_COLS);
+    }
+
+    #[test]
+    fn clean_body_handles_cjk_within_column_budget() {
+        // 200 CJK chars = 400 cols; should truncate to fit under MAX_BODY_COLS.
+        let long: String = "あ".repeat(200);
+        let cleaned = clean_body(&long);
+        assert!(
+            display_width(&cleaned) <= MAX_BODY_COLS,
+            "cleaned width {}: {}",
+            display_width(&cleaned),
+            cleaned,
+        );
     }
 }

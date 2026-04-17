@@ -27,6 +27,7 @@ use crate::app::App;
 use crate::data::Session;
 use crate::theme::Theme;
 use crate::ui::model_pill;
+use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
 /// Width of the name column within a row. The row renderer appends cost and
 /// age after this, so keep the header/list aligned by anchoring off of it.
@@ -160,7 +161,8 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
             let s = &app.sessions[sess_idx];
             let is_selected = Some(display_idx) == app.cursor_position();
             let is_bookmarked = app.bookmarks.contains(&s.id);
-            ListItem::new(render_row(s, theme, is_selected, is_bookmarked))
+            let is_multi = app.is_multi_selected(sess_idx);
+            ListItem::new(render_row(s, theme, is_selected, is_bookmarked, is_multi))
         })
         .collect();
 
@@ -206,8 +208,21 @@ fn render_scrollbar(f: &mut Frame<'_>, area: Rect, total: usize, position: usize
 ///
 /// Layout (at 55%-wide panels that gives us ~50 cols):
 /// `▸ session-name…………… [opus] $1.24 2h`
-fn render_row<'a>(s: &'a Session, theme: &Theme, selected: bool, bookmarked: bool) -> Line<'a> {
-    let name_style = if selected {
+fn render_row<'a>(
+    s: &'a Session,
+    theme: &Theme,
+    selected: bool,
+    bookmarked: bool,
+    multi: bool,
+) -> Line<'a> {
+    // Multi-select rows recolor the name in peach-bold regardless of cursor
+    // state so the visual distinction reads at a glance. Selection still wins
+    // for the cursor row's background stripe (applied below).
+    let name_style = if multi {
+        Style::default()
+            .fg(theme.peach)
+            .add_modifier(Modifier::BOLD)
+    } else if selected {
         theme.selected_row()
     } else if s.name.is_some() {
         Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
@@ -217,14 +232,28 @@ fn render_row<'a>(s: &'a Session, theme: &Theme, selected: bool, bookmarked: boo
             .add_modifier(Modifier::ITALIC)
     };
 
-    let pointer_style = if selected {
+    let pointer_style = if multi {
+        // Tick mark styled peach so it reads as "you picked me".
+        Style::default()
+            .fg(theme.peach)
+            .add_modifier(Modifier::BOLD)
+    } else if selected {
         Style::default()
             .fg(theme.mauve)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.surface2)
     };
-    let pointer = if selected { "▸" } else { " " };
+    // `✓` takes the pointer slot when the row is multi-selected (whether or
+    // not the cursor is on it). The cursor row without multi-selection keeps
+    // the `▸` pointer so the active row is still clear at a glance.
+    let pointer = if multi {
+        "✓"
+    } else if selected {
+        "▸"
+    } else {
+        " "
+    };
 
     let pin = if bookmarked {
         Span::styled("■ ", Style::default().fg(theme.blue))
@@ -234,8 +263,12 @@ fn render_row<'a>(s: &'a Session, theme: &Theme, selected: bool, bookmarked: boo
         Span::raw("  ")
     };
 
-    let name = truncate_with_ellipsis(s.display_label(), NAME_COL_WIDTH);
-    let name_span = Span::styled(pad_right(&name, NAME_COL_WIDTH), name_style);
+    // display_width-aware: CJK / emoji session names used to overflow the
+    // column because .chars().count() undercounted them. Use the unicode
+    // helpers so the name always occupies exactly NAME_COL_WIDTH terminal
+    // cells, pad or truncate.
+    let name = pad_to_width(s.display_label(), NAME_COL_WIDTH);
+    let name_span = Span::styled(name, name_style);
 
     let pill = model_pill::pill(crate::data::pricing::family(&s.model_summary), theme);
 
@@ -304,37 +337,17 @@ fn render_row<'a>(s: &'a Session, theme: &Theme, selected: bool, bookmarked: boo
     Line::from(spans)
 }
 
-/// Pad `s` with spaces on the right to `width` *characters* (not bytes).
-fn pad_right(s: &str, width: usize) -> String {
-    let count = s.chars().count();
-    if count >= width {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len() + (width - count));
-    out.push_str(s);
-    for _ in 0..(width - count) {
-        out.push(' ');
-    }
-    out
-}
-
-/// Truncate `s` to at most `max_chars` characters, appending `…` if cut.
-pub fn truncate_with_ellipsis(s: &str, max_chars: usize) -> Cow<'_, str> {
-    if s.chars().count() <= max_chars {
+/// Truncate `s` to at most `max_cols` *display columns* (not chars, not
+/// bytes), appending `…` if cut.
+///
+/// Retained for callers outside this module (e.g. `project_list`). New code
+/// should prefer [`crate::ui::text::truncate_to_width`] directly; this wrapper
+/// keeps the `Cow` signature so the existing borrow semantics stay.
+pub fn truncate_with_ellipsis(s: &str, max_cols: usize) -> Cow<'_, str> {
+    if display_width(s) <= max_cols {
         return Cow::Borrowed(s);
     }
-    if max_chars == 0 {
-        return Cow::Owned(String::new());
-    }
-    let mut out = String::with_capacity(max_chars * 4);
-    for (i, ch) in s.chars().enumerate() {
-        if i == max_chars - 1 {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    Cow::Owned(out)
+    Cow::Owned(truncate_to_width(s, max_cols))
 }
 
 /// Format a USD cost the way the Python picker does:
@@ -454,10 +467,15 @@ mod tests {
     }
 
     #[test]
-    fn pad_right_pads_to_width() {
-        assert_eq!(pad_right("hi", 5), "hi   ");
-        assert_eq!(pad_right("hello", 5), "hello");
-        assert_eq!(pad_right("overflow", 5), "overflow");
+    fn truncate_is_display_width_aware() {
+        // 10 cols of CJK → truncate to 5 cols → 2 chars + ellipsis = 5 cols.
+        let out = truncate_with_ellipsis("こんにちは", 5);
+        assert!(
+            display_width(&out) <= 5,
+            "truncated width {}: {}",
+            display_width(&out),
+            out
+        );
     }
 
     #[test]

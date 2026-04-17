@@ -30,6 +30,8 @@ use crate::data::session::{load_session_from_jsonl, noise_prefixes};
 use crate::data::{clipboard, editor, Session};
 use crate::events::{self, Event};
 use crate::theme::Theme;
+use crate::ui::command_palette::{self, CommandPalette};
+use crate::ui::conversation_viewer::{ToastKind as ViewerToastKind, ViewerAction, ViewerState};
 use crate::ui::help_overlay;
 use crate::ui::search as search_ui;
 
@@ -112,7 +114,7 @@ pub fn run() -> anyhow::Result<()> {
             }
 
             state.tick();
-            terminal.draw(|f| render(f, f.area(), &state, &theme))?;
+            terminal.draw(|f| render(f, f.area(), &mut state, &theme))?;
 
             if let Some(ev) = events::next()? {
                 let outcome = handle_event(
@@ -162,6 +164,15 @@ fn handle_event(
     pattern: &mut Option<Pattern>,
     pending_g: &mut Option<Instant>,
 ) -> EventOutcome {
+    // Viewer first — full-screen takes priority over everything else.
+    if state.viewer.is_some() {
+        return handle_viewer_event(state, ev);
+    }
+    // Palette next: while it's open it owns input. On an Execute we
+    // close it and dispatch the named action below.
+    if state.palette.is_some() {
+        return handle_palette_event(state, ev);
+    }
     // Help overlay steals input while visible.
     if state.show_help {
         match ev {
@@ -259,10 +270,22 @@ fn handle_event(
             open_editor(state);
             EventOutcome::Continue
         }
+        Event::Key('v') if state.query.is_empty() => {
+            open_viewer(state);
+            EventOutcome::Continue
+        }
         Event::Key('p') if state.query.is_empty() => {
             // `p` toggles preview only when the filter is empty — otherwise
             // it's a regular filter char.
             state.preview_visible = !state.preview_visible;
+            EventOutcome::Continue
+        }
+        // Space opens the command palette when the query is empty.
+        // Inside a query the space is part of the query (nucleo tolerates
+        // multi-word fuzzy input).
+        Event::Key(' ') if state.query.is_empty() => {
+            *pending_g = None;
+            state.palette = Some(CommandPalette::new(command_palette::Context::Search));
             EventOutcome::Continue
         }
         Event::Key(c) if is_query_char(c) => {
@@ -282,6 +305,64 @@ fn handle_event(
             *pending_g = None;
             EventOutcome::Continue
         }
+    }
+}
+
+/// Drive the open palette. On Enter it returns `Execute(id)` which we
+/// translate into a search-screen action; on Esc it closes. Non-Enter
+/// events stay inside the palette so the underlying list doesn't move.
+fn handle_palette_event(state: &mut SearchState, ev: Event) -> EventOutcome {
+    let Some(palette) = state.palette.as_mut() else {
+        return EventOutcome::Continue;
+    };
+    match palette.handle_event(ev) {
+        command_palette::Outcome::Continue => EventOutcome::Continue,
+        command_palette::Outcome::Close => {
+            state.palette = None;
+            EventOutcome::Continue
+        }
+        command_palette::Outcome::Execute(id) => {
+            state.palette = None;
+            execute_palette_action(state, id)
+        }
+    }
+}
+
+/// Map a palette action id to the corresponding search-screen effect.
+/// `resume`, being the primary action, yields a Resume outcome so the
+/// caller returns from the event loop; everything else only mutates
+/// `state` and continues.
+fn execute_palette_action(state: &mut SearchState, id: &'static str) -> EventOutcome {
+    match id {
+        "resume" => {
+            if let Some(m) = state.selected_match() {
+                EventOutcome::Resume(m.session_id.clone(), m.project_cwd.clone())
+            } else {
+                EventOutcome::Continue
+            }
+        }
+        "toggle_preview" => {
+            state.preview_visible = !state.preview_visible;
+            EventOutcome::Continue
+        }
+        "copy_session_id" => {
+            copy_session_id(state);
+            EventOutcome::Continue
+        }
+        "copy_project_path" => {
+            copy_project_path(state);
+            EventOutcome::Continue
+        }
+        "open_editor" => {
+            open_editor(state);
+            EventOutcome::Continue
+        }
+        "help" => {
+            state.show_help = true;
+            EventOutcome::Continue
+        }
+        "quit" => EventOutcome::Quit,
+        _ => EventOutcome::Continue,
     }
 }
 
@@ -313,6 +394,45 @@ fn copy_project_path(state: &mut SearchState) {
             state.set_toast(format!("copied {shown} to clipboard"), ToastKind::Success);
         }
         Err(e) => state.set_toast(format!("clipboard unavailable: {e}"), ToastKind::Error),
+    }
+}
+
+fn open_viewer(state: &mut SearchState) {
+    let Some(m) = state.selected_match() else {
+        return;
+    };
+    // Search screen only carries the snippet-scale metadata, so just open
+    // with the id + session name and let the viewer parse its own JSONL
+    // for the transcript.
+    state.viewer = Some(ViewerState::open_with(
+        &m.session_id,
+        m.session_name.clone(),
+        String::new(),
+        String::new(),
+        String::new(),
+    ));
+}
+
+/// Dispatch an event into the open viewer. Mirrors `App::handle_viewer`.
+fn handle_viewer_event(state: &mut SearchState, ev: Event) -> EventOutcome {
+    let Some(viewer) = state.viewer.as_mut() else {
+        return EventOutcome::Continue;
+    };
+    match viewer.handle_event(ev) {
+        ViewerAction::None => EventOutcome::Continue,
+        ViewerAction::Close => {
+            state.viewer = None;
+            EventOutcome::Continue
+        }
+        ViewerAction::Toast(message, kind) => {
+            let local_kind = match kind {
+                ViewerToastKind::Info => ToastKind::Info,
+                ViewerToastKind::Success => ToastKind::Success,
+                ViewerToastKind::Error => ToastKind::Error,
+            };
+            state.set_toast(message, local_kind);
+            EventOutcome::Continue
+        }
     }
 }
 

@@ -5,6 +5,9 @@
 //! purpose so swapping one out (e.g. reimplementing the preview to show the
 //! full transcript in a scroll pane) doesn't ripple through the others.
 
+pub mod actions;
+pub mod command_palette;
+pub mod conversation_viewer;
 pub mod diff;
 pub mod footer;
 pub mod help_overlay;
@@ -17,4 +20,5 @@ pub mod rename_modal;
 pub mod search;
 pub mod session_list;
 pub mod stats;
+pub mod text;
 pub mod tree;

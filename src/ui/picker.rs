@@ -15,13 +15,30 @@ use ratatui::Frame;
 
 use crate::app::{App, Mode, Toast};
 use crate::theme::{Theme, ThemeName};
-use crate::ui::{footer, help_overlay, layout, preview, project_list, rename_modal, session_list};
+use crate::ui::{
+    command_palette, footer, help_overlay, layout, preview, project_list, rename_modal,
+    session_list,
+};
 
-pub fn render(f: &mut Frame<'_>, app: &App) {
+pub fn render(f: &mut Frame<'_>, app: &mut App) {
     let area = f.area();
 
     if layout::too_small(area) {
         render_too_small(f, area, &app.theme);
+        return;
+    }
+
+    // Conversation viewer takes over the whole frame when open — render it
+    // first so toasts still layer on top, but skip the underlying picker
+    // draws to avoid flicker through the Clear widget.
+    if app.viewer.is_some() {
+        let theme = app.theme;
+        if let Some(viewer) = app.viewer.as_mut() {
+            crate::ui::conversation_viewer::render(f, area, viewer, &theme);
+        }
+        if let Some(toast) = &app.toast {
+            render_toast(f, area, toast, &app.theme);
+        }
         return;
     }
 
@@ -41,6 +58,9 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
     if let Some(rename) = &app.rename {
         rename_modal::render(f, area, rename, &app.theme);
     }
+    if let Some(palette) = &app.palette {
+        command_palette::render(f, area, palette, &app.theme);
+    }
     if app.show_help {
         let content = help_overlay::help_for(app.help_screen());
         help_overlay::render(f, area, content, &app.theme);
@@ -52,7 +72,13 @@ fn render_session_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
     render_title_bar(f, chunks.title_bar, app);
     session_list::render(f, chunks.list_pane, app);
     preview::render(f, chunks.preview_pane, app);
-    footer::render_session_list(f, chunks.footer, &app.theme);
+    footer::render_session_list_with_multi(
+        f,
+        chunks.footer,
+        &app.theme,
+        app.multi_selected_count(),
+        app.multi_mode,
+    );
 }
 
 fn render_project_screen(f: &mut Frame<'_>, area: Rect, app: &App) {

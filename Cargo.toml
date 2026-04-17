@@ -39,6 +39,16 @@ dirs = "5.0"
 regex = "1.10"
 # Clipboard — cross-platform, no X11 deps on macOS. Used for `y`/`Y` copy shortcuts.
 arboard = "3"
+# Config file parsing for ~/.config/claude-picker/config.toml.
+toml = "0.8"
+# Unicode display width (terminal columns). `.len()` / `.chars().count()` both
+# lie about column count — CJK / emoji / accented chars trip them. The crate is
+# already a transitive dep through ratatui, but we want an explicit version
+# we can depend on by name.
+unicode-width = "0.2"
+# Grapheme-boundary-safe iteration for truncation. Also a transitive dep
+# through ratatui; pinned here so the call sites can `use` it directly.
+unicode-segmentation = "1.12"
 
 [dev-dependencies]
 insta = "1.39"

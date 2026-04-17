@@ -10,8 +10,11 @@
 //! [`claude_picker::theme::resolve_theme_name`] which returns the active
 //! [`ThemeName`] to hand off to the picker.
 
+use std::path::PathBuf;
+
 use clap::{Parser, Subcommand};
 
+use claude_picker::config::Config;
 use claude_picker::theme::{self, ThemeName};
 use claude_picker::{commands, resume};
 
@@ -64,6 +67,24 @@ struct Cli {
     #[arg(long = "pipe", short = 'p', conflicts_with_all = ["stats", "tree_flag", "diff_flag", "search_flag"])]
     pipe_flag: bool,
 
+    /// Write a commented default `config.toml` and exit.
+    ///
+    /// Target is `~/.config/claude-picker/config.toml` unless `--config-file`
+    /// points elsewhere. Refuses to overwrite an existing file; pass
+    /// `--force` to replace.
+    #[arg(long, global = true)]
+    generate_config: bool,
+
+    /// Allow `--generate-config` to overwrite an existing config.
+    #[arg(long, global = true)]
+    force: bool,
+
+    /// Override the config-file location (defaults to
+    /// `~/.config/claude-picker/config.toml`). Useful for tests and
+    /// split-personality setups.
+    #[arg(long, global = true, value_name = "PATH")]
+    config_file: Option<PathBuf>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -90,12 +111,39 @@ fn main() -> anyhow::Result<()> {
         return Ok(());
     }
 
+    // `--generate-config` is handled before every other path so a bad config
+    // on disk doesn't block a user from regenerating it.
+    if cli.generate_config {
+        let path = cli
+            .config_file
+            .clone()
+            .or_else(Config::default_path)
+            .ok_or_else(|| anyhow::anyhow!("could not determine config path (no home dir?)"))?;
+        Config::write_template(&path, cli.force)?;
+        eprintln!("wrote {}", path.display());
+        return Ok(());
+    }
+
     if cli.classic {
         eprintln!(
             "--classic mode: falling back to Python/fzf — run: bash <repo>/claude-picker --classic"
         );
         return Ok(());
     }
+
+    // Load the on-disk config. Missing file is NOT an error. A malformed
+    // file IS, but we degrade gracefully to defaults so a broken TOML
+    // can't brick the picker — surface a stderr warning instead.
+    let config = match cli.config_file.as_deref() {
+        Some(path) => Config::load_from(path).unwrap_or_else(|e| {
+            eprintln!("claude-picker: config error ({e:#}), using defaults");
+            Config::default()
+        }),
+        None => Config::load().unwrap_or_else(|e| {
+            eprintln!("claude-picker: config error ({e:#}), using defaults");
+            Config::default()
+        }),
+    };
 
     // Resolve theme up front so every subcommand sees the same one. Invalid
     // CLI values fall through to the next source; surface a warning so the
@@ -108,7 +156,7 @@ fn main() -> anyhow::Result<()> {
             );
         }
     }
-    let theme_name = theme::resolve_theme_name(cli.theme.as_deref());
+    let theme_name = theme::resolve_theme_name_with_config(cli.theme.as_deref(), &config.ui.theme);
 
     // Flag aliases take precedence over the subcommand slot — they're
     // mutually exclusive via clap's conflicts_with_all, so at most one is

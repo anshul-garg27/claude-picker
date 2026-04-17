@@ -24,6 +24,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Theme;
+use crate::ui::text::{display_width, truncate_to_width};
 
 /// Width threshold above which the preview pane can eat a larger slice.
 const WIDE_THRESHOLD: u16 = 130;
@@ -66,6 +67,11 @@ pub struct SearchState {
     /// One-shot status message shown in a toast — set by clipboard / editor
     /// shortcuts. Cleared by the event loop's tick.
     pub toast: Option<(String, ToastKind, std::time::Instant)>,
+    /// Space-leader command palette. `Some` while open; takes input
+    /// priority over the underlying search list.
+    pub palette: Option<crate::ui::command_palette::CommandPalette>,
+    /// Full-screen conversation viewer — `Some` while reading a transcript.
+    pub viewer: Option<crate::ui::conversation_viewer::ViewerState>,
 }
 
 /// Local toast kind — kept lightweight so the UI module stays self-contained.
@@ -87,6 +93,8 @@ impl SearchState {
             loading: true,
             show_help: false,
             toast: None,
+            palette: None,
+            viewer: None,
         }
     }
 
@@ -132,8 +140,19 @@ impl Default for SearchState {
 }
 
 /// Top-level render entry. Lays out header / counter / list / optional
-/// preview, and dispatches to the per-section helpers.
-pub fn render(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Theme) {
+/// preview, and dispatches to the per-section helpers. Takes `&mut state`
+/// because the conversation viewer caches flattened lines on its state
+/// during render, and that cache rebuilds on width / search changes.
+pub fn render(frame: &mut Frame<'_>, area: Rect, state: &mut SearchState, theme: &Theme) {
+    // Viewer takes over the whole frame when open.
+    if let Some(viewer) = state.viewer.as_mut() {
+        crate::ui::conversation_viewer::render(frame, area, viewer, theme);
+        if let Some((msg, kind, _)) = &state.toast {
+            render_toast(frame, area, msg, *kind, theme);
+        }
+        return;
+    }
+
     // Split horizontally if the preview pane is open; otherwise use the full
     // area for the list column.
     let (list_area, preview_area) = if state.preview_visible && area.width >= 90 {
@@ -160,6 +179,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Th
 
     if let Some((msg, kind, _)) = &state.toast {
         render_toast(frame, area, msg, *kind, theme);
+    }
+    if let Some(palette) = &state.palette {
+        crate::ui::command_palette::render(frame, area, palette, theme);
     }
     if state.show_help {
         let content = crate::ui::help_overlay::help_for(crate::ui::help_overlay::Screen::Search);
@@ -640,7 +662,9 @@ fn render_preview_lines<'a>(m: &'a SearchMatch, theme: &Theme) -> Vec<Line<'a>> 
             None => String::new(),
         };
         let body = body.trim().to_string();
-        if body.is_empty() || body.chars().count() < 4 {
+        // Column-aware short-body filter — `はい` (2 cols) still reads as
+        // noise; 4 cols is about "one CJK word" or "four ASCII chars".
+        if body.is_empty() || display_width(&body) < 4 {
             continue;
         }
         if crate::data::session::noise_prefixes()
@@ -653,19 +677,9 @@ fn render_preview_lines<'a>(m: &'a SearchMatch, theme: &Theme) -> Vec<Line<'a>> 
             .chars()
             .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
             .collect();
-        let truncated = if flat.chars().count() > 200 {
-            let mut out = String::new();
-            for (i, ch) in flat.chars().enumerate() {
-                if i == 200 {
-                    break;
-                }
-                out.push(ch);
-            }
-            out.push('…');
-            out
-        } else {
-            flat
-        };
+        // Truncate by column count — mirrors the preview module's MAX_BODY_COLS
+        // convention so a bilingual transcript has uniform visual length.
+        let truncated = truncate_to_width(&flat, 200);
         if ring.len() == 6 {
             ring.remove(0);
         }
@@ -804,34 +818,16 @@ pub fn extract_snippet(body: &str, needle: &str) -> String {
     enforce_max_chars(&out, MAX_LEN + 2)
 }
 
-fn window_from_head(flat: &str, max_chars: usize) -> String {
-    if flat.chars().count() <= max_chars {
-        return flat.to_string();
-    }
-    let mut out = String::with_capacity(max_chars * 4);
-    for (i, ch) in flat.chars().enumerate() {
-        if i == max_chars {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    out
+fn window_from_head(flat: &str, max_cols: usize) -> String {
+    // Measured in display columns so CJK / emoji snippets don't blow past
+    // the width budget.
+    truncate_to_width(flat, max_cols)
 }
 
-fn enforce_max_chars(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(max_chars * 4);
-    for (i, ch) in s.chars().enumerate() {
-        if i == max_chars {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    out
+fn enforce_max_chars(s: &str, max_cols: usize) -> String {
+    // Measured in display columns — matches `window_from_head` so the final
+    // row stays under the column cap on any terminal width.
+    truncate_to_width(s, max_cols)
 }
 
 #[cfg(test)]

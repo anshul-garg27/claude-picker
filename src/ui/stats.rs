@@ -37,6 +37,7 @@ use ratatui::Frame;
 
 use crate::data::pricing::{Family, TokenCounts};
 use crate::theme::Theme;
+use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
 // ── Data types ────────────────────────────────────────────────────────────
 
@@ -364,8 +365,9 @@ fn render_kpi_card(
         .split(inner);
 
     // big value + sparkline row. The sparkline steals whatever width is left
-    // after the value plus a small gap.
-    let value_width = big_value.chars().count() as u16 + 3; // "  {value} "
+    // after the value plus a small gap. Column-aware so a formatted token
+    // count with a wide glyph (unlikely today, but safe) still lays out.
+    let value_width = display_width(big_value) as u16 + 3; // "  {value} "
     let spark_width = rows[1].width.saturating_sub(value_width).saturating_sub(2);
     let value_cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -529,7 +531,7 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
         Span::styled("── ", theme.dim()),
         Span::styled(title, theme.subtle()),
         Span::styled(
-            "─".repeat(area.width.saturating_sub(5 + title.len() as u16) as usize),
+            "─".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
             theme.dim(),
         ),
     ]);
@@ -580,7 +582,9 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
     if today_idx > 0 && buckets.last().map(|d| d.sessions > 0).unwrap_or(false) {
         let arrow = "↑ today";
         let today_col = left_pad + today_idx * slot;
-        let marker_start = today_col.saturating_sub(arrow.len() - 1);
+        // `↑` is 1 col; `display_width` makes the offset correct even if the
+        // literal is ever swapped for a wide glyph.
+        let marker_start = today_col.saturating_sub(display_width(arrow) - 1);
         let ann = Line::from(vec![
             Span::raw(" ".repeat(marker_start)),
             Span::styled(arrow, Style::default().fg(theme.green)),
@@ -626,9 +630,11 @@ fn build_label_line<'a>(
         };
         let label = formatter(bucket.date);
         let start_col = left_pad + idx * slot;
-        // Right-align the final anchor so it doesn't overflow.
+        // Right-align the final anchor so it doesn't overflow. Use column
+        // width (ASCII-only for these labels today, but consistent with the
+        // rest of the audit).
         let start = if idx == n - 1 {
-            total_width.saturating_sub(label.len())
+            total_width.saturating_sub(display_width(&label))
         } else {
             start_col
         };
@@ -712,7 +718,9 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
 // ── Toast overlay ────────────────────────────────────────────────────────
 
 fn render_toast(frame: &mut Frame<'_>, area: Rect, msg: &str, kind: ToastKind, theme: &Theme) {
-    let w = (msg.chars().count() as u16 + 10).clamp(20, area.width.saturating_sub(4));
+    // Column-aware: a CJK toast message would previously size the modal too
+    // narrow (chars ≠ columns), clipping the right edge.
+    let w = (display_width(msg) as u16 + 10).clamp(20, area.width.saturating_sub(4));
     let h = 3_u16;
     let x = area.x + area.width.saturating_sub(w) / 2;
     let y = area
@@ -842,35 +850,18 @@ fn project_color(index: usize, family: Family, theme: &Theme) -> Color {
     }
 }
 
-fn truncate_str(s: &str, max_chars: usize) -> String {
-    if s.chars().count() <= max_chars {
-        return s.to_string();
-    }
-    if max_chars == 0 {
-        return String::new();
-    }
-    let mut out = String::with_capacity(max_chars * 4);
-    for (i, ch) in s.chars().enumerate() {
-        if i >= max_chars - 1 {
-            break;
-        }
-        out.push(ch);
-    }
-    out.push('…');
-    out
+/// Truncate `s` to at most `max_cols` display columns, grapheme-safe, with
+/// ellipsis if cut. Delegates to the shared unicode helper so every screen
+/// uses the same column math.
+#[inline]
+fn truncate_str(s: &str, max_cols: usize) -> String {
+    truncate_to_width(s, max_cols)
 }
 
+/// Pad to exactly `width` display columns. Delegates to the shared helper.
+#[inline]
 fn pad_right(s: &str, width: usize) -> String {
-    let count = s.chars().count();
-    if count >= width {
-        return s.to_string();
-    }
-    let mut out = String::with_capacity(s.len() + (width - count));
-    out.push_str(s);
-    for _ in 0..(width - count) {
-        out.push(' ');
-    }
-    out
+    pad_to_width(s, width)
 }
 
 // ── Aggregation helpers shared with the command handler ──────────────────

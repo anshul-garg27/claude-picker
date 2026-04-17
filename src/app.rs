@@ -11,6 +11,7 @@
 //! keystrokes: rebuilding the filtered index on every char-press is
 //! microseconds for < 1k sessions.
 
+use std::collections::HashSet;
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::Command;
@@ -30,6 +31,8 @@ use crate::data::bookmarks::BookmarkStore;
 use crate::data::{clipboard, editor, session_rename, Project, Session};
 use crate::events::{self, Event};
 use crate::theme::{self, Theme, ThemeName};
+use crate::ui::command_palette::{self, CommandPalette};
+use crate::ui::conversation_viewer::{ToastKind as ViewerToastKind, ViewerAction, ViewerState};
 use crate::ui::help_overlay::{self, Screen as HelpScreen};
 use crate::ui::rename_modal::{self, RenameState};
 
@@ -106,6 +109,19 @@ pub struct App {
     pub show_help: bool,
     /// Rename modal state — `Some` while the user is editing a name.
     pub rename: Option<RenameState>,
+    /// Space-leader command palette — `Some` while the palette modal is
+    /// open. Swallows input until closed.
+    pub palette: Option<CommandPalette>,
+    /// Full-screen conversation viewer — `Some` while the user is reading
+    /// a session's transcript.
+    pub viewer: Option<ViewerState>,
+    /// Session ids the user has multi-selected via Tab.
+    pub multi_selected: HashSet<String>,
+    /// True when multi-select mode is engaged. Distinct from
+    /// `!multi_selected.is_empty()` because Tab deselecting the last row
+    /// should still keep the UI in multi-mode so the footer hints stay
+    /// visible until the user explicitly Escapes out.
+    pub multi_mode: bool,
     /// Timestamp of the last `g` press, used for the `gg` vim chord. Cleared
     /// on any unrelated key press or after [`G_CHORD_WINDOW`].
     pending_g: Option<Instant>,
@@ -173,6 +189,10 @@ impl App {
             show_delete_confirm: false,
             show_help: false,
             rename: None,
+            palette: None,
+            viewer: None,
+            multi_selected: HashSet::new(),
+            multi_mode: false,
             pending_g: None,
             matcher,
             haystacks: Vec::new(),
@@ -289,6 +309,12 @@ impl App {
     /// Dispatch a single [`Event`] against the state.
     pub fn handle_event(&mut self, ev: Event) -> anyhow::Result<()> {
         // Modal inputs take precedence, in reverse visual-stack order.
+        if self.viewer.is_some() {
+            return self.handle_viewer(ev);
+        }
+        if self.palette.is_some() {
+            return self.handle_palette(ev);
+        }
         if self.rename.is_some() {
             return self.handle_rename(ev);
         }
@@ -312,6 +338,7 @@ impl App {
             Event::Ctrl('d') => self.request_delete(),
             Event::Ctrl('b') => self.toggle_bookmark(),
             Event::Ctrl('e') => self.export_session(),
+            Event::Tab => self.toggle_multi_select(),
             Event::Enter => self.confirm_selection(),
             Event::Escape => self.handle_escape(),
             Event::Up => self.move_cursor(-1),
@@ -345,9 +372,16 @@ impl App {
                     self.pending_g = Some(Instant::now());
                 }
             }
+            // `v` opens the full-screen conversation viewer for the row
+            // under the cursor. Session-list only — project-list has no
+            // session to view.
+            Event::Key('v') if self.filter.is_empty() && self.mode == Mode::SessionList => {
+                self.open_viewer();
+            }
             // `y` / `Y` copy to clipboard (lowercase = session id, uppercase
             // = project path). Both require an empty filter so typing them
-            // into a search still works.
+            // into a search still works. In multi-select mode these copy the
+            // set of selected session ids / project paths instead.
             Event::Key('y') if self.filter.is_empty() => self.copy_session_id(),
             Event::Key('Y') if self.filter.is_empty() => self.copy_project_path(),
             // `r` opens the rename modal for the selected session.
@@ -359,6 +393,16 @@ impl App {
             // typing a filter (including searches with `t` in them) the letter
             // goes to the filter via the fallthrough branch below.
             Event::Key('t') if self.filter.is_empty() => self.cycle_theme(),
+            // Space opens the Helix-style command palette when the filter is
+            // empty. Inside an active filter the space goes to the filter so
+            // the user can type multi-word queries (nucleo supports them).
+            Event::Key(' ') if self.filter.is_empty() => {
+                self.pending_g = None;
+                self.palette = Some(CommandPalette::new(match self.mode {
+                    Mode::SessionList => command_palette::Context::SessionList,
+                    Mode::ProjectList => command_palette::Context::ProjectList,
+                }));
+            }
             Event::Key(c) if is_filter_char(c) => {
                 // Any keystroke other than the chord letters breaks `gg`.
                 self.pending_g = None;
@@ -372,6 +416,85 @@ impl App {
             }
         }
         Ok(())
+    }
+
+    /// Forward an event to the open viewer and act on its reply.
+    fn handle_viewer(&mut self, ev: Event) -> anyhow::Result<()> {
+        let Some(viewer) = self.viewer.as_mut() else {
+            return Ok(());
+        };
+        match viewer.handle_event(ev) {
+            ViewerAction::None => {}
+            ViewerAction::Close => {
+                self.viewer = None;
+            }
+            ViewerAction::Toast(message, kind) => {
+                let app_kind = match kind {
+                    ViewerToastKind::Info => ToastKind::Info,
+                    ViewerToastKind::Success => ToastKind::Success,
+                    ViewerToastKind::Error => ToastKind::Error,
+                };
+                self.toast = Some(Toast::new(message, app_kind));
+            }
+        }
+        Ok(())
+    }
+
+    /// Open the conversation viewer for the row currently under the cursor.
+    /// Quietly no-ops if nothing's selected.
+    pub fn open_viewer(&mut self) {
+        let Some(session) = self.selected_session_ref().cloned() else {
+            return;
+        };
+        self.viewer = Some(ViewerState::open(&session));
+    }
+
+    /// Toggle multi-select on the row under the cursor. First Tab press
+    /// flips multi-mode on; later presses toggle individual selection.
+    fn toggle_multi_select(&mut self) {
+        if self.mode != Mode::SessionList {
+            return;
+        }
+        let Some(s) = self.selected_session_ref().cloned() else {
+            return;
+        };
+        if !self.multi_mode {
+            self.multi_mode = true;
+        }
+        if self.multi_selected.contains(&s.id) {
+            self.multi_selected.remove(&s.id);
+        } else {
+            self.multi_selected.insert(s.id);
+        }
+    }
+
+    /// Clear any active multi-selection and exit multi-mode.
+    pub fn clear_multi_select(&mut self) {
+        self.multi_selected.clear();
+        self.multi_mode = false;
+    }
+
+    /// Total number of rows currently multi-selected.
+    pub fn multi_selected_count(&self) -> usize {
+        self.multi_selected.len()
+    }
+
+    /// True when the row at `sess_idx` into `self.sessions` is part of the
+    /// live multi-selection.
+    pub fn is_multi_selected(&self, sess_idx: usize) -> bool {
+        self.sessions
+            .get(sess_idx)
+            .map(|s| self.multi_selected.contains(&s.id))
+            .unwrap_or(false)
+    }
+
+    /// Sessions in the multi-selection, in the order they appear in
+    /// `self.sessions` (so Ctrl-E exports stably, not in hash order).
+    fn multi_selected_sessions(&self) -> Vec<&Session> {
+        self.sessions
+            .iter()
+            .filter(|s| self.multi_selected.contains(&s.id))
+            .collect()
     }
 
     /// Current screen for the help overlay. Only the picker-level modes are
@@ -391,6 +514,50 @@ impl App {
             _ => {}
         }
         Ok(())
+    }
+
+    /// Forward an event to the live command palette and act on the
+    /// outcome. On [`Outcome::Execute`] we close the palette first and
+    /// *then* dispatch the action — doing it in that order means any
+    /// follow-up modal (rename, delete-confirm, viewer) doesn't get
+    /// stacked under the palette.
+    fn handle_palette(&mut self, ev: Event) -> anyhow::Result<()> {
+        let Some(palette) = self.palette.as_mut() else {
+            return Ok(());
+        };
+        let outcome = palette.handle_event(ev);
+        match outcome {
+            command_palette::Outcome::Continue => {}
+            command_palette::Outcome::Close => {
+                self.palette = None;
+            }
+            command_palette::Outcome::Execute(id) => {
+                self.palette = None;
+                self.execute_palette_action(id);
+            }
+        }
+        Ok(())
+    }
+
+    /// Map palette action ids to state mutations. Unknown ids are
+    /// ignored rather than panicking so a stale palette-in-flight
+    /// can't crash the app.
+    fn execute_palette_action(&mut self, id: &'static str) {
+        match id {
+            "resume" | "open_project" => self.confirm_selection(),
+            "export" => self.export_session(),
+            "rename" => self.request_rename(),
+            "bookmark" => self.toggle_bookmark(),
+            "delete" => self.request_delete(),
+            "copy_session_id" => self.copy_session_id(),
+            "copy_project_path" => self.copy_project_path(),
+            "open_editor" => self.open_editor_for_selection(),
+            "view_conversation" => self.open_viewer(),
+            "toggle_theme" => self.cycle_theme(),
+            "help" => self.show_help = true,
+            "quit" => self.should_quit = true,
+            _ => {}
+        }
     }
 
     fn handle_rename(&mut self, ev: Event) -> anyhow::Result<()> {
@@ -436,6 +603,31 @@ impl App {
     }
 
     fn copy_session_id(&mut self) {
+        // Multi-select: copy every selected id, newline-separated.
+        if self.multi_mode && !self.multi_selected.is_empty() {
+            let ids: Vec<String> = self
+                .multi_selected_sessions()
+                .iter()
+                .map(|s| s.id.clone())
+                .collect();
+            let count = ids.len();
+            let payload = ids.join("\n");
+            match clipboard::copy(payload) {
+                Ok(()) => {
+                    self.toast = Some(Toast::new(
+                        format!("copied {count} session IDs"),
+                        ToastKind::Success,
+                    ));
+                }
+                Err(e) => {
+                    self.toast = Some(Toast::new(
+                        format!("clipboard unavailable: {e}"),
+                        ToastKind::Error,
+                    ));
+                }
+            }
+            return;
+        }
         let Some(s) = self.selected_session_ref().cloned() else {
             return;
         };
@@ -457,6 +649,33 @@ impl App {
     }
 
     fn copy_project_path(&mut self) {
+        // Multi-select: copy deduped project paths, newline-separated.
+        if self.multi_mode && !self.multi_selected.is_empty() {
+            let mut seen: HashSet<PathBuf> = HashSet::new();
+            let mut paths: Vec<String> = Vec::new();
+            for s in self.multi_selected_sessions() {
+                if seen.insert(s.project_dir.clone()) {
+                    paths.push(s.project_dir.display().to_string());
+                }
+            }
+            let count = paths.len();
+            let payload = paths.join("\n");
+            match clipboard::copy(payload) {
+                Ok(()) => {
+                    self.toast = Some(Toast::new(
+                        format!("copied {count} project paths"),
+                        ToastKind::Success,
+                    ));
+                }
+                Err(e) => {
+                    self.toast = Some(Toast::new(
+                        format!("clipboard unavailable: {e}"),
+                        ToastKind::Error,
+                    ));
+                }
+            }
+            return;
+        }
         let path: PathBuf = match self.mode {
             Mode::SessionList => match self.selected_session_ref() {
                 Some(s) => s.project_dir.clone(),
@@ -539,6 +758,45 @@ impl App {
         match ev {
             Event::Key('y') | Event::Key('Y') => {
                 self.show_delete_confirm = false;
+                // Multi-select batch delete: loop over every id, remove
+                // from the in-memory list on success.
+                if self.multi_mode && !self.multi_selected.is_empty() {
+                    let ids: Vec<String> = self
+                        .multi_selected_sessions()
+                        .iter()
+                        .map(|s| s.id.clone())
+                        .collect();
+                    let mut ok = 0usize;
+                    let mut err_msg: Option<String> = None;
+                    for id in ids.iter() {
+                        // Synthesise a minimal Session-like struct to reuse the
+                        // delete helper's resolver.
+                        if let Some(s) = self.sessions.iter().find(|s| &s.id == id).cloned() {
+                            match delete_session_file(&s) {
+                                Ok(()) => ok += 1,
+                                Err(e) => {
+                                    err_msg = Some(format!("{e}"));
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    // Drop the deleted sessions from the picker.
+                    self.sessions.retain(|s| !ids.contains(&s.id));
+                    self.clear_multi_select();
+                    self.rebuild_haystacks();
+                    self.apply_filter();
+                    if let Some(e) = err_msg {
+                        self.toast =
+                            Some(Toast::new(format!("delete failed: {e}"), ToastKind::Error));
+                    } else {
+                        self.toast = Some(Toast::new(
+                            format!("deleted {ok} sessions"),
+                            ToastKind::Success,
+                        ));
+                    }
+                    return Ok(());
+                }
                 if let Some(s) = self.selected_session_ref().cloned() {
                     match delete_session_file(&s) {
                         Ok(()) => {
@@ -572,6 +830,13 @@ impl App {
         if !self.filter.is_empty() {
             self.filter.clear();
             self.apply_filter();
+            return;
+        }
+        // Esc with no filter but an active multi-selection: clear it.
+        // Keeps the picker where it is so users don't accidentally pop
+        // back to the project list after a long Tab session.
+        if self.multi_mode {
+            self.clear_multi_select();
             return;
         }
         match self.mode {
@@ -676,6 +941,44 @@ impl App {
     }
 
     fn export_session(&mut self) {
+        // Multi-select: export every selected session in sequence.
+        if self.multi_mode && !self.multi_selected.is_empty() {
+            let ids: Vec<String> = self
+                .multi_selected_sessions()
+                .iter()
+                .map(|s| s.id.clone())
+                .collect();
+            let count = ids.len();
+            let repo_root = find_repo_root();
+            let Some(script) = repo_root.map(|r| r.join("lib").join("session-export.py")) else {
+                self.toast = Some(Toast::new(
+                    "export: could not locate session-export.py",
+                    ToastKind::Error,
+                ));
+                return;
+            };
+            let mut ok = 0usize;
+            let mut err_msg: Option<String> = None;
+            for id in ids {
+                match Command::new("python3").arg(&script).arg(&id).spawn() {
+                    Ok(_) => ok += 1,
+                    Err(e) => {
+                        err_msg = Some(format!("{e}"));
+                        break;
+                    }
+                }
+            }
+            if let Some(e) = err_msg {
+                self.toast = Some(Toast::new(format!("export failed: {e}"), ToastKind::Error));
+            } else {
+                self.toast = Some(Toast::new(
+                    format!("exported {ok} of {count} sessions"),
+                    ToastKind::Success,
+                ));
+            }
+            return;
+        }
+
         let Some(s) = self.selected_session_ref().cloned() else {
             return;
         };
@@ -705,6 +1008,12 @@ impl App {
     }
 
     fn request_delete(&mut self) {
+        // Multi-select: raise the confirm modal if there are pending
+        // selections, regardless of whether the cursor row is deletable.
+        if self.multi_mode && !self.multi_selected.is_empty() {
+            self.show_delete_confirm = true;
+            return;
+        }
         if self.selected_session_ref().is_some() {
             self.show_delete_confirm = true;
         }
@@ -798,7 +1107,7 @@ pub fn run(mut app: App) -> anyhow::Result<Option<(String, PathBuf)>> {
 
     let result: anyhow::Result<Option<(String, PathBuf)>> = (|| {
         while !app.should_quit {
-            terminal.draw(|f| crate::ui::picker::render(f, &app))?;
+            terminal.draw(|f| crate::ui::picker::render(f, &mut app))?;
             app.tick();
             if let Some(ev) = events::next()? {
                 app.handle_event(ev)?;
@@ -948,5 +1257,86 @@ mod tests {
         app.handle_event(Event::Key('q')).unwrap();
         assert!(!app.should_quit);
         assert_eq!(app.filter, "aq");
+    }
+
+    #[test]
+    fn tab_enters_multi_select_and_toggles_rows() {
+        let sessions = vec![
+            mk_session("a1", Some("alpha")),
+            mk_session("b2", Some("bravo")),
+            mk_session("c3", Some("charlie")),
+        ];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        assert!(!app.multi_mode);
+        app.handle_event(Event::Tab).unwrap();
+        assert!(app.multi_mode);
+        assert_eq!(app.multi_selected_count(), 1);
+        app.handle_event(Event::Down).unwrap();
+        app.handle_event(Event::Tab).unwrap();
+        assert_eq!(app.multi_selected_count(), 2);
+        // Tab again on the same row toggles off.
+        app.handle_event(Event::Tab).unwrap();
+        assert_eq!(app.multi_selected_count(), 1);
+    }
+
+    #[test]
+    fn esc_clears_multi_select_without_popping_mode() {
+        let sessions = vec![mk_session("a1", Some("alpha"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Tab).unwrap();
+        assert_eq!(app.multi_selected_count(), 1);
+        app.handle_event(Event::Escape).unwrap();
+        assert_eq!(app.multi_selected_count(), 0);
+        assert!(!app.multi_mode);
+        assert!(!app.should_quit, "Esc on multi-selection must not quit");
+    }
+
+    #[test]
+    fn is_multi_selected_reports_correctly() {
+        let sessions = vec![mk_session("a1", Some("a")), mk_session("b2", Some("b"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Tab).unwrap();
+        assert!(app.is_multi_selected(0));
+        assert!(!app.is_multi_selected(1));
+    }
+
+    #[test]
+    fn v_key_opens_viewer_when_filter_empty() {
+        let sessions = vec![mk_session("abcdef1234", Some("x"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Key('v')).unwrap();
+        assert!(
+            app.viewer.is_some(),
+            "viewer must open for a real selected row"
+        );
+    }
+
+    #[test]
+    fn v_key_typed_into_filter_does_not_open_viewer() {
+        let sessions = vec![mk_session("a", Some("x"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.filter.push('s');
+        app.handle_event(Event::Key('v')).unwrap();
+        assert!(app.viewer.is_none());
+        assert_eq!(app.filter, "sv");
+    }
+
+    #[test]
+    fn tab_in_project_list_is_no_op() {
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], vec![], bm, Mode::ProjectList, None);
+        app.handle_event(Event::Tab).unwrap();
+        assert!(!app.multi_mode);
     }
 }

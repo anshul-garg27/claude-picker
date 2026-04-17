@@ -21,6 +21,7 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Wrap};
 use ratatui::Frame;
 
 use crate::theme::Theme;
+use crate::ui::text::display_width;
 
 /// Identifier for which screen the overlay is being rendered on top of.
 ///
@@ -43,6 +44,8 @@ pub enum Screen {
     Stats,
     /// `claude-picker diff` diff view.
     Diff,
+    /// Full-screen conversation viewer — the `v` keybinding overlay.
+    Viewer,
 }
 
 /// One key-to-description pair.
@@ -105,8 +108,16 @@ const SELECTION_SESSION: &[KeyEntry] = &[
         desc: "resume selected session",
     },
     KeyEntry {
+        key: "v",
+        desc: "open conversation viewer (fullscreen)",
+    },
+    KeyEntry {
         key: "Tab",
-        desc: "(future: multi-select)",
+        desc: "toggle multi-select on row",
+    },
+    KeyEntry {
+        key: "Esc",
+        desc: "clear multi-selection (when active)",
     },
 ];
 
@@ -117,19 +128,19 @@ const ACTIONS_SESSION: &[KeyEntry] = &[
     },
     KeyEntry {
         key: "Ctrl+E",
-        desc: "export session to markdown",
+        desc: "export session (or all selected)",
     },
     KeyEntry {
         key: "Ctrl+D",
-        desc: "delete session (confirmation modal)",
+        desc: "delete session (or all selected)",
     },
     KeyEntry {
         key: "y",
-        desc: "copy session id to clipboard",
+        desc: "copy id (or all selected ids)",
     },
     KeyEntry {
         key: "Y",
-        desc: "copy project path to clipboard",
+        desc: "copy project path(s) to clipboard",
     },
     KeyEntry {
         key: "r",
@@ -235,6 +246,18 @@ const NAV_TREE: &[KeyEntry] = &[
     KeyEntry {
         key: "↑ ↓ / j k",
         desc: "move up / down one row",
+    },
+    KeyEntry {
+        key: "→ / l",
+        desc: "expand fork subtree",
+    },
+    KeyEntry {
+        key: "← / h",
+        desc: "collapse, or jump to parent",
+    },
+    KeyEntry {
+        key: "Space",
+        desc: "toggle expand / open palette",
     },
     KeyEntry {
         key: "gg",
@@ -397,6 +420,71 @@ const DIFF_GROUPS: &[KeyGroup] = &[
     },
 ];
 
+const NAV_VIEWER: &[KeyEntry] = &[
+    KeyEntry {
+        key: "↑ ↓ / j k",
+        desc: "scroll one line",
+    },
+    KeyEntry {
+        key: "Space / PgDn",
+        desc: "page down",
+    },
+    KeyEntry {
+        key: "b / PgUp",
+        desc: "page up",
+    },
+    KeyEntry {
+        key: "Ctrl+D / Ctrl+U",
+        desc: "half page down / up",
+    },
+    KeyEntry {
+        key: "gg",
+        desc: "jump to top",
+    },
+    KeyEntry {
+        key: "G",
+        desc: "jump to bottom",
+    },
+    KeyEntry {
+        key: "Esc / q",
+        desc: "close viewer",
+    },
+];
+
+const ACTIONS_VIEWER: &[KeyEntry] = &[
+    KeyEntry {
+        key: "/",
+        desc: "find in transcript",
+    },
+    KeyEntry {
+        key: "n / N",
+        desc: "next / previous match",
+    },
+    KeyEntry {
+        key: "] / [",
+        desc: "next / previous tool call",
+    },
+    KeyEntry {
+        key: "y",
+        desc: "copy centered message",
+    },
+];
+
+const VIEWER_GROUPS: &[KeyGroup] = &[
+    KeyGroup {
+        title: "NAVIGATION",
+        entries: NAV_VIEWER,
+    },
+    KeyGroup {
+        title: "ACTIONS",
+        entries: ACTIONS_VIEWER,
+    },
+    KeyGroup {
+        title: "HELP",
+        entries: HELP_GROUP,
+    },
+];
+
 /// Return the help content for a given screen.
 pub fn help_for(screen: Screen) -> HelpContent {
     let groups = match screen {
@@ -406,6 +494,7 @@ pub fn help_for(screen: Screen) -> HelpContent {
         Screen::Search => SEARCH_GROUPS,
         Screen::Stats => STATS_GROUPS,
         Screen::Diff => DIFF_GROUPS,
+        Screen::Viewer => VIEWER_GROUPS,
     };
     HelpContent { screen, groups }
 }
@@ -500,10 +589,12 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, content: HelpContent, theme: &T
 /// Format one key-description row: a pill-styled key on a mantle background,
 /// then some space, then the description in muted text.
 fn render_entry_line(entry: &KeyEntry, key_col_width: usize, theme: &Theme) -> Line<'static> {
-    // Pad the key to a fixed character width so descriptions align. We pad
+    // Pad the key to a fixed column width so descriptions align. We pad
     // *outside* the pill span so the colored background stays tight to the
-    // key text itself.
-    let key_chars = entry.key.chars().count();
+    // key text itself. `display_width` so glyphs like "↑↓" (2 cols: arrow
+    // + arrow, each a single column) are counted in terminal cells rather
+    // than codepoints — otherwise a CJK-labelled hotkey could skew the grid.
+    let key_chars = display_width(entry.key);
     let pad = key_col_width.saturating_sub(key_chars).max(1);
     let pill_style = Style::default()
         .fg(theme.yellow)

@@ -18,7 +18,7 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::data::Project;
 use crate::theme::Theme;
-use crate::ui::session_list::truncate_with_ellipsis;
+use crate::ui::text::pad_to_width;
 
 pub fn render(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
@@ -158,7 +158,11 @@ fn render_row<'a>(p: &'a Project, theme: &Theme, selected: bool) -> Line<'a> {
         Style::default().fg(theme.surface2)
     };
 
-    let name = truncate_with_ellipsis(&p.name, 28);
+    // Pad to exactly 30 display columns. The old `format!("{name:<30}")`
+    // path measured the formatter's padding in bytes-not-columns; a CJK or
+    // emoji project name would shift the branch/sessions columns out of
+    // alignment. `pad_to_width` is the column-correct replacement.
+    let name = pad_to_width(&p.name, 30);
 
     let branch = p
         .git_branch
@@ -171,7 +175,7 @@ fn render_row<'a>(p: &'a Project, theme: &Theme, selected: bool) -> Line<'a> {
 
     let mut spans = vec![
         Span::styled(format!(" {pointer} "), pointer_style),
-        Span::styled(format!("{name:<30}"), name_style),
+        Span::styled(name, name_style),
         Span::styled(branch, Style::default().fg(theme.green)),
         Span::raw(" "),
         Span::styled(sessions, Style::default().fg(theme.overlay1)),
