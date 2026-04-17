@@ -27,6 +27,8 @@
 //! Wide-terminal centring is handled by [`render`]: the content block caps
 //! at 120 columns and is horizontally centred when the frame is wider.
 
+use std::time::Duration;
+
 use chrono::{DateTime, Utc};
 use ratatui::layout::{Alignment, Rect};
 use ratatui::style::{Modifier, Style};
@@ -35,7 +37,7 @@ use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Pa
 use ratatui::Frame;
 
 use crate::data::{Project, Session};
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
 /// Hard cap on how wide the tree panel renders. Anything wider is centred
@@ -599,14 +601,26 @@ fn render_session_row<'a>(
     selected: bool,
     width: usize,
 ) -> Line<'a> {
+    // Session age drives the row-fade. Missing timestamp = very old.
+    let age = match session.last_timestamp {
+        Some(ts) => Utc::now()
+            .signed_duration_since(ts)
+            .to_std()
+            .unwrap_or_default(),
+        None => Duration::from_secs(60 * 24 * 3_600),
+    };
+    // Only fade unselected rows — the cursor row stays at full intensity.
+    let apply_fade = !selected;
+
     // ── Gutter + cursor ────────────────────────────────────────────────
-    let cursor_style = if selected {
+    let cursor_style_base = if selected {
         Style::default()
             .fg(theme.mauve)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.surface2)
     };
+    let cursor_style = maybe_fade(cursor_style_base, theme, age, apply_fade);
     let cursor = if selected { "▸" } else { " " };
 
     // ── Expand marker ────────────────────────────────────────────────
@@ -624,20 +638,22 @@ fn render_session_row<'a>(
     } else {
         " "
     };
-    let expand_style = if node.fork_descendants > 0 {
+    let expand_style_base = if node.fork_descendants > 0 {
         Style::default()
             .fg(theme.mauve)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().fg(theme.surface2)
     };
+    let expand_style = maybe_fade(expand_style_base, theme, age, apply_fade);
 
     // ── Tree connector ────────────────────────────────────────────────
     let connector = connector_prefix(node);
-    let connector_style = Style::default().fg(theme.surface2);
+    let connector_style = maybe_fade(Style::default().fg(theme.surface2), theme, age, apply_fade);
 
     // ── Glyph + name ──────────────────────────────────────────────────
-    let (glyph, glyph_style) = glyph_for(session, theme);
+    let (glyph, glyph_style_base) = glyph_for(session, theme);
+    let glyph_style = maybe_fade(glyph_style_base, theme, age, apply_fade);
 
     let is_named = session.name.is_some();
     let label_text: String = session
@@ -658,9 +674,10 @@ fn render_session_row<'a>(
             .fg(theme.overlay0)
             .add_modifier(Modifier::ITALIC)
     };
+    let name_style = maybe_fade(name_base, theme, age, apply_fade);
 
     // ── Right-aligned meta columns ────────────────────────────────────
-    let age = relative_age(session.last_timestamp);
+    let age_label = relative_age(session.last_timestamp);
     let msgs = format!("{} msgs", session.message_count);
     let cost = format_cost(session.total_cost_usd);
     let age_col = 10;
@@ -698,15 +715,15 @@ fn render_session_row<'a>(
     let label_padded = pad_right(&label_trunc, name_budget);
 
     // Colors for meta.
-    let meta_muted = Style::default().fg(theme.overlay0);
-    let fork_hint_style = Style::default().fg(theme.overlay0);
-    let cost_style = if session.total_cost_usd >= 1.0 {
-        Style::default().fg(theme.peach)
-    } else if session.total_cost_usd >= 0.10 {
-        Style::default().fg(theme.yellow)
+    let meta_muted = maybe_fade(Style::default().fg(theme.overlay0), theme, age, apply_fade);
+    let fork_hint_style = maybe_fade(Style::default().fg(theme.overlay0), theme, age, apply_fade);
+    // Heat-mapped cost — identical ramp to the session-list column.
+    let cost_style_base = if session.total_cost_usd <= 0.0 {
+        Style::default().fg(theme.subtext0)
     } else {
-        Style::default().fg(theme.green)
+        Style::default().fg(theme::cost_color(theme, session.total_cost_usd))
     };
+    let cost_style = maybe_fade(cost_style_base, theme, age, apply_fade);
 
     let mut spans: Vec<Span<'_>> = vec![
         Span::styled(format!(" {cursor}"), cursor_style),
@@ -716,7 +733,7 @@ fn render_session_row<'a>(
         Span::styled(connector, connector_style),
         Span::styled(glyph.to_string(), glyph_style),
         Span::raw(" "),
-        Span::styled(label_padded, name_base),
+        Span::styled(label_padded, name_style),
     ];
     if let Some(hint) = fork_hint {
         spans.push(Span::raw(" "));
@@ -726,7 +743,10 @@ fn render_session_row<'a>(
         spans.push(Span::raw(" "));
     }
     spans.extend([
-        Span::styled(format!("{:>width$}", age, width = age_col), meta_muted),
+        Span::styled(
+            format!("{:>width$}", age_label, width = age_col),
+            meta_muted,
+        ),
         Span::raw(" "),
         Span::styled(format!("{:>width$}", msgs, width = msgs_col), meta_muted),
         Span::raw(" "),
@@ -741,6 +761,15 @@ fn render_session_row<'a>(
     }
 
     Line::from(spans)
+}
+
+/// Fade `style` through [`theme::age_fade_style`] when the row is eligible.
+/// Mirrors the helper on `session_list` so both renderers stay in lockstep.
+fn maybe_fade(style: Style, theme: &Theme, age: Duration, apply: bool) -> Style {
+    if !apply {
+        return style;
+    }
+    theme::age_fade_style(theme, style, age)
 }
 
 /// Pad `s` to exactly `width` **display columns**. Delegates to the

@@ -73,16 +73,18 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
     };
 
     // When the filter has content, promote the border to mauve so the user
-    // sees at-a-glance that typing is landing in the filter.
-    let border_color = if !app.filter.is_empty() {
-        Style::default().fg(theme.mauve)
+    // sees at-a-glance that typing is landing in the filter. The active
+    // filter also bumps up to Thick so weight matches the session-list
+    // variant's visual language.
+    let (border_color, border_type) = if !app.filter.is_empty() {
+        (Style::default().fg(theme.mauve), BorderType::Thick)
     } else {
-        Style::default().fg(theme.surface1)
+        (Style::default().fg(theme.surface1), BorderType::Rounded)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border_type)
         .border_style(border_color);
 
     f.render_widget(Paragraph::new(text).block(block), area);

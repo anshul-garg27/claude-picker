@@ -27,7 +27,7 @@ use serde::Deserialize;
 use crate::app::App;
 use crate::data::session::noise_prefixes;
 use crate::data::Session;
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 use crate::ui::model_pill;
 use crate::ui::text::{display_width, truncate_to_width};
 
@@ -263,13 +263,19 @@ fn render_footer(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
             spans.push(pill);
         }
     }
+    // Cost colour: heat-mapped on the value so the footer stat echoes the
+    // session-list column's visual language. Bold so it reads as a number
+    // regardless of magnitude.
+    let cost_fg = if session.total_cost_usd <= 0.0 {
+        theme.subtext1
+    } else {
+        theme::cost_color(theme, session.total_cost_usd)
+    };
     spans.extend([
         Span::styled("  ·  ", theme.dim()),
         Span::styled(
             format!("cost {cost}"),
-            Style::default()
-                .fg(theme.subtext1)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(cost_fg).add_modifier(Modifier::BOLD),
         ),
     ]);
     // Subagent count appended at the tail so the cost stays the last

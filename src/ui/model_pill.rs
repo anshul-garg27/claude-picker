@@ -9,6 +9,13 @@
 //! The pill is rendered as `[name]` rather than with block glyphs so it
 //! reflows cleanly in any row layout and stays legible at 4-6 chars wide
 //! (the brief called that out explicitly).
+//!
+//! **v2.2 polish:** the default pill is now a *chip* — a block-character
+//! frame `▌opus▐` where the left/right half-blocks read as a tinted border
+//! and the middle is the same family colour on a darker `surface0` bed so
+//! the chip visually floats above the row. Falls back to the flat pill via
+//! [`flat_pill`] when the caller is on a background that already uses
+//! `surface0` (toasts, modals) and the chip effect would vanish.
 
 use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
@@ -17,23 +24,70 @@ use crate::data::pricing::Family;
 use crate::data::PermissionMode;
 use crate::theme::Theme;
 
-/// Build the Span for a single model family. Callers compose this into a row
-/// Line alongside other text; the widget itself is just a styled string.
-pub fn pill<'a>(family: Family, theme: &Theme) -> Span<'a> {
-    let (bg, label) = match family {
-        Family::Opus => (theme.peach, "opus"),
-        Family::Sonnet => (theme.teal, "sonnet"),
-        Family::Haiku => (theme.blue, "haiku"),
-        Family::Unknown => (theme.mauve, "?"),
-    };
+/// Colour + label for the given family, exposed so other widgets can match
+/// the pill colour without hard-coding.
+pub fn family_color(family: Family, theme: &Theme) -> ratatui::style::Color {
+    match family {
+        Family::Opus => theme.peach,
+        Family::Sonnet => theme.teal,
+        Family::Haiku => theme.blue,
+        Family::Unknown => theme.mauve,
+    }
+}
 
+/// Default model pill — the "chip" style.
+///
+/// Renders `▌label▐` where the half-blocks read as a tinted 1-column border
+/// and the interior uses the family colour as foreground over `surface0`.
+/// Works on any TrueColor terminal; degrades to a readable two-tone slab on
+/// 256-colour emulators (the half-block glyphs are still in Unicode BMP).
+///
+/// This replaces the flat-pill lookups from v2.1. Callers that need the flat
+/// solid-bg pill — modal bodies where the surface0 bed would disappear —
+/// should call [`flat_pill`] explicitly.
+pub fn pill<'a>(family: Family, theme: &Theme) -> Span<'a> {
+    chip_pill(family, theme)
+}
+
+/// Chip rendering: `▌label▐` with family colour over `surface0`.
+///
+/// The left / right half-blocks (U+258C / U+2590) act as a subtle 1-col frame
+/// in the family colour; the interior text is the same family colour over a
+/// slightly lighter bed so the chip looks like it's floating one level above
+/// the row. Bold for weight — the effect is "floating chip" rather than "flat
+/// tag", matching Raycast / Linear's pill treatment.
+pub fn chip_pill<'a>(family: Family, theme: &Theme) -> Span<'a> {
+    let accent = family_color(family, theme);
+    let label = match family {
+        Family::Opus => "opus",
+        Family::Sonnet => "sonnet",
+        Family::Haiku => "haiku",
+        Family::Unknown => "?",
+    };
     let style = Style::default()
-        .bg(bg)
+        .fg(accent)
+        .bg(theme.surface0)
+        .add_modifier(Modifier::BOLD);
+    // `▌` and `▐` are Left/Right Half Block. On TrueColor terminals they
+    // render as a tinted 1-col rail flanking the label; on 256-colour
+    // terminals they still look like block glyphs in the accent colour.
+    Span::styled(format!("\u{258C}{label}\u{2590}"), style)
+}
+
+/// Legacy flat-bg pill. Still useful on modal bodies where we don't want the
+/// `surface0` bed to blend into the modal's own `surface0` title stripe.
+pub fn flat_pill<'a>(family: Family, theme: &Theme) -> Span<'a> {
+    let accent = family_color(family, theme);
+    let label = match family {
+        Family::Opus => "opus",
+        Family::Sonnet => "sonnet",
+        Family::Haiku => "haiku",
+        Family::Unknown => "?",
+    };
+    let style = Style::default()
+        .bg(accent)
         .fg(theme.crust)
         .add_modifier(Modifier::BOLD);
-
-    // The extra spaces act as pill "caps" — at TrueColor terminals they
-    // render as rounded-looking tinted padding. Works at all widths.
     Span::styled(format!(" {label} "), style)
 }
 
@@ -84,11 +138,23 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opus_gets_peach_bg() {
+    fn opus_chip_uses_peach_fg_over_surface0() {
+        // Chip-style: family colour in the fg (text + half-block rails),
+        // surface0 as the floating-chip bed.
         let t = Theme::mocha();
         let span = pill(Family::Opus, &t);
-        // content should contain "opus"
         assert!(span.content.contains("opus"));
+        assert!(span.content.starts_with('\u{258C}'));
+        assert!(span.content.ends_with('\u{2590}'));
+        assert_eq!(span.style.fg, Some(t.peach));
+        assert_eq!(span.style.bg, Some(t.surface0));
+    }
+
+    #[test]
+    fn flat_pill_keeps_solid_bg() {
+        // Legacy flat variant still available for callers on a surface0 bg.
+        let t = Theme::mocha();
+        let span = flat_pill(Family::Opus, &t);
         assert_eq!(span.style.bg, Some(t.peach));
         assert_eq!(span.style.fg, Some(t.crust));
     }
@@ -97,7 +163,19 @@ mod tests {
     fn unknown_pill_is_mauve() {
         let t = Theme::mocha();
         let span = pill(Family::Unknown, &t);
-        assert_eq!(span.style.bg, Some(t.mauve));
+        assert_eq!(span.style.fg, Some(t.mauve));
+    }
+
+    #[test]
+    fn family_color_is_stable_across_themes() {
+        // Every family maps to a concrete colour on every palette — the
+        // chip's fg never collapses to None.
+        for &tn in crate::theme::ThemeName::ALL {
+            let t = Theme::from_name(tn);
+            for f in [Family::Opus, Family::Sonnet, Family::Haiku, Family::Unknown] {
+                let _ = family_color(f, &t);
+            }
+        }
     }
 
     #[test]

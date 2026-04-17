@@ -29,7 +29,7 @@ use crate::data::transcript::{
 };
 use crate::data::Session;
 use crate::events::Event;
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 
 /// What the viewer wants the parent to do after handling an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -75,6 +75,9 @@ pub struct ViewerState {
     pub tokens_label: String,
     /// Cost rolled up from the session, formatted.
     pub cost_label: String,
+    /// Raw USD cost so the header can apply the shared heat-map colour ramp
+    /// without re-parsing `cost_label`. Zero = render as muted.
+    pub cost_usd: f64,
 
     /// Parsed transcript — one entry per user/assistant message. `None` if
     /// the load failed (file missing, parse error) so render can show a
@@ -145,6 +148,7 @@ impl ViewerState {
             format!("{} msgs", session.message_count),
             tokens_label,
             cost_label,
+            session.total_cost_usd,
         )
     }
 
@@ -157,6 +161,7 @@ impl ViewerState {
         msg_count_label: impl Into<String>,
         tokens_label: impl Into<String>,
         cost_label: impl Into<String>,
+        cost_usd: f64,
     ) -> Self {
         let mut state = Self {
             title: title.into(),
@@ -164,6 +169,7 @@ impl ViewerState {
             msg_count_label: msg_count_label.into(),
             tokens_label: tokens_label.into(),
             cost_label: cost_label.into(),
+            cost_usd,
             messages: Vec::new(),
             load_error: None,
             scroll: 0,
@@ -499,6 +505,13 @@ pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut ViewerState, theme: &Th
 }
 
 fn title_line<'a>(state: &'a ViewerState, theme: &'a Theme) -> Line<'a> {
+    // Heat-mapped cost colour keeps the viewer header visually in sync with
+    // the session-list column: a hot session looks hot wherever you see it.
+    let cost_fg = if state.cost_usd <= 0.0 {
+        theme.subtext1
+    } else {
+        theme::cost_color(theme, state.cost_usd)
+    };
     Line::from(vec![
         Span::raw(" "),
         Span::styled(
@@ -514,9 +527,7 @@ fn title_line<'a>(state: &'a ViewerState, theme: &'a Theme) -> Line<'a> {
         Span::styled(" · ", theme.dim()),
         Span::styled(
             state.cost_label.clone(),
-            Style::default()
-                .fg(theme.subtext1)
-                .add_modifier(Modifier::BOLD),
+            Style::default().fg(cost_fg).add_modifier(Modifier::BOLD),
         ),
         Span::raw(" "),
     ])

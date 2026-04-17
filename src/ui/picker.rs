@@ -90,6 +90,10 @@ fn render_project_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
+    // Use `›` (U+203A) as the breadcrumb separator instead of `·` so the
+    // path reads as a real hierarchy (tool › project › subview). The
+    // middle-dot stays reserved for peer-level metadata ("total · tokens").
+    const SEP: &str = " \u{203A} ";
     let mut spans = vec![
         Span::styled(
             " claude-picker ",
@@ -97,8 +101,7 @@ fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
                 .fg(theme.mauve)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::styled("·", theme.dim()),
-        Span::raw(" "),
+        Span::styled(SEP, theme.dim()),
     ];
     match app.mode {
         Mode::SessionList => {
@@ -107,16 +110,34 @@ fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
                 .map(|p| p.name.as_str())
                 .unwrap_or("local");
             spans.push(Span::styled(project_name.to_string(), theme.subtle()));
+            // Dim session count so the user sees volume without the eye
+            // grabbing it on every frame.
+            let count = app.sessions.len();
+            spans.push(Span::styled(SEP, theme.dim()));
+            let count_label = if count == 1 {
+                "1 session".to_string()
+            } else {
+                format!("{count} sessions")
+            };
+            spans.push(Span::styled(count_label, theme.muted()));
         }
         Mode::ProjectList => {
             spans.push(Span::styled("all projects", theme.subtle()));
+            let count = app.projects.len();
+            spans.push(Span::styled(SEP, theme.dim()));
+            let count_label = if count == 1 {
+                "1 project".to_string()
+            } else {
+                format!("{count} projects")
+            };
+            spans.push(Span::styled(count_label, theme.muted()));
         }
     }
     // Subtly append the theme name when it's not the default. Muted so it
     // doesn't compete with the main title, but legible enough that a user
     // who pressed `t` by accident can confirm what they're looking at.
     if theme.name != ThemeName::default() {
-        spans.push(Span::styled(" · ", theme.dim()));
+        spans.push(Span::styled(SEP, theme.dim()));
         spans.push(Span::styled(theme.name.label().to_string(), theme.muted()));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
@@ -146,9 +167,36 @@ fn render_too_small(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
 }
 
 fn render_toast(f: &mut Frame<'_>, area: Rect, toast: &Toast, theme: &Theme) {
-    // Center a ~40-wide, 3-tall box two rows above the bottom.
-    let w = 52_u16.min(area.width.saturating_sub(4));
+    // Max width for a fully-settled toast. The slide-in animation scales the
+    // actual width from ~40% → 100% of this over the first 200 ms; the
+    // fade-out simultaneously mixes both the border and foreground toward
+    // the terminal's base colour over the final 300 ms.
+    let full_w = 52_u16.min(area.width.saturating_sub(4));
     let h = 3_u16;
+
+    // Interpolation factor:
+    //   scale: 0.0 → 1.0 over the first 200 ms of toast life (unless
+    //          animations are disabled).
+    //   fade:  0.0 while visible, 0.0 → 1.0 over the final 300 ms.
+    let anim_disabled = crate::theme::animations_disabled();
+    let scale = if anim_disabled {
+        1.0
+    } else {
+        toast.slide_in_progress()
+    };
+    let fade = if anim_disabled {
+        0.0
+    } else {
+        toast.fade_out_progress()
+    };
+
+    // Width clamps to 40 % so the toast is still readable at the earliest
+    // frame of the slide-in.
+    let w = {
+        let min = (full_w as f32 * 0.40).round() as u16;
+        let target = min + ((full_w - min) as f32 * scale).round() as u16;
+        target.max(min).min(full_w)
+    };
     let x = area.x + area.width.saturating_sub(w) / 2;
     let y = area
         .y
@@ -161,7 +209,9 @@ fn render_toast(f: &mut Frame<'_>, area: Rect, toast: &Toast, theme: &Theme) {
         height: h,
     };
 
-    // Clear the underlying cells so the toast is opaque.
+    // Clear the underlying cells so the toast is opaque. The fade effect
+    // biases the fg colours — the clear stays fully opaque so the body
+    // doesn't show through.
     f.render_widget(Clear, rect);
 
     let (accent, label) = match toast.kind {
@@ -169,21 +219,27 @@ fn render_toast(f: &mut Frame<'_>, area: Rect, toast: &Toast, theme: &Theme) {
         crate::app::ToastKind::Success => (theme.green, "done"),
         crate::app::ToastKind::Error => (theme.red, "error"),
     };
+    // Mix foreground colours toward `theme.base` as the fade factor climbs
+    // — at t=1.0 the toast should look like it dissolved into the panel.
+    let border_fg = crate::theme::lerp_color(accent, theme.base, fade);
+    let title_fg = crate::theme::lerp_color(accent, theme.base, fade);
+    let body_fg = crate::theme::lerp_color(theme.text, theme.base, fade);
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(accent))
+        .border_style(Style::default().fg(border_fg))
         .title(Line::from(vec![
             Span::raw(" "),
             Span::styled(
                 label,
-                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+                Style::default().fg(title_fg).add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
         ]));
     let p = Paragraph::new(Line::from(Span::styled(
         format!(" {} ", toast.message),
-        theme.body(),
+        Style::default().fg(body_fg),
     )))
     .block(block)
     .alignment(ratatui::layout::Alignment::Center);

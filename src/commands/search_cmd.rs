@@ -410,6 +410,7 @@ fn open_viewer(state: &mut SearchState) {
         String::new(),
         String::new(),
         String::new(),
+        0.0,
     ));
 }
 

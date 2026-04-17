@@ -18,6 +18,8 @@
 //! `sky`, `lavender`, `pink`, `overlay1`, `overlay2` — so widgets that already
 //! reference them keep working without guards.
 
+use std::time::Duration;
+
 use catppuccin::{Color as CatColor, PALETTE};
 use ratatui::style::{Color, Modifier, Style};
 
@@ -495,6 +497,167 @@ pub fn pill_text_color(theme: &Theme) -> Color {
     theme.crust
 }
 
+// ─── Visual polish helpers ────────────────────────────────────────────────
+//
+// These are the v2.2 "wow" helpers — tiny pure functions that colour rows
+// by meaning (cost heat, age fade) rather than by hand-wired bucket. Callers
+// pass in either the live theme or a base colour from the theme; we do the
+// math here so every renderer stays consistent.
+
+/// Heat-mapped colour for a session's running cost.
+///
+/// Ramps cool → warm so the eye immediately sees which sessions ate the most
+/// money. Buckets match the brief (sub-$0.10 cool, $5+ hot). Keep identical
+/// thresholds in every renderer that shows cost, otherwise the visual language
+/// fragments.
+pub fn cost_color(theme: &Theme, cost_usd: f64) -> Color {
+    if cost_usd < 0.10 {
+        theme.teal
+    } else if cost_usd < 1.00 {
+        theme.green
+    } else if cost_usd < 5.00 {
+        theme.yellow
+    } else {
+        theme.peach
+    }
+}
+
+/// Linear-interpolate between two RGB colours. `t` is clamped to [0, 1].
+///
+/// Used by [`age_fade`] to mix a base colour toward the muted overlay as a
+/// row ages. Non-RGB inputs (e.g. terminal-mapped 16-colour enums) fall back
+/// to the base unchanged — every palette we ship is explicit TrueColor so this
+/// guard is mostly a safety net.
+pub fn lerp_color(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    match (a, b) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            let mix = |x: u8, y: u8| -> u8 {
+                let xf = x as f32;
+                let yf = y as f32;
+                (xf + (yf - xf) * t).round() as u8
+            };
+            Color::Rgb(mix(ar, br), mix(ag, bg), mix(ab, bb))
+        }
+        _ => a,
+    }
+}
+
+/// Fade a base colour toward the theme's `overlay0` based on session age.
+///
+/// Produces a subtle "age patina" — recent rows render at full intensity,
+/// week-old rows sit at ~65%, month-plus rows dim to ~35%. Callers apply
+/// this to EVERY coloured piece of the row (name, cost, age, pill fg) so the
+/// whole line decays uniformly.
+///
+/// The buckets are chosen so the jumps between tiers are visible at a glance
+/// but not jarring — think "old book paper" rather than "greyed out".
+pub fn age_fade(theme: &Theme, base: Color, age: Duration) -> Color {
+    // 0.0 = base, 1.0 = fully faded to overlay0.
+    let mix = age_fade_amount(age);
+    if mix <= 0.0 {
+        return base;
+    }
+    lerp_color(base, theme.overlay0, mix)
+}
+
+/// Same as [`age_fade`] but for Style — rewrites fg colour if set.
+///
+/// Keeps `bg`, `modifiers`, and other Style fields intact. Returns the Style
+/// unmodified when no fg was set (callers that rely on terminal default get
+/// no surprise).
+pub fn age_fade_style(theme: &Theme, style: Style, age: Duration) -> Style {
+    if let Some(fg) = style.fg {
+        style.fg(age_fade(theme, fg, age))
+    } else {
+        style
+    }
+}
+
+/// Mix amount for [`age_fade`]. Exposed so tests can pin the exact breakpoints
+/// and so a callsite can avoid building a Style when the mix is zero.
+///
+/// Buckets (from the brief):
+/// - < 1 hour   → 0.00 (full brightness)
+/// - < 6 hours  → 0.10
+/// - < 24 hours → 0.20
+/// - < 7 days   → 0.35
+/// - < 30 days  → 0.50
+/// - older      → 0.65
+pub fn age_fade_amount(age: Duration) -> f32 {
+    let secs = age.as_secs();
+    if secs < 3_600 {
+        0.00
+    } else if secs < 6 * 3_600 {
+        0.10
+    } else if secs < 24 * 3_600 {
+        0.20
+    } else if secs < 7 * 24 * 3_600 {
+        0.35
+    } else if secs < 30 * 24 * 3_600 {
+        0.50
+    } else {
+        0.65
+    }
+}
+
+/// Env var consulted at startup to disable animated UI effects.
+///
+/// When set to `1`, `true`, or `yes` (case-insensitive), toast slide-ins,
+/// cursor glides, and first-run splash animations are all short-circuited
+/// to their static final state. Useful for screen-recording, accessibility
+/// preferences, or older terminals where redrawing 33× per second is wasted
+/// work. There's no corresponding `prefers-reduced-motion` in terminals —
+/// this env var is the equivalent escape hatch.
+pub const NO_ANIM_ENV_VAR: &str = "CLAUDE_PICKER_NO_ANIM";
+
+/// True when the user has opted out of animations via [`NO_ANIM_ENV_VAR`].
+pub fn animations_disabled() -> bool {
+    match std::env::var(NO_ANIM_ENV_VAR) {
+        Ok(v) => matches!(
+            v.trim().to_ascii_lowercase().as_str(),
+            "1" | "true" | "yes" | "on"
+        ),
+        Err(_) => false,
+    }
+}
+
+/// Path to the first-run marker file. `None` when no home dir — headless CI
+/// shouldn't trip the first-run splash anyway, so treat that as "already seen".
+pub fn first_run_marker_path() -> Option<std::path::PathBuf> {
+    let home = dirs::home_dir()?;
+    Some(
+        home.join(".config")
+            .join("claude-picker")
+            .join(".seen_tour"),
+    )
+}
+
+/// True when the user has never seen the first-run splash toast.
+///
+/// Checked in the App constructor. A missing marker means "show it"; a
+/// present marker (any content) means "already seen". Callers that show
+/// the splash should follow up with [`mark_first_run_done`] so the tip is
+/// never shown twice per major version.
+pub fn is_first_run() -> bool {
+    match first_run_marker_path() {
+        Some(path) => !path.is_file(),
+        None => false,
+    }
+}
+
+/// Persist the first-run marker. Best-effort — disk failures do NOT fail the
+/// TUI because showing the tip twice is a strictly cosmetic regression.
+pub fn mark_first_run_done() -> std::io::Result<()> {
+    let path = first_run_marker_path().ok_or_else(|| {
+        std::io::Error::new(std::io::ErrorKind::NotFound, "home dir not locatable")
+    })?;
+    if let Some(parent) = path.parent() {
+        std::fs::create_dir_all(parent)?;
+    }
+    std::fs::write(path, env!("CARGO_PKG_VERSION"))
+}
+
 // ─── Persistence ───────────────────────────────────────────────────────────
 //
 // The user's last-chosen theme is stored at `~/.config/claude-picker/theme`
@@ -693,5 +856,138 @@ mod tests {
         let bg_lum = (br as u32) + (bg as u32) + (bb as u32);
         let text_lum = (tr as u32) + (tg as u32) + (tb as u32);
         assert!(bg_lum < text_lum, "Mocha text must be brighter than base");
+    }
+
+    #[test]
+    fn cost_color_ramps_cool_to_hot() {
+        let t = Theme::mocha();
+        assert_eq!(cost_color(&t, 0.00), t.teal, "sub-dime must be teal");
+        assert_eq!(cost_color(&t, 0.05), t.teal);
+        assert_eq!(cost_color(&t, 0.10), t.green, "dime-to-dollar is green");
+        assert_eq!(cost_color(&t, 0.99), t.green);
+        assert_eq!(cost_color(&t, 1.00), t.yellow, "dollar-plus is yellow");
+        assert_eq!(cost_color(&t, 4.99), t.yellow);
+        assert_eq!(cost_color(&t, 5.00), t.peach, "$5+ is hot peach");
+        assert_eq!(cost_color(&t, 99.99), t.peach);
+    }
+
+    #[test]
+    fn cost_color_works_across_every_theme() {
+        // Smoke-check that the helper produces a value for every theme — a
+        // regression where one palette stopped exposing `teal` would shift
+        // the cost column inconsistently.
+        for &name in ThemeName::ALL {
+            let theme = Theme::from_name(name);
+            let _ = cost_color(&theme, 0.01);
+            let _ = cost_color(&theme, 0.50);
+            let _ = cost_color(&theme, 2.50);
+            let _ = cost_color(&theme, 10.0);
+        }
+    }
+
+    #[test]
+    fn lerp_color_clamps_and_interpolates() {
+        let a = Color::Rgb(0, 0, 0);
+        let b = Color::Rgb(100, 200, 40);
+        // t=0 → a, t=1 → b, t=0.5 → midpoint.
+        assert_eq!(lerp_color(a, b, 0.0), Color::Rgb(0, 0, 0));
+        assert_eq!(lerp_color(a, b, 1.0), Color::Rgb(100, 200, 40));
+        assert_eq!(lerp_color(a, b, 0.5), Color::Rgb(50, 100, 20));
+        // Out-of-bounds t clamps.
+        assert_eq!(lerp_color(a, b, 2.0), Color::Rgb(100, 200, 40));
+        assert_eq!(lerp_color(a, b, -1.0), Color::Rgb(0, 0, 0));
+    }
+
+    #[test]
+    fn lerp_color_falls_back_on_non_rgb() {
+        // If either side isn't RGB we return `a` unchanged — terminals that
+        // don't support TrueColor shouldn't see a colour warp.
+        let a = Color::Reset;
+        let b = Color::Rgb(255, 0, 0);
+        assert_eq!(lerp_color(a, b, 0.5), Color::Reset);
+    }
+
+    #[test]
+    fn age_fade_amount_hits_every_bucket() {
+        use std::time::Duration;
+        assert_eq!(age_fade_amount(Duration::from_secs(60)), 0.00);
+        assert!(age_fade_amount(Duration::from_secs(3 * 3_600)) > 0.0);
+        assert!(
+            age_fade_amount(Duration::from_secs(12 * 3_600))
+                > age_fade_amount(Duration::from_secs(3 * 3_600))
+        );
+        assert!(
+            age_fade_amount(Duration::from_secs(3 * 24 * 3_600))
+                > age_fade_amount(Duration::from_secs(12 * 3_600))
+        );
+        assert!(
+            age_fade_amount(Duration::from_secs(14 * 24 * 3_600))
+                > age_fade_amount(Duration::from_secs(3 * 24 * 3_600))
+        );
+        assert!(
+            age_fade_amount(Duration::from_secs(60 * 24 * 3_600))
+                > age_fade_amount(Duration::from_secs(14 * 24 * 3_600))
+        );
+    }
+
+    #[test]
+    fn age_fade_recent_row_unchanged() {
+        let t = Theme::mocha();
+        let base = t.green;
+        assert_eq!(
+            age_fade(&t, base, Duration::from_secs(60)),
+            base,
+            "row under 1h must not fade"
+        );
+    }
+
+    #[test]
+    fn age_fade_old_row_mixes_toward_overlay() {
+        let t = Theme::mocha();
+        let faded = age_fade(&t, t.green, Duration::from_secs(60 * 24 * 3_600));
+        // Must differ from the raw base (or overlay, on weird themes where
+        // they happen to coincide — pick green+overlay0 from Mocha; both
+        // are distinct RGBs, so the midpoint must differ from each end).
+        assert_ne!(faded, t.green);
+        assert_ne!(faded, t.overlay0);
+    }
+
+    #[test]
+    fn age_fade_style_preserves_modifiers() {
+        let t = Theme::mocha();
+        let base = Style::default()
+            .fg(t.green)
+            .add_modifier(Modifier::BOLD | Modifier::ITALIC);
+        let faded = age_fade_style(&t, base, Duration::from_secs(60 * 24 * 3_600));
+        assert!(faded.add_modifier.contains(Modifier::BOLD));
+        assert!(faded.add_modifier.contains(Modifier::ITALIC));
+        assert_ne!(faded.fg, Some(t.green));
+    }
+
+    #[test]
+    fn age_fade_style_unset_fg_untouched() {
+        let t = Theme::mocha();
+        let style = Style::default().add_modifier(Modifier::BOLD);
+        let faded = age_fade_style(&t, style, Duration::from_secs(60 * 24 * 3_600));
+        assert_eq!(faded.fg, None);
+    }
+
+    #[test]
+    fn animations_disabled_reads_env() {
+        // Guard on an idiosyncratic prefix to avoid stomping a user env.
+        let key = NO_ANIM_ENV_VAR;
+        let prev = std::env::var(key).ok();
+        std::env::set_var(key, "1");
+        assert!(animations_disabled());
+        std::env::set_var(key, "0");
+        assert!(!animations_disabled());
+        std::env::set_var(key, "true");
+        assert!(animations_disabled());
+        std::env::remove_var(key);
+        assert!(!animations_disabled());
+        // Restore any pre-existing value.
+        if let Some(v) = prev {
+            std::env::set_var(key, v);
+        }
     }
 }

@@ -12,6 +12,7 @@
 //! [`crate::theme::Theme::selected_row`], matching the mockup.
 
 use std::borrow::Cow;
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
@@ -25,7 +26,7 @@ use ratatui::Frame;
 
 use crate::app::App;
 use crate::data::Session;
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 use crate::ui::model_pill;
 use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
@@ -40,15 +41,12 @@ const NAME_COL_WIDTH: usize = 28;
 pub fn render(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
-    // Outer block — title top-left, counter top-right.
+    // Outer block — title top-left, per-project totals top-right. We show
+    // `total $X.XX · YY.YM tok` on the right so the user sees the project's
+    // running spend without leaving the picker. Only renders when we have
+    // sessions (empty-state keeps the bar clean).
     let title = outer_title_spans(app);
-    let counter = Line::from(vec![Span::styled(
-        format!("{}/{}", app.filtered_indices.len(), app.sessions.len()),
-        Style::default()
-            .fg(theme.subtext1)
-            .add_modifier(Modifier::BOLD),
-    )])
-    .right_aligned();
+    let counter = project_totals_line(app);
 
     let block = Block::default()
         .borders(Borders::ALL)
@@ -71,8 +69,17 @@ pub fn render(f: &mut Frame<'_>, area: Rect, app: &App) {
 }
 
 /// Build the spans that go in the outer-block title.
+///
+/// Format: ` ~ claude-picker › <N> sessions ` — the breadcrumb arrow (U+203A)
+/// keeps hierarchy readable without stealing the eye from the brand mark.
 fn outer_title_spans(app: &App) -> Line<'_> {
     let theme = &app.theme;
+    let session_count = app.sessions.len();
+    let count_label = if session_count == 1 {
+        "1 session".to_string()
+    } else {
+        format!("{session_count} sessions")
+    };
     Line::from(vec![
         Span::raw(" "),
         Span::styled("~", theme.muted()),
@@ -83,8 +90,71 @@ fn outer_title_spans(app: &App) -> Line<'_> {
                 .fg(theme.mauve)
                 .add_modifier(Modifier::BOLD),
         ),
+        Span::styled(" \u{203A} ", theme.dim()),
+        Span::styled(count_label, theme.muted()),
         Span::raw(" "),
     ])
+}
+
+/// Build the right-aligned project-totals line: ` total $X.XX · YY.YM tok `.
+///
+/// Sums every loaded session's cost + token total. Kept light — we already
+/// have the Session vector in memory; this is an O(N) pass on every frame
+/// but N is the in-project count and rendering is the bottleneck anyway.
+fn project_totals_line(app: &App) -> Line<'_> {
+    let theme = &app.theme;
+    if app.sessions.is_empty() {
+        // Nothing to total — show the original "filtered/total" counter so
+        // the user still gets feedback while typing.
+        return Line::from(vec![Span::styled(
+            format!("{}/{}", app.filtered_indices.len(), app.sessions.len()),
+            Style::default()
+                .fg(theme.subtext1)
+                .add_modifier(Modifier::BOLD),
+        )])
+        .right_aligned();
+    }
+    let mut total_cost = 0.0f64;
+    let mut total_tokens: u64 = 0;
+    for s in &app.sessions {
+        total_cost += s.total_cost_usd;
+        total_tokens = total_tokens.saturating_add(s.tokens.total());
+    }
+    let cost_label = if total_cost < 0.01 {
+        "<$0.01".to_string()
+    } else {
+        format!("${total_cost:.2}")
+    };
+    let tok_label = if total_tokens >= 1_000_000 {
+        format!("{:.1}M tok", total_tokens as f64 / 1_000_000.0)
+    } else if total_tokens >= 1_000 {
+        format!("{:.1}k tok", total_tokens as f64 / 1_000.0)
+    } else {
+        format!("{total_tokens} tok")
+    };
+    // Filtered/total counter rides in front so users still see how their
+    // filter has narrowed the list.
+    Line::from(vec![
+        Span::styled(
+            format!("{}/{}", app.filtered_indices.len(), app.sessions.len()),
+            Style::default()
+                .fg(theme.subtext1)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  \u{2219}  ", theme.dim()),
+        Span::styled("total", theme.muted()),
+        Span::raw(" "),
+        Span::styled(
+            cost_label,
+            Style::default()
+                .fg(theme.subtext1)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  \u{2219}  ", theme.dim()),
+        Span::styled(tok_label, theme.muted()),
+        Span::raw(" "),
+    ])
+    .right_aligned()
 }
 
 /// Border style depends on focus — the active pane uses mauve, inactive uses
@@ -119,19 +189,20 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
         ])
     };
 
-    let border_color = if !app.filter.is_empty() {
-        // Active filter: bright mauve so it's unmistakable the keystrokes
-        // are landing here.
-        Style::default().fg(theme.mauve)
+    let (border_color, border_type) = if !app.filter.is_empty() {
+        // Active filter: bright mauve thick border so it's unmistakable
+        // the keystrokes are landing here. Thick ties back to Linear's
+        // "active input" language of a heavier weight stroke.
+        (Style::default().fg(theme.mauve), BorderType::Thick)
     } else if app.filter_focused {
-        theme.panel_border_active()
+        (theme.panel_border_active(), BorderType::Rounded)
     } else {
-        Style::default().fg(theme.surface1)
+        (Style::default().fg(theme.surface1), BorderType::Rounded)
     };
 
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
+        .border_type(border_type)
         .border_style(border_color);
 
     let p = Paragraph::new(text).block(block);
@@ -162,7 +233,18 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
             let is_selected = Some(display_idx) == app.cursor_position();
             let is_bookmarked = app.bookmarks.contains(&s.id);
             let is_multi = app.is_multi_selected(sess_idx);
-            ListItem::new(render_row(s, theme, is_selected, is_bookmarked, is_multi))
+            // Lingering cursor trail: the row we just left keeps a faint
+            // `surface0` wash for the glide window so the eye catches the
+            // direction of movement.
+            let is_glide = app.is_glide_trail(display_idx);
+            ListItem::new(render_row(
+                s,
+                theme,
+                is_selected,
+                is_bookmarked,
+                is_multi,
+                is_glide,
+            ))
         })
         .collect();
 
@@ -208,17 +290,33 @@ fn render_scrollbar(f: &mut Frame<'_>, area: Rect, total: usize, position: usize
 ///
 /// Layout (at 55%-wide panels that gives us ~50 cols):
 /// `▸ session-name…………… [opus] $1.24 2h`
+///
+/// **v2.2 polish layers:**
+/// - Cost column uses `theme::cost_color` (teal → green → yellow → peach).
+/// - Unselected rows fade toward `overlay0` based on the session's last
+///   activity — older rows visibly dim so recency reads without dates.
+/// - Multi-selected / cursor rows keep full intensity for contrast.
 fn render_row<'a>(
     s: &'a Session,
     theme: &Theme,
     selected: bool,
     bookmarked: bool,
     multi: bool,
+    glide_trail: bool,
 ) -> Line<'a> {
+    // Age in seconds since the last activity timestamp — drives the row-fade.
+    // Missing timestamps fade fully (treat as "very old").
+    let age = session_age(s);
+
+    // Whether this row should run through the age-fade filter at all. The
+    // brief says: fade ONLY unselected rows; selection stays full brightness
+    // for contrast. Multi-select rows also stay full-bright.
+    let apply_fade = !selected && !multi;
+
     // Multi-select rows recolor the name in peach-bold regardless of cursor
     // state so the visual distinction reads at a glance. Selection still wins
     // for the cursor row's background stripe (applied below).
-    let name_style = if multi {
+    let name_style_base = if multi {
         Style::default()
             .fg(theme.peach)
             .add_modifier(Modifier::BOLD)
@@ -231,8 +329,9 @@ fn render_row<'a>(
             .fg(theme.subtext0)
             .add_modifier(Modifier::ITALIC)
     };
+    let name_style = maybe_fade(name_style_base, theme, age, apply_fade);
 
-    let pointer_style = if multi {
+    let pointer_style_base = if multi {
         // Tick mark styled peach so it reads as "you picked me".
         Style::default()
             .fg(theme.peach)
@@ -244,6 +343,7 @@ fn render_row<'a>(
     } else {
         Style::default().fg(theme.surface2)
     };
+    let pointer_style = maybe_fade(pointer_style_base, theme, age, apply_fade);
     // `✓` takes the pointer slot when the row is multi-selected (whether or
     // not the cursor is on it). The cursor row without multi-selection keeps
     // the `▸` pointer so the active row is still clear at a glance.
@@ -256,9 +356,15 @@ fn render_row<'a>(
     };
 
     let pin = if bookmarked {
-        Span::styled("■ ", Style::default().fg(theme.blue))
+        Span::styled(
+            "■ ",
+            maybe_fade(Style::default().fg(theme.blue), theme, age, apply_fade),
+        )
     } else if s.is_fork {
-        Span::styled("↳ ", Style::default().fg(theme.peach))
+        Span::styled(
+            "↳ ",
+            maybe_fade(Style::default().fg(theme.peach), theme, age, apply_fade),
+        )
     } else {
         Span::raw("  ")
     };
@@ -270,7 +376,14 @@ fn render_row<'a>(
     let name = pad_to_width(s.display_label(), NAME_COL_WIDTH);
     let name_span = Span::styled(name, name_style);
 
-    let pill = model_pill::pill(crate::data::pricing::family(&s.model_summary), theme);
+    // Chip-style model pill. Fade fg only when unselected — we don't want a
+    // year-old session's pill to be indistinguishable from the border.
+    let mut pill = model_pill::pill(crate::data::pricing::family(&s.model_summary), theme);
+    if apply_fade {
+        if let Some(fg) = pill.style.fg {
+            pill.style.fg = Some(theme::age_fade(theme, fg, age));
+        }
+    }
 
     // Optional permission-mode pill — only drawn for non-default modes.
     let perm_pill = s
@@ -281,29 +394,34 @@ fn render_row<'a>(
     // sub-agents, otherwise nothing. Using ASCII to stay brand-aligned
     // (no emojis anywhere in the UI).
     let subagent_marker = if s.subagent_count > 0 {
+        let base = if selected {
+            theme.selected_row()
+        } else {
+            Style::default().fg(theme.teal).add_modifier(Modifier::BOLD)
+        };
         Some(Span::styled(
             format!(" ◈{} ", s.subagent_count),
-            if selected {
-                theme.selected_row()
-            } else {
-                Style::default().fg(theme.teal).add_modifier(Modifier::BOLD)
-            },
+            maybe_fade(base, theme, age, apply_fade),
         ))
     } else {
         None
     };
 
     let cost = format_cost(s.total_cost_usd);
-    let cost_style = cost_style(s.total_cost_usd, theme, selected);
+    let cost_style_base = cost_style(s.total_cost_usd, theme, selected);
+    let cost_style = maybe_fade(cost_style_base, theme, age, apply_fade);
     let cost_span = Span::styled(format!("{cost:>7}"), cost_style);
 
-    let age = relative_time(s.last_timestamp);
+    let age_label = relative_time(s.last_timestamp);
     let age_span = Span::styled(
-        format!(" {age:>4}"),
+        format!(" {age_label:>4}"),
         if selected {
             theme.selected_row()
         } else {
-            age_style(s.last_timestamp, theme)
+            // The age column is the rare thing we DO want to still look aged
+            // — even a "3d"/"Apr 10" string should colour-fade in sync with
+            // the rest of the row. Use the static age_style, then fade.
+            maybe_fade(age_style(s.last_timestamp, theme), theme, age, apply_fade)
         },
     );
 
@@ -328,13 +446,38 @@ fn render_row<'a>(
     // If selected, stripe the row background by injecting a surface0 span
     // of leading whitespace. We already styled pieces, so just ensure the
     // name/cost/age segments carry the bg.
-    if selected {
+    //
+    // The glide trail uses the same surface0 wash but only during the
+    // 150 ms ghost window — so a just-moved-from row fades back into the
+    // list in the next few frames.
+    if selected || glide_trail {
         for span in &mut spans {
             span.style.bg = Some(theme.surface0);
         }
     }
 
     Line::from(spans)
+}
+
+/// Age of the session since `last_timestamp`. Missing timestamps return a
+/// very large duration so the fade pins to the oldest bucket.
+fn session_age(s: &Session) -> Duration {
+    match s.last_timestamp {
+        Some(ts) => Utc::now()
+            .signed_duration_since(ts)
+            .to_std()
+            .unwrap_or_default(),
+        None => Duration::from_secs(60 * 24 * 3_600),
+    }
+}
+
+/// Fade `style` through [`theme::age_fade_style`] when the row is eligible.
+/// Callers stamp out the guarded path without cluttering the main block.
+fn maybe_fade(style: Style, theme: &Theme, age: Duration, apply: bool) -> Style {
+    if !apply {
+        return style;
+    }
+    theme::age_fade_style(theme, style, age)
 }
 
 /// Truncate `s` to at most `max_cols` *display columns* (not chars, not
@@ -362,14 +505,16 @@ fn format_cost(cost: f64) -> String {
     format!("${cost:.2}")
 }
 
-/// Bucketed coloring for the cost column — tiny/dim, medium/yellow, big/red.
+/// Heat-mapped coloring for the cost column.
+///
+/// Zero-cost rows stay dim (they're still "cheap"); everything else rides the
+/// shared `theme::cost_color` ramp so the session-list, tree, preview, and
+/// conversation-viewer all agree about "hot" vs "cool" money.
 fn cost_style(cost: f64, theme: &Theme, selected: bool) -> Style {
-    let fg = if cost < 0.10 {
+    let fg = if cost <= 0.0 {
         theme.subtext0
-    } else if cost < 1.00 {
-        theme.yellow
     } else {
-        theme.peach
+        theme::cost_color(theme, cost)
     };
     let mut s = Style::default().fg(fg);
     if selected {

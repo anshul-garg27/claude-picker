@@ -46,11 +46,26 @@ pub enum Mode {
 }
 
 /// Transient on-screen message (bookmark toggled, export started, error, …).
+///
+/// **v2.2 lifecycle:** every toast runs through three phases the renderer
+/// treats as a mini animation:
+///
+/// - **Slide-in** (first [`Toast::SLIDE_IN`] after creation) — width scales
+///   from 40 % → 100 %. Cheap; just a lerp in the render code.
+/// - **Visible** (next [`Toast::VISIBLE`]) — full opacity, no motion.
+/// - **Fade-out** (last [`Toast::FADE_OUT`]) — foreground colours mix
+///   toward `theme.base` so the toast "dissolves" into the panel.
+///
+/// [`Toast::is_expired`] reports the end of the fade-out; the event loop
+/// drops the toast then. Custom durations (e.g. the 3-second first-run
+/// splash) can use [`Toast::new_with_visible`].
 #[derive(Debug, Clone)]
 pub struct Toast {
     pub message: String,
     pub kind: ToastKind,
-    expires_at: Instant,
+    created_at: Instant,
+    /// How long the toast stays at full opacity between slide-in and fade-out.
+    visible_for: Duration,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -61,16 +76,67 @@ pub enum ToastKind {
 }
 
 impl Toast {
+    /// How long the slide-in animation runs before the toast is "settled".
+    pub const SLIDE_IN: Duration = Duration::from_millis(200);
+    /// Default dwell time after the slide-in completes and before fade-out
+    /// begins. Chosen to be long enough to read one short sentence.
+    pub const VISIBLE: Duration = Duration::from_millis(1_200);
+    /// Fade-out duration — colours lerp toward `theme.base` over this window.
+    pub const FADE_OUT: Duration = Duration::from_millis(300);
+
     fn new(message: impl Into<String>, kind: ToastKind) -> Self {
+        Self::new_with_visible(message, kind, Self::VISIBLE)
+    }
+
+    /// Build a toast with a custom "visible" dwell. Slide-in and fade-out
+    /// stay at the defaults — those are animation constants, not content
+    /// decisions.
+    pub fn new_with_visible(
+        message: impl Into<String>,
+        kind: ToastKind,
+        visible_for: Duration,
+    ) -> Self {
         Self {
             message: message.into(),
             kind,
-            expires_at: Instant::now() + Duration::from_millis(1500),
+            created_at: Instant::now(),
+            visible_for,
+        }
+    }
+
+    /// Elapsed time since the toast was created.
+    fn elapsed(&self) -> Duration {
+        Instant::now().saturating_duration_since(self.created_at)
+    }
+
+    /// 0.0 → 1.0 progress through the slide-in phase. Clamped; after the
+    /// slide settles this always reports 1.0.
+    pub fn slide_in_progress(&self) -> f32 {
+        let e = self.elapsed();
+        if e >= Self::SLIDE_IN {
+            1.0
+        } else {
+            (e.as_millis() as f32) / (Self::SLIDE_IN.as_millis() as f32)
+        }
+    }
+
+    /// 0.0 → 1.0 progress through the fade-out phase. Stays at 0.0 until the
+    /// fade-out window begins, then climbs linearly to 1.0 at expiry.
+    pub fn fade_out_progress(&self) -> f32 {
+        let e = self.elapsed();
+        let fade_start = Self::SLIDE_IN + self.visible_for;
+        if e <= fade_start {
+            0.0
+        } else if e >= fade_start + Self::FADE_OUT {
+            1.0
+        } else {
+            let into = e - fade_start;
+            (into.as_millis() as f32) / (Self::FADE_OUT.as_millis() as f32)
         }
     }
 
     fn is_expired(&self) -> bool {
-        Instant::now() >= self.expires_at
+        self.elapsed() >= Self::SLIDE_IN + self.visible_for + Self::FADE_OUT
     }
 }
 
@@ -90,6 +156,14 @@ pub struct App {
     pub filtered_indices: Vec<usize>,
     /// Which filtered entry the cursor is on (0..filtered_indices.len()).
     pub cursor: usize,
+    /// Display-index the cursor just came from, plus the timestamp of the
+    /// move. Drives the "glide trail": for [`CURSOR_GLIDE_WINDOW`] after a
+    /// cursor move the previous row keeps a ghost `surface0` background so
+    /// the eye registers movement instead of an instant teleport. Cleared
+    /// naturally by `tick()` once the window expires.
+    pub previous_cursor: Option<usize>,
+    /// When the cursor last moved — paired with `previous_cursor`.
+    pub cursor_changed_at: Option<Instant>,
     /// Filter input has focus — controls which border styles light up.
     pub filter_focused: bool,
 
@@ -136,6 +210,11 @@ pub struct App {
 /// vim / lazygit norm — 500 ms is forgiving but still feels chord-y.
 const G_CHORD_WINDOW: Duration = Duration::from_millis(500);
 
+/// How long a "cursor just moved" trail persists. 150 ms is short enough to
+/// feel snappy but long enough that the eye catches the previous row's
+/// lingering background — the sensation is "something moved up/down here".
+pub const CURSOR_GLIDE_WINDOW: Duration = Duration::from_millis(150);
+
 impl App {
     /// Construct an initial state with the default (Mocha) theme. Callers
     /// decide whether to land on [`Mode::ProjectList`] or [`Mode::SessionList`]
@@ -180,6 +259,8 @@ impl App {
             filter: String::new(),
             filtered_indices: Vec::new(),
             cursor: 0,
+            previous_cursor: None,
+            cursor_changed_at: None,
             filter_focused: true,
             bookmarks,
             theme,
@@ -199,7 +280,26 @@ impl App {
         };
         s.rebuild_haystacks();
         s.apply_filter();
+        s.maybe_show_first_run_splash();
         s
+    }
+
+    /// First-run splash: if `~/.config/claude-picker/.seen_tour` is missing,
+    /// seed a 3-second toast pointing at `?`, `space`, and `t`. Best-effort —
+    /// we always mark the tour seen so a writable-home-first-time user never
+    /// sees the tip twice.
+    fn maybe_show_first_run_splash(&mut self) {
+        if !theme::is_first_run() {
+            return;
+        }
+        // Keep the copy terse — it lives over the main picker, so the
+        // absolute shortest summary wins. Brief says 3s dwell.
+        self.toast = Some(Toast::new_with_visible(
+            "tip: ? for shortcuts \u{2219} Space for commands \u{2219} t for themes",
+            ToastKind::Info,
+            Duration::from_millis(3_000),
+        ));
+        let _ = theme::mark_first_run_done();
     }
 
     /// Cycle to the next theme in [`ThemeName::ALL`], replace the live
@@ -908,9 +1008,33 @@ impl App {
         if len == 0 {
             return;
         }
+        let before = self.cursor;
         let current = self.cursor as i32;
         let next = (current + delta).rem_euclid(len as i32);
         self.cursor = next as usize;
+        if self.cursor != before {
+            self.previous_cursor = Some(before);
+            self.cursor_changed_at = Some(Instant::now());
+        }
+    }
+
+    /// True when the cursor glide trail should still be painted behind the
+    /// row at `display_idx`. Kept on `App` so individual renderers stay
+    /// dumb — they just ask "should I show the ghost here?" and get a bool.
+    pub fn is_glide_trail(&self, display_idx: usize) -> bool {
+        if crate::theme::animations_disabled() {
+            return false;
+        }
+        let Some(prev) = self.previous_cursor else {
+            return false;
+        };
+        let Some(when) = self.cursor_changed_at else {
+            return false;
+        };
+        if when.elapsed() > CURSOR_GLIDE_WINDOW {
+            return false;
+        }
+        prev == display_idx && prev != self.cursor
     }
 
     fn filter_push(&mut self, c: char) {
@@ -1019,11 +1143,20 @@ impl App {
         }
     }
 
-    /// Called once per frame to retire expired toasts.
+    /// Called once per frame to retire expired toasts + cursor-glide trails.
     pub fn tick(&mut self) {
         if let Some(t) = &self.toast {
             if t.is_expired() {
                 self.toast = None;
+            }
+        }
+        // Clear the glide trail once its window has passed. Avoids stale
+        // state lingering past the animation and needing an extra render
+        // condition everywhere.
+        if let Some(when) = self.cursor_changed_at {
+            if when.elapsed() > CURSOR_GLIDE_WINDOW {
+                self.previous_cursor = None;
+                self.cursor_changed_at = None;
             }
         }
     }
@@ -1338,5 +1471,75 @@ mod tests {
         let mut app = App::new(vec![], vec![], bm, Mode::ProjectList, None);
         app.handle_event(Event::Tab).unwrap();
         assert!(!app.multi_mode);
+    }
+
+    #[test]
+    fn toast_slide_and_fade_progress_bounds() {
+        // A brand-new toast is mid-slide-in (could be 0 or tiny) and has
+        // zero fade. A hand-constructed expired toast reports full fade.
+        let t = Toast::new("hi", ToastKind::Info);
+        assert!(t.slide_in_progress() >= 0.0);
+        assert!(t.slide_in_progress() <= 1.0);
+        assert_eq!(t.fade_out_progress(), 0.0);
+
+        // Simulate an old toast by subtracting from created_at.
+        let mut expired = Toast::new("hi", ToastKind::Info);
+        expired.created_at = Instant::now()
+            - Toast::SLIDE_IN
+            - Toast::VISIBLE
+            - Toast::FADE_OUT
+            - Duration::from_millis(50);
+        assert_eq!(expired.slide_in_progress(), 1.0);
+        assert_eq!(expired.fade_out_progress(), 1.0);
+        assert!(expired.is_expired());
+    }
+
+    #[test]
+    fn cursor_glide_trail_reports_previous_then_clears() {
+        let sessions = vec![
+            mk_session("a", Some("a")),
+            mk_session("b", Some("b")),
+            mk_session("c", Some("c")),
+        ];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+
+        // Fresh cursor = no glide anywhere.
+        assert!(!app.is_glide_trail(0));
+        assert!(!app.is_glide_trail(1));
+
+        // Move down: previous row should report glide.
+        app.handle_event(Event::Down).unwrap();
+        assert!(app.is_glide_trail(0), "row we left should glide");
+        assert!(!app.is_glide_trail(1), "cursor row is not the trail");
+        assert!(!app.is_glide_trail(2));
+
+        // Advance past the glide window (simulate by zeroing the timer).
+        app.cursor_changed_at = Some(Instant::now() - Duration::from_secs(2));
+        app.tick();
+        assert!(!app.is_glide_trail(0));
+        assert!(app.previous_cursor.is_none());
+    }
+
+    #[test]
+    fn cursor_glide_disabled_by_no_anim_env() {
+        let key = crate::theme::NO_ANIM_ENV_VAR;
+        let prev = std::env::var(key).ok();
+        let sessions = vec![mk_session("a", Some("a")), mk_session("b", Some("b"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Down).unwrap();
+
+        std::env::set_var(key, "1");
+        assert!(
+            !app.is_glide_trail(0),
+            "env-var opt-out must kill the glide"
+        );
+        std::env::remove_var(key);
+        if let Some(v) = prev {
+            std::env::set_var(key, v);
+        }
     }
 }
