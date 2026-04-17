@@ -16,6 +16,7 @@ use ratatui::Frame;
 use crate::app::{App, Mode, Toast};
 use crate::theme::{Theme, ThemeName};
 use crate::ui::filter_ribbon::FilterRibbon;
+use crate::ui::task_drawer::{self, DRAWER_HEIGHT};
 use crate::ui::text::{display_width, truncate_to_width};
 use crate::ui::{
     command_palette, footer, help_overlay, layout, preview, project_list, rename_modal,
@@ -23,12 +24,27 @@ use crate::ui::{
 };
 
 pub fn render(f: &mut Frame<'_>, app: &mut App) {
-    let area = f.area();
+    let full_area = f.area();
 
-    if layout::too_small(area) {
-        render_too_small(f, area, &app.theme);
+    if layout::too_small(full_area) {
+        render_too_small(f, full_area, &app.theme);
         return;
     }
+
+    // Reserve the bottom slice for the background-task drawer when visible.
+    // The main content (viewer / picker) and all overlays (toast, modals)
+    // render into `area`; the drawer owns `drawer_area` and is painted last.
+    let (area, drawer_area) = if app.task_drawer.visible
+        && full_area.height > DRAWER_HEIGHT
+    {
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Min(0), Constraint::Length(DRAWER_HEIGHT)])
+            .split(full_area);
+        (chunks[0], Some(chunks[1]))
+    } else {
+        (full_area, None)
+    };
 
     // Conversation viewer takes over the whole frame when open — render it
     // first so toasts still layer on top, but skip the underlying picker
@@ -40,6 +56,9 @@ pub fn render(f: &mut Frame<'_>, app: &mut App) {
         }
         if let Some(toast) = &app.toast {
             render_toast(f, area, toast, &app.theme);
+        }
+        if let Some(drawer_area) = drawer_area {
+            render_task_drawer(f, drawer_area, app);
         }
         return;
     }
@@ -76,6 +95,29 @@ pub fn render(f: &mut Frame<'_>, app: &mut App) {
         let content = help_overlay::help_for(app.help_screen());
         help_overlay::render(f, area, content, &app.theme);
     }
+
+    // Task drawer sits pinned to the bottom, outside the overlay stack so
+    // modals above never shift underneath it and so the user can monitor
+    // background work while a toast or palette is up.
+    if let Some(drawer_area) = drawer_area {
+        render_task_drawer(f, drawer_area, app);
+    }
+}
+
+/// Paint the background-task drawer into `area`. Splits the single mutable
+/// borrow of `App` into the specific fields the widget needs (`task_drawer`
+/// mut, `task_queue` locked, `theme` shared) so the compiler is happy.
+fn render_task_drawer(f: &mut Frame<'_>, area: Rect, app: &mut App) {
+    // Cloning the theme is cheap (Copy-ish — it's just palette indices and
+    // a ThemeName tag) and sidesteps the "can't borrow app.theme while
+    // app.task_drawer is mutably borrowed" conflict.
+    let theme = app.theme;
+    let Ok(queue) = app.task_queue.lock() else {
+        // Poisoned mutex — another thread panicked while holding it. Skip
+        // the drawer this frame rather than crashing the UI.
+        return;
+    };
+    task_drawer::render(f, area, &mut app.task_drawer, &queue, &theme);
 }
 
 fn render_session_screen(f: &mut Frame<'_>, area: Rect, app: &App) {

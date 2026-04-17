@@ -93,6 +93,31 @@ impl DiffData {
         // view.
         self.scroll_offset = 0;
     }
+
+    /// Chunk-jump to the next / previous "hunk" — each exchange pair in
+    /// the preview counts as one hunk. Mirrors delta's `n`/`N` so a user
+    /// who knows that muscle memory can scan fork-diff output the same
+    /// way. `dir > 0` jumps forward, `dir < 0` jumps back.
+    ///
+    /// The preview renders each pair as 2 rows in side-by-side mode and
+    /// 3 rows in word-diff mode (header + body + spacer). Keeps those
+    /// strides here so callers don't have to duplicate the math.
+    pub fn jump_hunk(&mut self, dir: i32, max: usize) {
+        let stride: usize = if self.word_mode { 3 } else { 2 };
+        let pair_count = self.preview_a.len().max(self.preview_b.len());
+        if pair_count == 0 || stride == 0 {
+            return;
+        }
+        // Which pair index is currently nearest the top of the viewport?
+        let current_pair = self.scroll_offset / stride;
+        let next_pair = if dir > 0 {
+            current_pair.saturating_add(1).min(pair_count.saturating_sub(1))
+        } else {
+            current_pair.saturating_sub(1)
+        };
+        let target = next_pair.saturating_mul(stride);
+        self.scroll_offset = target.min(max);
+    }
 }
 
 /// Return `(inserted_words, deleted_words)` when comparing `a` → `b`.
@@ -861,6 +886,45 @@ mod tests {
         let (ins, del) = word_diff_counts("fix bug", "fix crash");
         assert_eq!(ins, 1);
         assert_eq!(del, 1);
+    }
+
+    #[test]
+    fn jump_hunk_advances_by_pair_stride() {
+        let mut d = mk_data();
+        d.preview_a = vec![
+            (Role::User, "q1".into()),
+            (Role::Claude, "a1".into()),
+            (Role::User, "q2".into()),
+        ];
+        d.preview_b = vec![
+            (Role::User, "q1".into()),
+            (Role::Claude, "a1".into()),
+            (Role::User, "q2".into()),
+        ];
+        d.scroll_offset = 0;
+        d.jump_hunk(1, 100);
+        assert_eq!(d.scroll_offset, 2, "stride = 2 in side-by-side mode");
+        d.jump_hunk(1, 100);
+        assert_eq!(d.scroll_offset, 4);
+        d.jump_hunk(-1, 100);
+        assert_eq!(d.scroll_offset, 2);
+    }
+
+    #[test]
+    fn jump_hunk_word_mode_stride_is_three() {
+        let mut d = mk_data();
+        d.word_mode = true;
+        d.preview_a = vec![
+            (Role::User, "q1".into()),
+            (Role::Claude, "a1".into()),
+        ];
+        d.preview_b = vec![
+            (Role::User, "q1".into()),
+            (Role::Claude, "a1".into()),
+        ];
+        d.scroll_offset = 0;
+        d.jump_hunk(1, 100);
+        assert_eq!(d.scroll_offset, 3, "stride = 3 in word-diff mode");
     }
 
     #[test]

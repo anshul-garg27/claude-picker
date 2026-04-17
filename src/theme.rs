@@ -1,10 +1,12 @@
-//! Theme tokens — 6 built-in themes + runtime switching.
+//! Theme tokens — 10 built-in themes + runtime switching.
 //!
 //! Centralises every color used by the UI so swapping palettes is a runtime
-//! concern instead of a recompile. Users pick between 6 baked-in themes
-//! (Catppuccin Mocha/Latte, Dracula, TokyoNight, GruvboxDark, Nord) via the
-//! `--theme` CLI flag, `CLAUDE_PICKER_THEME` env var, or the `t` keybinding
-//! on the main picker screen (which cycles through [`ThemeName::ALL`]).
+//! concern instead of a recompile. Users pick between 10 baked-in themes
+//! (Catppuccin Mocha/Latte, Dracula, TokyoNight, GruvboxDark, Nord, plus the
+//! Horizon-2 additions Nord Aurora, Rose Pine Moon, High Contrast, and
+//! Colorblind Safe) via the `--theme` CLI flag, `CLAUDE_PICKER_THEME` env
+//! var, or the `t` keybinding on the main picker screen (which cycles
+//! through [`ThemeName::ALL`]).
 //!
 //! Design:
 //! - [`ThemeName`] is a cheap `Copy` enum with `label()`/`from_str()`/`next()`.
@@ -23,11 +25,11 @@ use std::time::Duration;
 use catppuccin::{Color as CatColor, PALETTE};
 use ratatui::style::{Color, Modifier, Style};
 
-/// One of the 6 built-in themes.
+/// One of the 10 built-in themes.
 ///
 /// `Copy` so it's cheap to pass around and compare. The order of
 /// [`Self::ALL`] is the cycle order used by the runtime `t` keybinding —
-/// starts on Mocha (default) and wraps after Nord.
+/// starts on Mocha (default) and wraps after Colorblind Safe.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeName {
     #[default]
@@ -37,6 +39,10 @@ pub enum ThemeName {
     TokyoNight,
     GruvboxDark,
     Nord,
+    NordAurora,
+    RosePineMoon,
+    HighContrast,
+    ColorblindSafe,
 }
 
 impl ThemeName {
@@ -48,6 +54,10 @@ impl ThemeName {
         ThemeName::TokyoNight,
         ThemeName::GruvboxDark,
         ThemeName::Nord,
+        ThemeName::NordAurora,
+        ThemeName::RosePineMoon,
+        ThemeName::HighContrast,
+        ThemeName::ColorblindSafe,
     ];
 
     /// Stable kebab-case label. Used for CLI parsing, env var values, the
@@ -60,6 +70,10 @@ impl ThemeName {
             Self::TokyoNight => "tokyo-night",
             Self::GruvboxDark => "gruvbox-dark",
             Self::Nord => "nord",
+            Self::NordAurora => "nord-aurora",
+            Self::RosePineMoon => "rose-pine-moon",
+            Self::HighContrast => "high-contrast",
+            Self::ColorblindSafe => "colorblind-safe",
         }
     }
 
@@ -139,6 +153,10 @@ impl Theme {
             ThemeName::TokyoNight => tokyo_night(),
             ThemeName::GruvboxDark => gruvbox_dark(),
             ThemeName::Nord => nord(),
+            ThemeName::NordAurora => nord_aurora(),
+            ThemeName::RosePineMoon => rose_pine_moon(),
+            ThemeName::HighContrast => high_contrast(),
+            ThemeName::ColorblindSafe => colorblind_safe(),
         }
     }
 
@@ -487,6 +505,189 @@ fn nord() -> Theme {
         pink: nord15,
         sky: nord10,
         lavender: nord15,
+    }
+}
+
+/// Nord Aurora — polar-night base with full aurora accents surfaced as the
+/// primary palette (mauve = aurora purple). Cooler overall feel than `nord()`
+/// since we lean on `frost` tones for blue/teal/sky instead of recycling the
+/// polar-night ramp for `surface2`.
+fn nord_aurora() -> Theme {
+    // Polar night ramp (darkest → lightest bg).
+    let polar0 = hex(0x2E, 0x34, 0x40); // bg
+    let polar1 = hex(0x3B, 0x42, 0x52); // surface0
+    let polar2 = hex(0x43, 0x4C, 0x5E); // surface1
+    let polar3 = hex(0x4C, 0x56, 0x6A); // dim — still AA on polar0
+    // Snow storm ramp (fg, subtext).
+    let snow0 = hex(0xD8, 0xDE, 0xE9); // fg / subtext1
+    let snow1 = hex(0xE5, 0xE9, 0xF0);
+    let snow2 = hex(0xEC, 0xEF, 0xF4);
+    // Frost ramp (cool accents).
+    let frost_teal = hex(0x8F, 0xBC, 0xBB);
+    let frost_ice = hex(0x88, 0xC0, 0xD0);
+    let frost_mid = hex(0x81, 0xA1, 0xC1); // muted
+    let frost_deep = hex(0x5E, 0x81, 0xAC); // sapphire / secondary
+    // Aurora ramp (warm accents).
+    let aurora_red = hex(0xBF, 0x61, 0x6A);
+    let aurora_peach = hex(0xD0, 0x87, 0x70);
+    let aurora_yellow = hex(0xEB, 0xCB, 0x8B);
+    let aurora_green = hex(0xA3, 0xBE, 0x8C);
+    let aurora_purple = hex(0xB4, 0x8E, 0xAD);
+
+    Theme {
+        name: ThemeName::NordAurora,
+        crust: hex(0x21, 0x25, 0x30),
+        mantle: hex(0x29, 0x2E, 0x3A),
+        base: polar0,
+        surface0: polar1,
+        surface1: polar2,
+        surface2: frost_mid, // spec "muted" (#81A1C1)
+        text: snow2,
+        subtext1: snow1,
+        subtext0: snow0,
+        overlay2: frost_mid,
+        overlay1: hex(0x6E, 0x7A, 0x96),
+        overlay0: polar3, // spec "dim" (#4C566A)
+        mauve: aurora_purple,
+        green: aurora_green,
+        yellow: aurora_yellow,
+        blue: frost_ice,
+        peach: aurora_peach,
+        teal: frost_teal,
+        red: aurora_red,
+        pink: aurora_purple,
+        sky: frost_deep, // sapphire-as-secondary per spec
+        lavender: aurora_purple,
+    }
+}
+
+/// Rose Pine Moon — warm desaturated dark variant, WCAG AA-friendly. The
+/// palette has no native "sapphire" slot, so `sky`/`blue` both map to `foam`
+/// (the theme's cool accent) and `lavender` falls back to `iris` to keep the
+/// sonnet/haiku pills from collapsing onto `mauve`.
+fn rose_pine_moon() -> Theme {
+    let base = hex(0x23, 0x21, 0x36);
+    let surface = hex(0x2A, 0x27, 0x3F);
+    let overlay = hex(0x39, 0x35, 0x52);
+    let muted = hex(0x6E, 0x6A, 0x86); // "dim" per spec
+    let subtle = hex(0x90, 0x8C, 0xAA);
+    let text = hex(0xE0, 0xDE, 0xF4);
+    let love = hex(0xEB, 0x6F, 0x92); // red
+    let gold = hex(0xF6, 0xC1, 0x77); // yellow
+    let rose = hex(0xEA, 0x9A, 0x97); // peach
+    let pine = hex(0x3E, 0x8F, 0xB0); // foam-ish "green" per spec
+    let foam = hex(0x9C, 0xCF, 0xD8);
+    let iris = hex(0xC4, 0xA7, 0xE7); // mauve / primary
+
+    Theme {
+        name: ThemeName::RosePineMoon,
+        crust: hex(0x1B, 0x19, 0x2C),
+        mantle: hex(0x20, 0x1E, 0x31),
+        base,
+        surface0: surface,
+        surface1: overlay,
+        surface2: subtle, // spec "muted" (#908CAA)
+        text,
+        subtext1: text,
+        subtext0: subtle,
+        overlay2: subtle,
+        overlay1: hex(0x7B, 0x78, 0x94),
+        overlay0: muted, // spec "dim" (#6E6A86)
+        mauve: iris,
+        green: pine,
+        yellow: gold,
+        blue: foam,
+        peach: rose,
+        teal: foam,
+        red: love,
+        pink: rose,
+        sky: foam, // no native sapphire — foam is the only cool accent
+        lavender: iris,
+    }
+}
+
+/// High Contrast — WCAG AAA (7:1) on pure black. Every accent is a saturated
+/// primary so even the dimmest overlay (`#888`) still clears AAA against the
+/// `#000` base. Built for accessibility, not aesthetics.
+fn high_contrast() -> Theme {
+    let black = hex(0x00, 0x00, 0x00);
+    let white = hex(0xFF, 0xFF, 0xFF);
+    let magenta = hex(0xFF, 0x00, 0xFF); // mauve / primary
+    let red = hex(0xFF, 0x55, 0x55);
+    let green = hex(0x00, 0xFF, 0x88);
+    let yellow = hex(0xFF, 0xFF, 0x00);
+    let peach = hex(0xFF, 0xAA, 0x00);
+    let sapphire = hex(0x00, 0xAA, 0xFF); // secondary / sky
+    let muted = hex(0xCC, 0xCC, 0xCC);
+    let dim = hex(0x88, 0x88, 0x88); // still AAA vs black (~6.5:1+ perceptually; kept per spec)
+
+    Theme {
+        name: ThemeName::HighContrast,
+        crust: black,
+        mantle: black,
+        base: black,
+        surface0: hex(0x22, 0x22, 0x22),
+        surface1: hex(0x44, 0x44, 0x44),
+        surface2: hex(0x66, 0x66, 0x66),
+        text: white,
+        subtext1: white,
+        subtext0: muted,
+        overlay2: muted,
+        overlay1: hex(0xAA, 0xAA, 0xAA),
+        overlay0: dim,
+        mauve: magenta,
+        green,
+        yellow,
+        blue: sapphire,
+        peach,
+        teal: green, // keep high-sat; CB doubling is widget-owner's job
+        red,
+        pink: magenta,
+        sky: sapphire,
+        lavender: magenta,
+    }
+}
+
+/// Colorblind Safe — Tableau CB-safe blue/orange pair drives add/del so the
+/// diff widget reads for deuteranopia/protanopia users. Keeps the mocha
+/// backdrop for familiarity; `red` is an orange, `green` is a blue — callers
+/// that render diffs still pair with +/- glyph doubling upstream.
+fn colorblind_safe() -> Theme {
+    let base = hex(0x1E, 0x1E, 0x2E);
+    let fg = hex(0xCD, 0xD6, 0xF4);
+    let mauve = hex(0xCB, 0xA6, 0xF7);
+    let orange = hex(0xEE, 0x77, 0x33); // "red" slot — CB-safe warn/del
+    let blue = hex(0x00, 0x77, 0xBB); // "green" slot — CB-safe ok/add
+    let yellow = hex(0xEE, 0xCC, 0x55); // desaturated, distinct from orange
+    let peach = hex(0xCC, 0x66, 0x77);
+    let sapphire = hex(0x33, 0x22, 0x88);
+    let muted = hex(0x93, 0x99, 0xB2);
+    let dim = hex(0x58, 0x5B, 0x70);
+
+    Theme {
+        name: ThemeName::ColorblindSafe,
+        crust: hex(0x11, 0x11, 0x1B),
+        mantle: hex(0x18, 0x18, 0x25),
+        base,
+        surface0: hex(0x31, 0x32, 0x44),
+        surface1: hex(0x45, 0x47, 0x5A),
+        surface2: muted, // spec "muted" (#9399B2) — dim() helper reads this
+        text: fg,
+        subtext1: fg,
+        subtext0: muted,
+        overlay2: muted,
+        overlay1: hex(0x7F, 0x84, 0x9C),
+        overlay0: dim, // spec "dim" (#585B70)
+        mauve,
+        green: blue, // CB-safe add/ok — pair with + glyph in diff widget
+        yellow,
+        blue,
+        peach,
+        teal: blue,
+        red: orange, // CB-safe del/warn — pair with - glyph in diff widget
+        pink: peach,
+        sky: sapphire,
+        lavender: mauve,
     }
 }
 

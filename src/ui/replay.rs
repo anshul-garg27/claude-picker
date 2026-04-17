@@ -240,6 +240,18 @@ impl ReplayState {
                 self.step(-1);
                 ReplayAction::None
             }
+            // `n` / `N`: chunk-jump to the next/previous turn boundary
+            // (next user message) and auto-pause, matching delta's
+            // `n`/`N`. Complements `./,` which steps one message at a
+            // time regardless of role.
+            Event::Key('n') => {
+                self.jump_turn(1);
+                ReplayAction::None
+            }
+            Event::Key('N') => {
+                self.jump_turn(-1);
+                ReplayAction::None
+            }
             Event::Home => {
                 self.seek_to_start();
                 ReplayAction::None
@@ -368,6 +380,39 @@ impl ReplayState {
         let next = (cur + delta).clamp(0, (self.timeline.len() as i32).saturating_sub(1)) as usize;
         self.seek_to_index(next);
         self.is_playing = false;
+    }
+
+    /// Jump to the next / previous USER message and auto-pause. Matches
+    /// delta's `n`/`N` in that each press moves to the next real "turn
+    /// boundary" rather than every assistant message / tool call.
+    pub fn jump_turn(&mut self, dir: i32) {
+        if self.timeline.is_empty() {
+            return;
+        }
+        let cur = self.current_index.unwrap_or(0);
+        let len = self.timeline.len();
+        if dir > 0 {
+            // Find the first user message strictly after the current.
+            for i in (cur + 1)..len {
+                if matches!(self.timeline.messages[i].message.role, Role::User) {
+                    self.seek_to_index(i);
+                    self.is_playing = false;
+                    return;
+                }
+            }
+        } else {
+            // Find the most-recent user message strictly before the current.
+            if cur == 0 {
+                return;
+            }
+            for i in (0..cur).rev() {
+                if matches!(self.timeline.messages[i].message.role, Role::User) {
+                    self.seek_to_index(i);
+                    self.is_playing = false;
+                    return;
+                }
+            }
+        }
     }
 
     /// Jump to message `idx` and set `virtual_time` to that message's
@@ -1562,5 +1607,35 @@ mod tests {
         assert!(s.auto_scroll);
         let _ = s.handle_event(Event::Up);
         assert!(!s.auto_scroll);
+    }
+
+    #[test]
+    fn jump_turn_skips_assistant_messages() {
+        let mut s = state_from_messages(vec![
+            msg(Some(ts(0)), "q1", Role::User),
+            msg(Some(ts(5)), "a1", Role::Assistant),
+            msg(Some(ts(10)), "a1b", Role::Assistant),
+            msg(Some(ts(15)), "q2", Role::User),
+            msg(Some(ts(20)), "a2", Role::Assistant),
+        ]);
+        s.current_index = Some(0);
+        s.is_playing = true;
+        s.jump_turn(1);
+        assert_eq!(s.current_index, Some(3), "n jumps to next user message");
+        assert!(!s.is_playing, "jump_turn pauses");
+        s.jump_turn(-1);
+        assert_eq!(s.current_index, Some(0), "N goes back to previous user");
+    }
+
+    #[test]
+    fn handle_event_n_triggers_turn_jump() {
+        let mut s = state_from_messages(vec![
+            msg(Some(ts(0)), "q1", Role::User),
+            msg(Some(ts(5)), "a1", Role::Assistant),
+            msg(Some(ts(10)), "q2", Role::User),
+        ]);
+        s.current_index = Some(0);
+        let _ = s.handle_event(Event::Key('n'));
+        assert_eq!(s.current_index, Some(2));
     }
 }

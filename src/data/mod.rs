@@ -22,6 +22,7 @@ pub mod search_filters;
 pub mod session;
 pub mod session_rename;
 pub mod settings;
+pub mod task_queue;
 pub mod transcript;
 
 pub use project::Project;

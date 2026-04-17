@@ -28,6 +28,7 @@ pub mod replay;
 pub mod search;
 pub mod session_list;
 pub mod stats;
+pub mod task_drawer;
 pub mod text;
 pub mod tree;
 pub mod which_key;
