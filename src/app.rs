@@ -11,7 +11,7 @@
 //! keystrokes: rebuilding the filtered index on every char-press is
 //! microseconds for < 1k sessions.
 
-use std::collections::HashSet;
+use std::collections::{HashSet, VecDeque};
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::Command;
@@ -33,9 +33,12 @@ use crate::events::{self, Event};
 use crate::theme::{self, Theme, ThemeName};
 use crate::ui::command_palette::{self, CommandPalette};
 use crate::ui::conversation_viewer::{ToastKind as ViewerToastKind, ViewerAction, ViewerState};
+use crate::ui::filter_ribbon::{FilterRibbon, FilterScope};
 use crate::ui::help_overlay::{self, Screen as HelpScreen};
+use crate::ui::project_list::ProjectList;
 use crate::ui::rename_modal::{self, RenameState};
 use crate::ui::replay::{ReplayAction, ReplayState, ToastKind as ReplayToastKind};
+use crate::ui::which_key::WHICH_KEY_DELAY_MS;
 
 /// Which screen is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -75,6 +78,58 @@ pub enum ToastKind {
     Success,
     Error,
 }
+
+/// Inverse of a destructive action, kept on the undo stack so `z` can revert
+/// the last mutation. Not persistent — dropped when the picker exits.
+///
+/// New variants can be added as more destructive flows get wired into the
+/// stack; the event-loop dispatcher at [`App::undo`] pattern-matches every
+/// known kind. Unknown variants would fail to compile — deliberate, so the
+/// two sides (push & apply) stay in sync.
+#[derive(Debug, Clone)]
+pub enum UndoAction {
+    /// Inverse of a rename. Reverting sets the session title back to
+    /// `old_title` (which may be `None` if it was unnamed before).
+    Rename {
+        session_id: String,
+        old_title: Option<String>,
+        new_title: String,
+    },
+    /// Inverse of a bulk delete: the on-disk `.jsonl` payloads we saved
+    /// before removing them. Reverting writes each (path, bytes) back.
+    ///
+    /// Currently a TODO placeholder — the delete flow doesn't populate
+    /// this yet. See `request_delete` for the wire-up point.
+    BulkDelete {
+        snapshots: Vec<(PathBuf, Vec<u8>)>,
+    },
+}
+
+/// Which screen a jump-ring entry was captured on. Jumping back restores the
+/// stored view so `Ctrl-o` from the session-list can warp to a project on the
+/// project-list without the user having to Escape back first.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ScreenKind {
+    ProjectList,
+    SessionList,
+}
+
+/// One entry on the jump ring. Stores enough state to re-point the picker at
+/// whatever row the user "opened" (Enter-style) on that view.
+#[derive(Debug, Clone)]
+pub struct JumpPoint {
+    pub view: ScreenKind,
+    pub project_idx: Option<usize>,
+    pub session_id: Option<String>,
+}
+
+/// Soft cap on undo / redo entries kept in memory. 50 covers a normal
+/// editing burst without pinning an ever-growing vector.
+const UNDO_CAP: usize = 50;
+
+/// Max jump-ring depth. vim uses 100; 32 is plenty for a picker session and
+/// keeps the ring indicator compact.
+const JUMP_RING_CAP: usize = 32;
 
 impl Toast {
     /// How long the slide-in animation runs before the toast is "settled".
@@ -203,6 +258,30 @@ pub struct App {
     /// Timestamp of the last `g` press, used for the `gg` vim chord. Cleared
     /// on any unrelated key press or after [`G_CHORD_WINDOW`].
     pending_g: Option<Instant>,
+    /// Active chord leader, if any. Set when the user presses a leader key
+    /// (Space, `g`, …) and cleared on follow-up or timeout. Drives the
+    /// which-key overlay: it only renders once the gap since `start` clears
+    /// [`WHICH_KEY_DELAY_MS`].
+    pub pending_chord: Option<(char, Instant)>,
+    /// Pending repeat-count prefix. Vim-style: `3j` → down 3 rows, `12G` →
+    /// goto row 12, `5dd` → bulk-delete 5 rows. Populated by digit keys and
+    /// consumed by the next non-digit action.
+    pub pending_count: Option<u32>,
+
+    /// Undo history for destructive actions. Newest on the back; popped on
+    /// `z`. Capped at [`UNDO_CAP`] — older entries fall off silently.
+    pub undo_stack: VecDeque<UndoAction>,
+    /// Redo mirror of `undo_stack`. Populated by `z`, drained by `Z`. Reset
+    /// whenever a new destructive action runs (standard undo-tree rule: a
+    /// fresh mutation forks the history).
+    pub redo_stack: VecDeque<UndoAction>,
+
+    /// Jump ring — selection history across opens. Vim-style.
+    pub jump_ring: VecDeque<JumpPoint>,
+    /// Where we currently sit within [`Self::jump_ring`]. `Ctrl-o` decrements,
+    /// `Ctrl-i` increments. Equal to `jump_ring.len()` when we're "after the
+    /// newest entry" — that's the tip of the ring.
+    pub jump_index: usize,
 
     /// nucleo scratch. Rebuilt on filter change.
     matcher: Matcher,
@@ -216,6 +295,13 @@ pub struct App {
     /// Cache of previous `preview_cmd` runs keyed by session id. Avoids
     /// re-spawning the shell on every frame while the user navigates.
     pub preview_cache: crate::ui::preview::PreviewCache,
+
+    /// Pinned-project store + project-screen UI state (k9s-style favorites).
+    /// Loaded from disk on start; `u` toggles pins, `1..9` jumps into slots.
+    pub project_list: ProjectList,
+    /// atuin-style filter-scope ribbon for the session list. Auto-activates
+    /// `REPO` when the process cwd falls inside a discovered project.
+    pub filter_ribbon: FilterRibbon,
 }
 
 /// Window in which two `g` presses collapse into a jump-to-top. Matches the
@@ -262,6 +348,11 @@ impl App {
     ) -> Self {
         let theme = Theme::from_name(theme_name);
         let matcher = Matcher::new(Config::DEFAULT);
+        // Build the pinned-project store + filter ribbon before moving
+        // `projects` into the struct so the ribbon can inspect the project
+        // list to auto-activate `REPO` when the process cwd lines up.
+        let project_list = ProjectList::load();
+        let filter_ribbon = FilterRibbon::new_with_auto_activation(&projects);
         let mut s = Self {
             mode,
             projects,
@@ -288,10 +379,18 @@ impl App {
             multi_selected: HashSet::new(),
             multi_mode: false,
             pending_g: None,
+            pending_chord: None,
+            pending_count: None,
+            undo_stack: VecDeque::new(),
+            redo_stack: VecDeque::new(),
+            jump_ring: VecDeque::new(),
+            jump_index: 0,
             matcher,
             haystacks: Vec::new(),
             preview_cmd: None,
             preview_cache: crate::ui::preview::PreviewCache::new(),
+            project_list,
+            filter_ribbon,
         };
         s.rebuild_haystacks();
         s.apply_filter();
@@ -345,6 +444,134 @@ impl App {
         self.selected_project.and_then(|i| self.projects.get(i))
     }
 
+    /// Read-only accessor for the project-list UI state (pinned slots). The
+    /// project-list renderer reaches through here to paint the pinned strip.
+    pub fn project_list(&self) -> &ProjectList {
+        &self.project_list
+    }
+
+    /// Read-only accessor for the atuin-style filter ribbon. The session-list
+    /// renderer uses this to paint chips and to match the visible scope.
+    pub fn filter_ribbon(&self) -> &FilterRibbon {
+        &self.filter_ribbon
+    }
+
+    /// Toggle the pin for the project currently under the cursor in the
+    /// project-list screen. Surfaces the result as an info toast so the user
+    /// gets feedback on slot assignments + the "all slots full" case.
+    fn toggle_pin_current_project(&mut self) {
+        // Resolve the row under the cursor through the active filter. Falls
+        // back to the selected-project index when the filter view is empty
+        // (shouldn't happen in the normal flow, but keeps the action safe).
+        let project_idx = match self.filtered_indices.get(self.cursor) {
+            Some(&idx) => idx,
+            None => match self.selected_project {
+                Some(idx) => idx,
+                None => return,
+            },
+        };
+        let Some(project) = self.projects.get(project_idx) else {
+            return;
+        };
+        let cwd = project.path.to_string_lossy().into_owned();
+        let name = project.name.clone();
+        use crate::data::pinned_projects::ToggleResult;
+        let msg = match self.project_list.toggle_pin_current(&cwd) {
+            ToggleResult::Pinned(slot) => {
+                format!("pinned {name} → slot {slot}")
+            }
+            ToggleResult::Unpinned(slot) => {
+                format!("unpinned {name} (slot {slot})")
+            }
+            ToggleResult::NoSlotsAvailable => "all nine pin slots are full".to_string(),
+        };
+        self.toast = Some(Toast::new(msg, ToastKind::Info));
+    }
+
+    /// Jump to the project pinned at `slot` (1-indexed). No-op when the slot
+    /// is empty or its target cwd no longer matches a known project — caller
+    /// has already gated on `has_pin`, so the empty-slot case is defensive.
+    fn jump_to_pinned_slot(&mut self, slot: u8) {
+        let Some(target_cwd) = self.project_list.jump_to_pinned(slot) else {
+            return;
+        };
+        // Locate the project whose resolved path matches. We compare by the
+        // lossy string so the in-memory PathBuf and the persisted String
+        // align regardless of platform separators.
+        let target_idx = self.projects.iter().position(|p| {
+            p.path.to_string_lossy() == target_cwd.as_str()
+        });
+        let Some(project_idx) = target_idx else {
+            self.toast = Some(Toast::new(
+                format!("slot {slot}: project no longer discoverable"),
+                ToastKind::Error,
+            ));
+            return;
+        };
+
+        // If we're on the project-list screen, drill into the matching
+        // project (reuses `open_selected_project`'s session-loader). To do
+        // that, we update the filter so the cursor lines up with the target
+        // project row, then call the existing opener.
+        match self.mode {
+            Mode::ProjectList => {
+                // Ensure the target is visible in the current filtered view.
+                let cursor_pos = self
+                    .filtered_indices
+                    .iter()
+                    .position(|&i| i == project_idx);
+                if let Some(pos) = cursor_pos {
+                    self.cursor = pos;
+                    self.open_selected_project();
+                } else {
+                    // Clear the filter and try again — the user's pin wins
+                    // over the typed search when they invoke slot-jump.
+                    self.filter.clear();
+                    self.apply_filter();
+                    if let Some(pos) = self
+                        .filtered_indices
+                        .iter()
+                        .position(|&i| i == project_idx)
+                    {
+                        self.cursor = pos;
+                        self.open_selected_project();
+                    }
+                }
+            }
+            Mode::SessionList => {
+                // Already drilled in somewhere else — swap to the target.
+                self.selected_project = Some(project_idx);
+                // Re-point the ribbon's REPO chip to the new cwd so scoped
+                // filtering stays meaningful after the jump.
+                self.filter_ribbon
+                    .set_current_repo(Some(target_cwd.clone()));
+                let project = self.projects[project_idx].clone();
+                match crate::commands::pick::load_sessions_for(&project) {
+                    Ok(sessions) if !sessions.is_empty() => {
+                        self.push_jump_point();
+                        self.sessions = sessions;
+                        self.selected_session = Some(0);
+                        self.filter.clear();
+                        self.rebuild_haystacks();
+                        self.apply_filter();
+                    }
+                    Ok(_) => {
+                        self.toast = Some(Toast::new(
+                            format!("{}: no sessions", project.name),
+                            ToastKind::Info,
+                        ));
+                    }
+                    Err(e) => {
+                        self.toast = Some(Toast::new(
+                            format!("load error: {e}"),
+                            ToastKind::Error,
+                        ));
+                    }
+                }
+            }
+        }
+    }
+
     /// Selected session, looked up through the filter.
     pub fn selected_session_ref(&self) -> Option<&Session> {
         let idx = *self.filtered_indices.get(self.cursor)?;
@@ -393,11 +620,30 @@ impl App {
     /// With an empty filter we use the natural order (projects: recency,
     /// sessions: recency from the loader) so Enter on a fresh screen
     /// resumes the most recent thing.
+    ///
+    /// In session-list mode the filter-ribbon scope AND-composes with the
+    /// fuzzy filter: each row must pass both the search pattern (if any) and
+    /// the active ribbon chip (ALL/REPO/7D/RUNNING/FORKED).
     fn apply_filter(&mut self) {
         self.filtered_indices.clear();
         let total = self.haystacks.len();
+
+        // Precompute the ribbon predicate into a bit-mask so the main loop
+        // below doesn't need to borrow `&self` while `&mut self.matcher`
+        // is also in flight (nucleo's `Pattern::score` takes the matcher
+        // mutably). Projects skip the ribbon entirely — it's session-scoped.
+        let ribbon_mask: Vec<bool> = match self.mode {
+            Mode::SessionList => self
+                .sessions
+                .iter()
+                .map(|s| self.filter_ribbon.is_session_visible(s))
+                .collect(),
+            Mode::ProjectList => vec![true; total],
+        };
+
         if self.filter.is_empty() {
-            self.filtered_indices.extend(0..total);
+            self.filtered_indices
+                .extend((0..total).filter(|&i| ribbon_mask.get(i).copied().unwrap_or(true)));
             self.cursor = 0;
             return;
         }
@@ -411,6 +657,9 @@ impl App {
 
         let mut scored: Vec<(u32, usize)> = Vec::with_capacity(total);
         for (i, hay) in self.haystacks.iter().enumerate() {
+            if !ribbon_mask.get(i).copied().unwrap_or(true) {
+                continue;
+            }
             if let Some(score) = pattern.score(hay.slice(..), &mut self.matcher) {
                 scored.push((score, i));
             }
@@ -451,17 +700,71 @@ impl App {
             }
         }
 
+        // If a leader chord is active, the next key is a follow-up and must
+        // be dispatched through the chord table. Consumes `pending_chord`
+        // regardless of whether the follow-up matches — hitting an unknown
+        // key cancels the chord rather than queueing it.
+        if let Some((leader, _)) = self.pending_chord {
+            if let Event::Key(c) = ev {
+                self.pending_chord = None;
+                if self.dispatch_chord(leader, c) {
+                    return Ok(());
+                }
+                // Fall through to normal dispatch if the chord didn't
+                // recognise the follow-up (e.g. the user pressed Esc-like
+                // cancel — treat as a fresh event).
+            } else if matches!(ev, Event::Escape) {
+                // Esc while a chord is pending should just cancel without
+                // doing anything else — do not pop screens.
+                self.pending_chord = None;
+                return Ok(());
+            } else {
+                // Non-char events (arrow keys, resize, …) cancel the chord.
+                self.pending_chord = None;
+            }
+        }
+
         match ev {
             Event::Quit | Event::Ctrl('c') => self.should_quit = true,
             Event::Ctrl('a') => self.summarize_session_ai(),
             Event::Ctrl('d') => self.request_delete(),
             Event::Ctrl('b') => self.toggle_bookmark(),
             Event::Ctrl('e') => self.export_session(),
+            // `Ctrl-r` cycles the atuin-style filter-scope ribbon forward
+            // (ALL → REPO → 7D → RUNNING → FORKED → ALL). Rebuilding the
+            // filter pulls the new scope predicate through `apply_filter`.
+            Event::Ctrl('r') => {
+                self.filter_ribbon.cycle_forward();
+                self.apply_filter();
+            }
+            // `Ctrl-o` / `Ctrl-i` walk the jump ring. Vim semantics: `o` is
+            // "older" (back), `i` is "newer" (forward).
+            Event::Ctrl('o') => self.jump_back(),
+            Event::Ctrl('i') => self.jump_forward(),
             Event::Tab => self.toggle_multi_select(),
-            Event::Enter => self.confirm_selection(),
-            Event::Escape => self.handle_escape(),
-            Event::Up => self.move_cursor(-1),
-            Event::Down => self.move_cursor(1),
+            Event::Enter => {
+                // Drop any count prefix — Enter is a terminal action, not
+                // a repeatable motion.
+                self.pending_count = None;
+                self.confirm_selection();
+            }
+            Event::Escape => {
+                // Esc clears a dangling count prefix first so the user can
+                // abort a mis-typed chord without jumping 300 rows.
+                if self.pending_count.is_some() {
+                    self.pending_count = None;
+                    return Ok(());
+                }
+                self.handle_escape();
+            }
+            Event::Up => {
+                let n = self.take_count().unwrap_or(1) as i32;
+                self.move_cursor(-n);
+            }
+            Event::Down => {
+                let n = self.take_count().unwrap_or(1) as i32;
+                self.move_cursor(n);
+            }
             Event::PageUp => self.move_cursor(-10),
             Event::PageDown => self.move_cursor(10),
             Event::Home => self.cursor = 0,
@@ -471,14 +774,23 @@ impl App {
             // is empty. If someone's typing `?` into the filter they can
             // still escape-and-type.
             Event::Key('?') if self.filter.is_empty() => self.show_help = true,
-            // `G` (shift-G) jumps to the end — no chord.
+            // `G` (shift-G) jumps to the end, or to an absolute row number
+            // when prefixed with a count (`12G` → row 12, 1-indexed).
             Event::Key('G') if self.filter.is_empty() => {
-                self.cursor = self.filtered_indices.len().saturating_sub(1);
                 self.pending_g = None;
+                if let Some(n) = self.take_count() {
+                    // 1-indexed target, clamped to the visible range.
+                    let target = n.saturating_sub(1) as usize;
+                    let last = self.filtered_indices.len().saturating_sub(1);
+                    self.cursor = target.min(last);
+                } else {
+                    self.cursor = self.filtered_indices.len().saturating_sub(1);
+                }
             }
             // `g` pressed: if a previous `g` is still within the window, this
             // completes a `gg` chord → jump to top. Otherwise remember the
-            // keystroke so the next `g` can complete the chord.
+            // keystroke so the next `g` can complete the chord AND open the
+            // which-key overlay after the pause window.
             Event::Key('g') if self.filter.is_empty() => {
                 if self
                     .pending_g
@@ -487,9 +799,22 @@ impl App {
                 {
                     self.cursor = 0;
                     self.pending_g = None;
+                    self.pending_chord = None;
+                    self.pending_count = None;
                 } else {
                     self.pending_g = Some(Instant::now());
+                    self.pending_chord = Some(('g', Instant::now()));
                 }
+            }
+            // `j` / `k` are the vim verticals. Both respect the pending
+            // repeat count so `3j` moves down three rows.
+            Event::Key('j') if self.filter.is_empty() => {
+                let n = self.take_count().unwrap_or(1) as i32;
+                self.move_cursor(n);
+            }
+            Event::Key('k') if self.filter.is_empty() => {
+                let n = self.take_count().unwrap_or(1) as i32;
+                self.move_cursor(-n);
             }
             // `v` opens the full-screen conversation viewer for the row
             // under the cursor. Session-list only — project-list has no
@@ -517,19 +842,81 @@ impl App {
             // typing a filter (including searches with `t` in them) the letter
             // goes to the filter via the fallthrough branch below.
             Event::Key('t') if self.filter.is_empty() => self.cycle_theme(),
-            // Space opens the Helix-style command palette when the filter is
-            // empty. Inside an active filter the space goes to the filter so
-            // the user can type multi-word queries (nucleo supports them).
+            // `z` / `Z` drive the undo/redo stack.
+            Event::Key('z') if self.filter.is_empty() => self.undo(),
+            Event::Key('Z') if self.filter.is_empty() => self.redo(),
+            // `u` toggles a pin on the currently-highlighted project. Only
+            // meaningful on the project-list screen — on the session screen
+            // the letter falls through to the fuzzy-filter arm.
+            Event::Key('u')
+                if self.filter.is_empty()
+                    && self.mode == Mode::ProjectList =>
+            {
+                self.toggle_pin_current_project();
+            }
+            // `1..9` with no pending count jumps to a pinned project. If the
+            // slot is empty the event falls through to the count-prefix arm
+            // below so `3j` still works when slot 3 is unset.
+            Event::Key(c)
+                if self.filter.is_empty()
+                    && matches!(c, '1'..='9')
+                    && self.pending_count.is_none()
+                    && self.project_list.has_pin(c.to_digit(10).unwrap() as u8) =>
+            {
+                let slot = c.to_digit(10).unwrap() as u8;
+                self.jump_to_pinned_slot(slot);
+            }
+            // `0` with no pending count clears the project filter and resets
+            // the ribbon to ALL. With a pending count it appends as a digit
+            // (handled below).
+            Event::Key('0')
+                if self.filter.is_empty() && self.pending_count.is_none() =>
+            {
+                self.project_list.clear_project_filter();
+                self.filter_ribbon.set_scope(FilterScope::All);
+                self.apply_filter();
+            }
+            // `d` pressed: set a chord leader. The `dd` completion is
+            // handled up-top by the chord dispatcher — a second `d` within
+            // the leader window consumes both and opens the delete modal.
+            // Count prefix (e.g. `5dd`) is consumed on the first press and
+            // applied when the multi-select batch fires.
+            Event::Key('d') if self.filter.is_empty() => {
+                self.pending_chord = Some(('d', Instant::now()));
+            }
+            // Space becomes a leader chord instead of eagerly opening the
+            // palette. The follow-up key dispatches; a second Space opens
+            // the palette. If the user pauses for [`WHICH_KEY_DELAY_MS`]
+            // the which-key overlay renders so they can see what's next.
             Event::Key(' ') if self.filter.is_empty() => {
                 self.pending_g = None;
-                self.palette = Some(CommandPalette::new(match self.mode {
-                    Mode::SessionList => command_palette::Context::SessionList,
-                    Mode::ProjectList => command_palette::Context::ProjectList,
-                }));
+                self.pending_chord = Some((' ', Instant::now()));
+            }
+            // Digit keys feed the vim repeat-count prefix. `0` is special:
+            // at count=None it's NOT a digit (reserved for Agent C's
+            // "all-projects" chord); at count=Some it appends as normal.
+            // The `'0'` exception lives on the guard so the match doesn't
+            // consume it — leaving `'0'` free for other dispatchers.
+            Event::Key(c)
+                if self.filter.is_empty()
+                    && c.is_ascii_digit()
+                    && !(c == '0' && self.pending_count.is_none()) =>
+            {
+                let digit = c as u32 - '0' as u32;
+                let next = self
+                    .pending_count
+                    .unwrap_or(0)
+                    .saturating_mul(10)
+                    .saturating_add(digit);
+                // Cap at a sanity ceiling so typos like `99999999k`
+                // can't allocate unexpectedly.
+                self.pending_count = Some(next.min(9_999));
             }
             Event::Key(c) if is_filter_char(c) => {
-                // Any keystroke other than the chord letters breaks `gg`.
+                // Any keystroke other than the chord letters breaks `gg`
+                // and the count prefix.
                 self.pending_g = None;
+                self.pending_count = None;
                 self.filter_push(c);
             }
             Event::Resize(_, _) => {}
@@ -537,9 +924,350 @@ impl App {
                 // Unknown event — clear any pending chord so we don't match
                 // `g<tab>g` or similar across stale timers.
                 self.pending_g = None;
+                self.pending_count = None;
             }
         }
         Ok(())
+    }
+
+    /// Consume and return the pending repeat-count prefix. Returns `None`
+    /// when no count was typed. Callers use this right before they would
+    /// otherwise act with an implicit count of 1.
+    fn take_count(&mut self) -> Option<u32> {
+        self.pending_count.take()
+    }
+
+    /// True when the which-key overlay should render this frame — i.e.
+    /// there's an active leader chord AND the user's pause exceeds
+    /// [`WHICH_KEY_DELAY_MS`].
+    pub fn should_show_which_key(&self) -> bool {
+        match self.pending_chord {
+            Some((_, started)) => {
+                started.elapsed() >= Duration::from_millis(WHICH_KEY_DELAY_MS)
+            }
+            None => false,
+        }
+    }
+
+    /// The leader character driving the which-key overlay, if any. Exposed
+    /// so the renderer can pick the right next-key table.
+    pub fn which_key_leader(&self) -> Option<char> {
+        self.pending_chord.map(|(c, _)| c)
+    }
+
+    /// Dispatch a chord follow-up. Returns `true` when the (leader, key)
+    /// pair matched a known action; the caller relies on the bool to
+    /// decide whether to fall through to ordinary event handling.
+    fn dispatch_chord(&mut self, leader: char, key: char) -> bool {
+        match (leader, key) {
+            // Space-leader: mirror the palette top-level actions so the user
+            // can reach them without opening the palette.
+            (' ', ' ') => {
+                self.palette = Some(CommandPalette::new(match self.mode {
+                    Mode::SessionList => command_palette::Context::SessionList,
+                    Mode::ProjectList => command_palette::Context::ProjectList,
+                }));
+                true
+            }
+            (' ', 'f') => {
+                self.filter_focused = true;
+                true
+            }
+            (' ', 't') => {
+                self.cycle_theme();
+                true
+            }
+            (' ', 'r') => {
+                self.request_rename();
+                true
+            }
+            (' ', 'R') => {
+                self.open_replay();
+                true
+            }
+            (' ', 'd') => {
+                self.request_delete();
+                true
+            }
+            (' ', '?') => {
+                self.show_help = true;
+                true
+            }
+            (' ', 'v') => {
+                self.open_viewer();
+                true
+            }
+            (' ', 'y') => {
+                self.copy_session_id();
+                true
+            }
+            (' ', 'Y') => {
+                self.copy_project_path();
+                true
+            }
+            // TODO: wire ` m` (model switcher), ` s` (stats), ` w` (tasks
+            // drawer) when those surfaces land. For now we silently
+            // surface a toast so the binding is discoverable.
+            (' ', 'm') | (' ', 's') | (' ', 'w') => {
+                self.toast = Some(Toast::new(
+                    format!("TODO: wire Space {key} action"),
+                    ToastKind::Info,
+                ));
+                true
+            }
+            // g-leader: only `gg` is wired. Anything else falls through so
+            // the normal dispatcher can handle it (e.g. `gG` = no-op).
+            ('g', 'g') => {
+                self.cursor = 0;
+                self.pending_g = None;
+                true
+            }
+            // d-leader: `dd` triggers the delete confirm modal. The chord
+            // dispatcher fires before the normal `'d'` arm so a second `d`
+            // press doesn't re-arm the chord.
+            ('d', 'd') => {
+                self.request_delete();
+                true
+            }
+            _ => false,
+        }
+    }
+
+    /// Pop the newest undo entry and apply its inverse. No-op when the
+    /// stack is empty. Pushes the re-applied state onto `redo_stack`.
+    pub fn undo(&mut self) {
+        let Some(action) = self.undo_stack.pop_back() else {
+            return;
+        };
+        if let Some(reverse) = self.apply_undo(&action) {
+            // Redo mirror: store the re-application of the forward action.
+            if self.redo_stack.len() >= UNDO_CAP {
+                self.redo_stack.pop_front();
+            }
+            self.redo_stack.push_back(reverse);
+        }
+    }
+
+    /// Pop the newest redo entry and re-apply it. Pushes back onto
+    /// `undo_stack` so the next `z` can undo the redo.
+    pub fn redo(&mut self) {
+        let Some(action) = self.redo_stack.pop_back() else {
+            return;
+        };
+        if let Some(reverse) = self.apply_undo(&action) {
+            if self.undo_stack.len() >= UNDO_CAP {
+                self.undo_stack.pop_front();
+            }
+            self.undo_stack.push_back(reverse);
+        }
+    }
+
+    /// Apply one undo/redo action and return the inverse — suitable for
+    /// pushing onto the opposite stack. `None` means the action couldn't
+    /// be applied (session vanished, disk error, …).
+    fn apply_undo(&mut self, action: &UndoAction) -> Option<UndoAction> {
+        match action {
+            UndoAction::Rename {
+                session_id,
+                old_title,
+                new_title,
+            } => {
+                // Restore the previous title by writing it. Empty string
+                // means "no name" — the underlying helper doesn't yet
+                // support clearing a name, so surface a toast explaining
+                // that and bail.
+                let restore = old_title.as_deref().unwrap_or("");
+                if restore.is_empty() {
+                    // TODO: wire clear-name helper so undo of rename-from-
+                    // unnamed can actually erase the custom title.
+                    self.toast = Some(Toast::new(
+                        "undo: clearing names not yet supported",
+                        ToastKind::Info,
+                    ));
+                    return None;
+                }
+                let result = session_rename::rename_session(session_id, restore);
+                match result {
+                    Ok(_) => {
+                        if let Some(s) = self.sessions.iter_mut().find(|s| &s.id == session_id)
+                        {
+                            s.name = old_title.clone();
+                        }
+                        self.rebuild_haystacks();
+                        self.apply_filter();
+                        self.toast = Some(Toast::new(
+                            format!("undo rename → \"{restore}\""),
+                            ToastKind::Success,
+                        ));
+                        Some(UndoAction::Rename {
+                            session_id: session_id.clone(),
+                            old_title: Some(new_title.clone()),
+                            new_title: restore.to_string(),
+                        })
+                    }
+                    Err(e) => {
+                        self.toast =
+                            Some(Toast::new(format!("undo failed: {e}"), ToastKind::Error));
+                        None
+                    }
+                }
+            }
+            UndoAction::BulkDelete { snapshots } => {
+                // TODO: wire into delete flow — the current delete path
+                // doesn't snapshot bytes before unlink. The scaffolding
+                // here is intentional so the enum stays exhaustive.
+                let count = snapshots.len();
+                self.toast = Some(Toast::new(
+                    format!("undo delete (TODO): {count} sessions"),
+                    ToastKind::Info,
+                ));
+                None
+            }
+        }
+    }
+
+    /// Push an action onto the undo stack, trimming to [`UNDO_CAP`] from
+    /// the front. Clears the redo stack — a new mutation forks the history
+    /// (matches vim / browser history semantics).
+    pub fn push_undo(&mut self, action: UndoAction) {
+        if self.undo_stack.len() >= UNDO_CAP {
+            self.undo_stack.pop_front();
+        }
+        self.undo_stack.push_back(action);
+        self.redo_stack.clear();
+    }
+
+    /// Number of undo entries currently stashed. Exposed so the footer can
+    /// render an indicator when non-empty.
+    pub fn undo_depth(&self) -> usize {
+        self.undo_stack.len()
+    }
+
+    /// Current repeat-count prefix. Exposed so the footer status line can
+    /// render the tight right-aligned `\u{28ff} 3` hint.
+    pub fn pending_count_value(&self) -> Option<u32> {
+        self.pending_count
+    }
+
+    /// Record a jump point — called when the user opens a project or
+    /// session (Enter-style navigation). Drops the forward segment of the
+    /// ring if the user was mid-walk, matching vim's behavior.
+    pub fn push_jump_point(&mut self) {
+        let point = JumpPoint {
+            view: match self.mode {
+                Mode::ProjectList => ScreenKind::ProjectList,
+                Mode::SessionList => ScreenKind::SessionList,
+            },
+            project_idx: self.selected_project,
+            session_id: self.selected_session_ref().map(|s| s.id.clone()),
+        };
+        // If the user was mid-ring-walk, truncate forward so a new jump
+        // branches history rather than silently replacing it.
+        if self.jump_index < self.jump_ring.len() {
+            self.jump_ring.truncate(self.jump_index);
+        }
+        if self.jump_ring.len() >= JUMP_RING_CAP {
+            self.jump_ring.pop_front();
+        }
+        self.jump_ring.push_back(point);
+        self.jump_index = self.jump_ring.len();
+    }
+
+    /// `Ctrl-o` — move the jump index one step toward the oldest entry
+    /// and restore that view. Stays at zero when the ring has already
+    /// been fully walked back.
+    ///
+    /// When we're at the tip of the ring (the "just arrived here" state)
+    /// we first stash the current location so a later `Ctrl-i` can return
+    /// forward. Matches vim's jump-list behaviour.
+    fn jump_back(&mut self) {
+        if self.jump_ring.is_empty() {
+            return;
+        }
+        if self.jump_index == self.jump_ring.len() {
+            // At the tip — push the current position onto the ring so the
+            // reverse walk has somewhere to come back to, then rewind past
+            // it to the previous entry.
+            let tip = JumpPoint {
+                view: match self.mode {
+                    Mode::ProjectList => ScreenKind::ProjectList,
+                    Mode::SessionList => ScreenKind::SessionList,
+                },
+                project_idx: self.selected_project,
+                session_id: self.selected_session_ref().map(|s| s.id.clone()),
+            };
+            if self.jump_ring.len() >= JUMP_RING_CAP {
+                self.jump_ring.pop_front();
+            }
+            self.jump_ring.push_back(tip);
+            self.jump_index = self.jump_ring.len().saturating_sub(2);
+        } else if self.jump_index > 0 {
+            self.jump_index -= 1;
+        }
+        self.apply_jump_point();
+    }
+
+    /// `Ctrl-i` — inverse of `jump_back`. Clamps at the tip of the ring.
+    fn jump_forward(&mut self) {
+        if self.jump_ring.is_empty() {
+            return;
+        }
+        if self.jump_index + 1 < self.jump_ring.len() {
+            self.jump_index += 1;
+            self.apply_jump_point();
+        }
+    }
+
+    /// Restore the view stored at `jump_index`. Silently best-effort — if
+    /// the target session was deleted between jumps, we land on whatever
+    /// row the cursor still resolves to.
+    fn apply_jump_point(&mut self) {
+        let Some(point) = self.jump_ring.get(self.jump_index).cloned() else {
+            return;
+        };
+        match point.view {
+            ScreenKind::ProjectList => {
+                self.mode = Mode::ProjectList;
+                self.sessions.clear();
+                self.selected_session = None;
+                self.rebuild_haystacks();
+                self.apply_filter();
+                if let Some(idx) = point.project_idx {
+                    let pos = self
+                        .filtered_indices
+                        .iter()
+                        .position(|i| *i == idx)
+                        .unwrap_or(0);
+                    self.cursor = pos;
+                }
+            }
+            ScreenKind::SessionList => {
+                if let Some(id) = point.session_id {
+                    if let Some(sess_idx) = self.sessions.iter().position(|s| s.id == id) {
+                        self.mode = Mode::SessionList;
+                        self.rebuild_haystacks();
+                        self.apply_filter();
+                        let pos = self
+                            .filtered_indices
+                            .iter()
+                            .position(|i| *i == sess_idx)
+                            .unwrap_or(0);
+                        self.cursor = pos;
+                    }
+                }
+            }
+        }
+    }
+
+    /// Depth of the jump ring and where we are in it — returned as
+    /// `(index + 1, total)` so callers rendering `[3/7]` can just format
+    /// the pair. `None` when the ring is empty.
+    pub fn jump_ring_position(&self) -> Option<(usize, usize)> {
+        if self.jump_ring.is_empty() {
+            None
+        } else {
+            Some((self.jump_index.min(self.jump_ring.len()).max(1), self.jump_ring.len()))
+        }
     }
 
     /// Forward an event to the open viewer and act on its reply.
@@ -723,27 +1451,45 @@ impl App {
             Event::Enter => {
                 let new_name = state.buffer.trim().to_string();
                 let session_id = state.session_id.clone();
-                self.rename = None;
+                // Validation: empty buffer is a soft error — keep the modal
+                // open with an inline message so the user can fix + retry
+                // without having to re-open the modal.
                 if new_name.is_empty() {
-                    self.toast = Some(Toast::new("rename: name can't be empty", ToastKind::Error));
+                    state.set_error("name can't be empty");
                     return Ok(());
                 }
+                // Capture the pre-rename title so `z` can roll it back.
+                let old_title = self
+                    .sessions
+                    .iter()
+                    .find(|s| s.id == session_id)
+                    .and_then(|s| s.name.clone());
                 match session_rename::rename_session(&session_id, &new_name) {
                     Ok(_) => {
-                        // Update in-memory so the list reflects immediately.
+                        // Commit path: close the modal, update state, toast.
+                        self.rename = None;
                         if let Some(s) = self.sessions.iter_mut().find(|s| s.id == session_id) {
                             s.name = Some(new_name.clone());
                         }
                         self.rebuild_haystacks();
                         self.apply_filter();
+                        self.push_undo(UndoAction::Rename {
+                            session_id: session_id.clone(),
+                            old_title,
+                            new_title: new_name.clone(),
+                        });
                         self.toast = Some(Toast::new(
-                            format!("renamed to \"{new_name}\""),
+                            format!("renamed to \"{new_name}\" \u{00B7} z to undo"),
                             ToastKind::Success,
                         ));
                     }
                     Err(e) => {
-                        self.toast =
-                            Some(Toast::new(format!("rename failed: {e}"), ToastKind::Error));
+                        // Persistence failed: surface the error inline on the
+                        // modal so the user can edit and retry. The modal
+                        // clears the error on the next keystroke.
+                        if let Some(state) = self.rename.as_mut() {
+                            state.set_error(format!("rename failed: {e}"));
+                        }
                     }
                 }
             }
@@ -945,8 +1691,13 @@ impl App {
                         self.toast =
                             Some(Toast::new(format!("delete failed: {e}"), ToastKind::Error));
                     } else {
+                        // TODO: wire into delete flow — snapshot .jsonl bytes
+                        // before unlinking so `z` can restore them. For now
+                        // the undo hint is still surfaced to keep the UX
+                        // promise; the inverse is a no-op until we plumb the
+                        // BulkDelete variant through.
                         self.toast = Some(Toast::new(
-                            format!("deleted {ok} sessions"),
+                            format!("deleted {ok} sessions \u{00B7} z to undo"),
                             ToastKind::Success,
                         ));
                     }
@@ -955,8 +1706,14 @@ impl App {
                 if let Some(s) = self.selected_session_ref().cloned() {
                     match delete_session_file(&s) {
                         Ok(()) => {
+                            // TODO: wire into delete flow — snapshot the
+                            // deleted file's bytes into an UndoAction so the
+                            // toast's "z to undo" promise is honoured.
                             self.toast = Some(Toast::new(
-                                format!("deleted {}", &s.id[..8.min(s.id.len())]),
+                                format!(
+                                    "deleted {} \u{00B7} z to undo",
+                                    &s.id[..8.min(s.id.len())]
+                                ),
                                 ToastKind::Success,
                             ));
                             // Remove from in-memory list so UI updates.
@@ -1015,6 +1772,9 @@ impl App {
         match self.mode {
             Mode::SessionList => {
                 if let Some(s) = self.selected_session_ref().cloned() {
+                    // Record the session open on the jump ring before we
+                    // return — this is the only "open session" verb.
+                    self.push_jump_point();
                     self.selection_result = Some((s.id.clone(), s.project_dir.clone()));
                     self.should_quit = true;
                 }
@@ -1038,6 +1798,10 @@ impl App {
 
         match crate::commands::pick::load_sessions_for(&project) {
             Ok(sessions) if !sessions.is_empty() => {
+                // Record the project-open on the jump ring before the mode
+                // switches so a later Ctrl-o restores the project view we
+                // just left.
+                self.push_jump_point();
                 self.selected_project = Some(project_idx);
                 self.sessions = sessions;
                 self.selected_session = Some(0);
@@ -1657,5 +2421,133 @@ mod tests {
         if let Some(v) = prev {
             std::env::set_var(key, v);
         }
+    }
+
+    #[test]
+    fn digit_prefix_accumulates_count() {
+        let sessions = vec![
+            mk_session("a", Some("a")),
+            mk_session("b", Some("b")),
+            mk_session("c", Some("c")),
+            mk_session("d", Some("d")),
+            mk_session("e", Some("e")),
+        ];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Key('1')).unwrap();
+        app.handle_event(Event::Key('2')).unwrap();
+        assert_eq!(app.pending_count_value(), Some(12));
+        // Next non-digit action consumes the count: `12G` → row 12 (clamped).
+        app.handle_event(Event::Key('G')).unwrap();
+        assert!(app.pending_count_value().is_none());
+        // 12 was clamped to last row (5 sessions → index 4).
+        assert_eq!(app.cursor, 4);
+    }
+
+    #[test]
+    fn zero_as_first_digit_is_not_consumed() {
+        let sessions = vec![mk_session("a", Some("a"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        // `0` with no pending count should NOT create a count — Agent C's
+        // binding reserves that slot.
+        app.handle_event(Event::Key('0')).unwrap();
+        assert!(app.pending_count_value().is_none());
+    }
+
+    #[test]
+    fn esc_clears_pending_count_without_popping_screen() {
+        let sessions = vec![mk_session("a", Some("a")), mk_session("b", Some("b"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Key('3')).unwrap();
+        assert_eq!(app.pending_count_value(), Some(3));
+        app.handle_event(Event::Escape).unwrap();
+        assert!(app.pending_count_value().is_none());
+        assert!(!app.should_quit);
+    }
+
+    #[test]
+    fn space_leader_sets_pending_chord() {
+        let sessions = vec![mk_session("a", Some("a"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Key(' ')).unwrap();
+        assert_eq!(app.which_key_leader(), Some(' '));
+        // Immediately — still within the 250ms window.
+        assert!(!app.should_show_which_key());
+    }
+
+    #[test]
+    fn space_space_opens_palette_via_chord() {
+        let sessions = vec![mk_session("a", Some("a"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        app.handle_event(Event::Key(' ')).unwrap();
+        app.handle_event(Event::Key(' ')).unwrap();
+        assert!(app.palette.is_some());
+        assert!(app.which_key_leader().is_none());
+    }
+
+    #[test]
+    fn z_on_empty_stack_is_noop() {
+        let sessions = vec![mk_session("a", Some("a"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        assert_eq!(app.undo_depth(), 0);
+        app.handle_event(Event::Key('z')).unwrap();
+        assert_eq!(app.undo_depth(), 0);
+    }
+
+    #[test]
+    fn push_undo_caps_stack_depth() {
+        let sessions = vec![mk_session("a", Some("a"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        for i in 0..(UNDO_CAP + 10) {
+            app.push_undo(UndoAction::Rename {
+                session_id: format!("s{i}"),
+                old_title: Some("old".into()),
+                new_title: format!("new{i}"),
+            });
+        }
+        assert_eq!(app.undo_depth(), UNDO_CAP);
+    }
+
+    #[test]
+    fn ctrl_o_with_empty_ring_is_noop() {
+        let sessions = vec![mk_session("a", Some("a"))];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        assert!(app.jump_ring_position().is_none());
+        app.handle_event(Event::Ctrl('o')).unwrap();
+        assert!(app.jump_ring_position().is_none());
+    }
+
+    #[test]
+    fn j_respects_repeat_count() {
+        let sessions = vec![
+            mk_session("a", Some("a")),
+            mk_session("b", Some("b")),
+            mk_session("c", Some("c")),
+            mk_session("d", Some("d")),
+            mk_session("e", Some("e")),
+        ];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(vec![], sessions, bm, Mode::SessionList, None);
+        // `3j` → down 3 rows.
+        app.handle_event(Event::Key('3')).unwrap();
+        app.handle_event(Event::Key('j')).unwrap();
+        assert_eq!(app.cursor, 3);
+        assert!(app.pending_count_value().is_none());
     }
 }

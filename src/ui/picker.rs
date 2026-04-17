@@ -7,7 +7,7 @@
 //! A terminal-too-small short-circuit lives here as well so widgets never
 //! receive a `Rect` they can't draw into.
 
-use ratatui::layout::Rect;
+use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
@@ -15,6 +15,8 @@ use ratatui::Frame;
 
 use crate::app::{App, Mode, Toast};
 use crate::theme::{Theme, ThemeName};
+use crate::ui::filter_ribbon::FilterRibbon;
+use crate::ui::text::{display_width, truncate_to_width};
 use crate::ui::{
     command_palette, footer, help_overlay, layout, preview, project_list, rename_modal,
     session_list,
@@ -47,6 +49,15 @@ pub fn render(f: &mut Frame<'_>, app: &mut App) {
         Mode::ProjectList => render_project_screen(f, area, app),
     }
 
+    // Which-key overlay pops up between the main content and the modal stack.
+    // `should_show_which_key` already enforces the post-pause debounce, so we
+    // can render unconditionally here once the getter says it's time.
+    if app.should_show_which_key() {
+        if let Some(leader) = app.which_key_leader() {
+            crate::ui::which_key::render(f, area, leader, &app.theme);
+        }
+    }
+
     // Toast / modal overlays render on top of everything. Z-order matters:
     // help/rename/delete come above toasts so they're never obscured.
     if let Some(toast) = &app.toast {
@@ -70,7 +81,17 @@ pub fn render(f: &mut Frame<'_>, app: &mut App) {
 fn render_session_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
     let chunks = layout::main_picker(area);
     render_title_bar(f, chunks.title_bar, app);
-    session_list::render(f, chunks.list_pane, app);
+
+    // Carve out a single row above the session list for the filter ribbon.
+    // The ribbon hides itself when the terminal is too narrow (< 80 cols);
+    // we unconditionally reserve the 1-row slot to keep layout stable.
+    let list_rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(1), Constraint::Min(1)])
+        .split(chunks.list_pane);
+    render_filter_ribbon(f, list_rows[0], app);
+    session_list::render(f, list_rows[1], app);
+
     preview::render(f, chunks.preview_pane, app);
     footer::render_session_list_with_multi(
         f,
@@ -78,7 +99,37 @@ fn render_session_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
         &app.theme,
         app.multi_selected_count(),
         app.multi_mode,
+        app.pending_count_value(),
+        app.jump_ring_position(),
     );
+}
+
+/// Render the filter ribbon into `area`. Uses the live ribbon on `App` when
+/// the integrator has wired `App::filter_ribbon()`; otherwise falls back to
+/// a transient default so the UI never panics while the wiring is in flight.
+fn render_filter_ribbon(f: &mut Frame<'_>, area: Rect, app: &App) {
+    // The ribbon widget carries zero mutable state during render, so we can
+    // pull it off `App` by reference or synthesise a default. Integrator
+    // wires `app.filter_ribbon()` to return &FilterRibbon.
+    let ribbon = try_get_ribbon(app);
+    let fallback;
+    let ribbon_ref: &FilterRibbon = match ribbon {
+        Some(r) => r,
+        None => {
+            fallback = FilterRibbon::default();
+            &fallback
+        }
+    };
+    let buf = f.buffer_mut();
+    ribbon_ref.render(area, buf, &app.theme);
+}
+
+/// Integration shim — same pattern as `project_list::try_get_pinned`. Now
+/// that `App::filter_ribbon()` exists we return the live reference; the
+/// shim layer stays to keep the rendering call sites uncoupled from the
+/// exact accessor name.
+fn try_get_ribbon(app: &App) -> Option<&FilterRibbon> {
+    Some(app.filter_ribbon())
 }
 
 fn render_project_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
@@ -90,57 +141,171 @@ fn render_project_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
-    // Use `›` (U+203A) as the breadcrumb separator instead of `·` so the
-    // path reads as a real hierarchy (tool › project › subview). The
-    // middle-dot stays reserved for peer-level metadata ("total · tokens").
-    const SEP: &str = " \u{203A} ";
-    let mut spans = vec![
-        Span::styled(
-            " claude-picker ",
-            Style::default()
-                .fg(theme.mauve)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::styled(SEP, theme.dim()),
-    ];
+    // Middle-dot (·) separates peer-level metadata inside the sticky
+    // header. We previously used › for hierarchy too, but the contextual
+    // header flattens into peer segments at every drill-in level.
+    const MID: &str = " \u{00B7} ";
+
+    // Build the contextual segments first as plain strings; we style them
+    // once we've confirmed the line fits. This also keeps truncation
+    // centralised: we measure `display_width` of the assembled plain text
+    // and back off segments from the right until it fits.
+    let mut segments: Vec<(String, Style)> = Vec::new();
+
+    // Header identity — differs per drill-in level.
     match app.mode {
         Mode::SessionList => {
             let project_name = app
                 .active_project()
                 .map(|p| p.name.as_str())
                 .unwrap_or("local");
-            spans.push(Span::styled(project_name.to_string(), theme.subtle()));
-            // Dim session count so the user sees volume without the eye
-            // grabbing it on every frame.
-            let count = app.sessions.len();
-            spans.push(Span::styled(SEP, theme.dim()));
-            let count_label = if count == 1 {
-                "1 session".to_string()
+
+            if let Some(viewer) = app.viewer.as_ref() {
+                // Deepest drill-in: `<project>/<session-id> · turn N/total ·
+                // <model> · $<cost>`. No `claude-picker` prefix — the user
+                // knows the tool they're in; they want session context.
+                let (turn, total, model, cost) = viewer_context(viewer, app);
+                let id = app
+                    .selected_session_ref()
+                    .map(|s| s.id.as_str())
+                    .unwrap_or("-");
+                let id_short = truncate_to_width(id, 8);
+                segments.push((
+                    format!(" {project_name}/{id_short}"),
+                    Style::default()
+                        .fg(theme.mauve)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                segments.push((MID.to_string(), theme.dim()));
+                segments.push((format!("turn {turn}/{total}"), theme.muted()));
+                if !model.is_empty() {
+                    segments.push((MID.to_string(), theme.dim()));
+                    segments.push((model, theme.muted()));
+                }
+                segments.push((MID.to_string(), theme.dim()));
+                segments.push((format!("${cost:.2}"), theme.muted()));
             } else {
-                format!("{count} sessions")
-            };
-            spans.push(Span::styled(count_label, theme.muted()));
+                // Session-list drill-in: `<project> · N sessions · scope:X`.
+                segments.push((
+                    format!(" {project_name} "),
+                    Style::default()
+                        .fg(theme.mauve)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                segments.push((MID.to_string(), theme.dim()));
+                let count = app.sessions.len();
+                let count_label = if count == 1 {
+                    "1 session".to_string()
+                } else {
+                    format!("{count} sessions")
+                };
+                segments.push((count_label, theme.muted()));
+                if let Some(scope) = active_scope_label(app) {
+                    segments.push((MID.to_string(), theme.dim()));
+                    segments.push((format!("scope:{scope}"), theme.muted()));
+                }
+            }
         }
         Mode::ProjectList => {
-            spans.push(Span::styled("all projects", theme.subtle()));
+            // Top level: `claude-picker · N projects · scope:X`.
+            segments.push((
+                " claude-picker ".to_string(),
+                Style::default()
+                    .fg(theme.mauve)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            segments.push((MID.to_string(), theme.dim()));
             let count = app.projects.len();
-            spans.push(Span::styled(SEP, theme.dim()));
             let count_label = if count == 1 {
                 "1 project".to_string()
             } else {
                 format!("{count} projects")
             };
-            spans.push(Span::styled(count_label, theme.muted()));
+            segments.push((count_label, theme.muted()));
+            if let Some(scope) = active_scope_label(app) {
+                segments.push((MID.to_string(), theme.dim()));
+                segments.push((format!("scope:{scope}"), theme.muted()));
+            }
         }
     }
-    // Subtly append the theme name when it's not the default. Muted so it
-    // doesn't compete with the main title, but legible enough that a user
-    // who pressed `t` by accident can confirm what they're looking at.
+
+    // Theme name — tail position, drops first when we're tight on width.
     if theme.name != ThemeName::default() {
-        spans.push(Span::styled(SEP, theme.dim()));
-        spans.push(Span::styled(theme.name.label().to_string(), theme.muted()));
+        segments.push((MID.to_string(), theme.dim()));
+        segments.push((theme.name.label().to_string(), theme.muted()));
     }
+
+    // Truncate segment-wise to fit. The available budget is `area.width` —
+    // we reserve zero trailing columns because a 1-row Paragraph simply
+    // overflows the frame edge on ratatui; column-exact is the safe move.
+    let budget = area.width as usize;
+    let spans = fit_to_width(segments, budget, theme);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Shrink `segments` left-to-right until the combined `display_width` fits
+/// within `budget`. We first drop tail segments (theme name, then scope,
+/// then count), and finally fall back to hard-truncating the last segment
+/// with `…`. Return the styled spans ready to render.
+fn fit_to_width<'a>(
+    mut segments: Vec<(String, Style)>,
+    budget: usize,
+    _theme: &Theme,
+) -> Vec<Span<'a>> {
+    // Greedy shrink from the right.
+    while total_width(&segments) > budget && segments.len() > 1 {
+        segments.pop();
+    }
+    if segments.is_empty() {
+        return Vec::new();
+    }
+    // If the single remaining segment is still too wide, hard-truncate it.
+    if total_width(&segments) > budget {
+        let mut last = segments.pop().unwrap();
+        last.0 = truncate_to_width(&last.0, budget);
+        segments.push(last);
+    }
+    segments
+        .into_iter()
+        .map(|(text, style)| Span::styled(text, style))
+        .collect()
+}
+
+fn total_width(segments: &[(String, Style)]) -> usize {
+    segments.iter().map(|(s, _)| display_width(s)).sum()
+}
+
+/// Resolve the current filter-scope label (`ALL`, `REPO`, …) lower-cased for
+/// the sticky header. Returns `None` until the integrator wires the ribbon
+/// accessor.
+fn active_scope_label(app: &App) -> Option<String> {
+    let ribbon = try_get_ribbon(app)?;
+    Some(ribbon.scope().label().to_ascii_lowercase())
+}
+
+/// Pull (turn_index, total_turns, model, cost) from the live viewer + its
+/// session. Values fall through to sensible placeholders when the data
+/// layer doesn't expose a particular field — we never render a jagged
+/// header just because one number is missing.
+fn viewer_context(
+    _viewer: &crate::ui::conversation_viewer::ViewerState,
+    app: &App,
+) -> (usize, usize, String, f64) {
+    let (total, model, cost) = app
+        .selected_session_ref()
+        .map(|s| {
+            (
+                s.message_count as usize,
+                s.model_summary.clone(),
+                s.total_cost_usd,
+            )
+        })
+        .unwrap_or((0, String::new(), 0.0));
+    // The viewer tracks its own cursor — we don't have a stable accessor
+    // here, so surface the total count in both positions until the field
+    // is wired. Integrator can swap in `viewer.turn_index()` once the
+    // getter exists on ViewerState.
+    (total, total, model, cost)
 }
 
 fn render_too_small(f: &mut Frame<'_>, area: Rect, theme: &Theme) {

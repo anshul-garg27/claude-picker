@@ -159,10 +159,36 @@ const HELP_GROUP: &[KeyEntry] = &[KeyEntry {
     desc: "this overlay",
 }];
 
+/// Vim-style navigation and discoverability primitives shared by the
+/// picker screens. Added as part of the keyboard-UX pass — these land in
+/// every screen that owns an event loop on `App`.
+const NAV_ADVANCED: &[KeyEntry] = &[
+    KeyEntry {
+        key: "z / Z",
+        desc: "undo / redo last destructive action",
+    },
+    KeyEntry {
+        key: "Ctrl-o / Ctrl-i",
+        desc: "jump back / forward in selection history",
+    },
+    KeyEntry {
+        key: "3j / 12G",
+        desc: "repeat count prefix (rows / goto)",
+    },
+    KeyEntry {
+        key: "Space (hold)",
+        desc: "which-key popup",
+    },
+];
+
 const SESSION_LIST_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "NAVIGATION",
         entries: NAV_SESSION,
+    },
+    KeyGroup {
+        title: "NAVIGATION (advanced)",
+        entries: NAV_ADVANCED,
     },
     KeyGroup {
         title: "SELECTION",
@@ -229,6 +255,10 @@ const PROJECT_LIST_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "NAVIGATION",
         entries: NAV_PROJECT,
+    },
+    KeyGroup {
+        title: "NAVIGATION (advanced)",
+        entries: NAV_ADVANCED,
     },
     KeyGroup {
         title: "SELECTION",

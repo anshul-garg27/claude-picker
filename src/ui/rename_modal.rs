@@ -9,6 +9,12 @@
 //!
 //! State is kept outside this module; we just render. That makes it trivial to
 //! unit-test and keeps the modal reusable from other screens later.
+//!
+//! **Error surface (E10):** validation failures used to close the modal and
+//! surface a red toast; the user had to re-open the modal to fix the name.
+//! We now keep the modal open, flip the border to `red`, and render the
+//! failure message under the input line. The error clears the instant the
+//! user types/deletes a character, so recovery is a single keystroke away.
 
 use ratatui::layout::Rect;
 use ratatui::style::{Modifier, Style};
@@ -26,6 +32,11 @@ pub struct RenameState {
     pub session_id: String,
     /// Current buffer the user is typing into.
     pub buffer: String,
+    /// Current validation error, if any. Set by the save handler when
+    /// validation fails (e.g. empty name, rename_session returned Err); the
+    /// modal renders with a red border and a 1-line error string under the
+    /// input until the user types or deletes a character.
+    pub error_message: Option<String>,
 }
 
 impl RenameState {
@@ -34,20 +45,39 @@ impl RenameState {
         Self {
             session_id: session_id.into(),
             buffer: current_name.unwrap_or("").to_string(),
+            error_message: None,
         }
     }
 
     /// Push a character into the buffer. Same filter as the main filter input
     /// — alphanumerics and common word-safe punctuation.
+    ///
+    /// Any stored error is cleared on buffer mutation — the next keystroke is
+    /// the user's "I acknowledge, let me fix it" signal, and leaving the
+    /// error visible past that point is redundant noise.
     pub fn push(&mut self, c: char) {
         if is_name_char(c) {
             self.buffer.push(c);
+            self.error_message = None;
         }
     }
 
-    /// Backspace.
+    /// Backspace. Also clears any stored error, same rationale as [`push`].
     pub fn pop(&mut self) {
         self.buffer.pop();
+        self.error_message = None;
+    }
+
+    /// Set the inline error string. Replaces any prior error; pass an empty
+    /// string to clear. The save handler calls this instead of closing the
+    /// modal so the user can fix the name without reopening.
+    pub fn set_error(&mut self, msg: impl Into<String>) {
+        let msg = msg.into();
+        if msg.is_empty() {
+            self.error_message = None;
+        } else {
+            self.error_message = Some(msg);
+        }
     }
 }
 
@@ -59,8 +89,10 @@ pub fn is_name_char(c: char) -> bool {
 
 /// Render the modal centered inside `area`.
 pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RenameState, theme: &Theme) {
+    // Grow the modal by one row when an error is present so the inline error
+    // string has dedicated real estate and doesn't fight the hints line.
     let w = 60u16.min(area.width.saturating_sub(4));
-    let h = 7u16;
+    let h = if state.error_message.is_some() { 8 } else { 7 };
     let x = area.x + area.width.saturating_sub(w) / 2;
     let y = area.y + area.height.saturating_sub(h) / 2;
     let rect = Rect {
@@ -72,16 +104,23 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RenameState, theme: &Th
 
     frame.render_widget(Clear, rect);
 
+    // Flip the border to the theme's `red` when an error is showing so the
+    // failure state is pre-attentive. Title copy picks up the same tone so
+    // users don't have to locate the string to know something's wrong.
+    let has_error = state.error_message.is_some();
+    let border_color = if has_error { theme.red } else { theme.mauve };
+    let title_color = border_color;
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.mauve))
+        .border_style(Style::default().fg(border_color))
         .title(Line::from(vec![
             Span::raw(" "),
             Span::styled(
                 "rename session",
                 Style::default()
-                    .fg(theme.mauve)
+                    .fg(title_color)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
@@ -112,8 +151,30 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &RenameState, theme: &Th
         Span::styled(" cancel", theme.key_desc()),
     ]);
 
-    let paragraph =
-        Paragraph::new(vec![Line::raw(""), input_line, Line::raw(""), hints]).block(block);
+    // Build the body rows. When an error is present, we thread it in between
+    // the input and the hints so the user's eye moves input → error → hints,
+    // matching the brief's mockup.
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(5);
+    lines.push(Line::raw(""));
+    lines.push(input_line);
+    if let Some(err) = state.error_message.as_deref() {
+        // `└─` arm + red body copy — visually tethers the error to the input.
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                "\u{2514}\u{2500} ",
+                Style::default().fg(theme.red),
+            ),
+            Span::styled(
+                err.to_string(),
+                Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
+            ),
+        ]));
+    }
+    lines.push(Line::raw(""));
+    lines.push(hints);
+
+    let paragraph = Paragraph::new(lines).block(block);
     frame.render_widget(paragraph, rect);
 }
 
@@ -135,5 +196,57 @@ mod tests {
         let mut s = RenameState::new("abc", Some("hello"));
         s.pop();
         assert_eq!(s.buffer, "hell");
+    }
+
+    #[test]
+    fn new_state_has_no_error() {
+        let s = RenameState::new("abc", Some("hi"));
+        assert!(s.error_message.is_none());
+    }
+
+    #[test]
+    fn set_error_stores_message() {
+        let mut s = RenameState::new("abc", Some("hi"));
+        s.set_error("name can't be empty");
+        assert_eq!(s.error_message.as_deref(), Some("name can't be empty"));
+    }
+
+    #[test]
+    fn set_error_with_empty_clears() {
+        let mut s = RenameState::new("abc", Some("hi"));
+        s.set_error("bad");
+        s.set_error("");
+        assert!(s.error_message.is_none());
+    }
+
+    #[test]
+    fn push_clears_error() {
+        // The core interaction contract — typing ack's the error and resumes
+        // normal entry without the user having to dismiss a toast.
+        let mut s = RenameState::new("abc", Some("hi"));
+        s.set_error("oops");
+        s.push('z');
+        assert!(s.error_message.is_none());
+        assert_eq!(s.buffer, "hiz");
+    }
+
+    #[test]
+    fn pop_clears_error() {
+        let mut s = RenameState::new("abc", Some("hi"));
+        s.set_error("oops");
+        s.pop();
+        assert!(s.error_message.is_none());
+        assert_eq!(s.buffer, "h");
+    }
+
+    #[test]
+    fn push_rejects_control_char_without_clearing_error() {
+        // Control chars never land in the buffer, so they shouldn't count as
+        // "the user is fixing the error" either — keep the error visible.
+        let mut s = RenameState::new("abc", Some("hi"));
+        s.set_error("oops");
+        s.push('\n');
+        assert_eq!(s.buffer, "hi");
+        assert!(s.error_message.is_some());
     }
 }

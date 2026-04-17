@@ -14,6 +14,7 @@ pub mod editor;
 pub mod file_index;
 pub mod mcp_calls;
 pub mod path_resolver;
+pub mod pinned_projects;
 pub mod pricing;
 pub mod project;
 pub mod replay;
