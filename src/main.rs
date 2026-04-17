@@ -44,6 +44,26 @@ struct Cli {
     #[arg(long, global = true)]
     list_themes: bool,
 
+    // ── Flag-style aliases for subcommands ──────────────────────────
+    // v1 bash wrapper used `--stats`, `--tree`, `--diff`, `--search`,
+    // `--pipe` as long flags; keep that ergonomics. Users can write
+    // either `claude-picker --stats` or `claude-picker stats`.
+    /// Open the stats dashboard (alias for the `stats` subcommand).
+    #[arg(long, conflicts_with_all = ["tree_flag", "diff_flag", "search_flag", "pipe_flag"])]
+    stats: bool,
+    /// Open the session tree with fork detection (alias for `tree`).
+    #[arg(long = "tree", conflicts_with_all = ["stats", "diff_flag", "search_flag", "pipe_flag"])]
+    tree_flag: bool,
+    /// Compare two sessions side-by-side (alias for `diff`).
+    #[arg(long = "diff", conflicts_with_all = ["stats", "tree_flag", "search_flag", "pipe_flag"])]
+    diff_flag: bool,
+    /// Full-text search across all sessions (alias for `search`).
+    #[arg(long = "search", short = 's', conflicts_with_all = ["stats", "tree_flag", "diff_flag", "pipe_flag"])]
+    search_flag: bool,
+    /// Print selected session ID to stdout (alias for `pipe`).
+    #[arg(long = "pipe", short = 'p', conflicts_with_all = ["stats", "tree_flag", "diff_flag", "search_flag"])]
+    pipe_flag: bool,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -89,6 +109,25 @@ fn main() -> anyhow::Result<()> {
         }
     }
     let theme_name = theme::resolve_theme_name(cli.theme.as_deref());
+
+    // Flag aliases take precedence over the subcommand slot — they're
+    // mutually exclusive via clap's conflicts_with_all, so at most one is
+    // true at a time.
+    if cli.stats {
+        return commands::stats_cmd::run();
+    }
+    if cli.tree_flag {
+        return commands::tree_cmd::run();
+    }
+    if cli.diff_flag {
+        return commands::diff_cmd::run();
+    }
+    if cli.search_flag {
+        return commands::search_cmd::run();
+    }
+    if cli.pipe_flag {
+        return commands::pipe_cmd::run();
+    }
 
     match cli.command {
         None => {
