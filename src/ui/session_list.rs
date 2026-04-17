@@ -324,6 +324,7 @@ fn render_scrollbar(f: &mut Frame<'_>, area: Rect, total: usize, position: usize
 /// - 1-cell context-usage gutter anchored 1 col inset from the right edge
 ///   shows how full the 200k token window is (green/amber/rose by 40%/80%
 ///   thresholds). Inset so the scrollbar thumb never paints over it.
+#[allow(clippy::too_many_arguments)]
 fn render_row<'a>(
     s: &'a Session,
     theme: &Theme,

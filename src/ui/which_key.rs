@@ -151,7 +151,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, leader: char, theme: &Theme) {
     let inner_w = inner.width.max(2) as usize;
     let col_w = inner_w / 2;
 
-    let mut lines: Vec<Line<'static>> = Vec::with_capacity((entries.len() + 1) / 2 + 1);
+    let mut lines: Vec<Line<'static>> = Vec::with_capacity(entries.len().div_ceil(2) + 1);
     lines.push(Line::raw(""));
     let mut i = 0usize;
     while i < entries.len() {
