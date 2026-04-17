@@ -770,7 +770,7 @@ impl App {
                     // under a single lock so the snapshot the drawer used
                     // for selection and the queue mutation stay consistent.
                     if let Ok(mut q) = self.task_queue.lock() {
-                        if let Some(id) = self.task_drawer.selected_id(&*q) {
+                        if let Some(id) = self.task_drawer.selected_id(&q) {
                             q.cancel(id);
                         }
                     }

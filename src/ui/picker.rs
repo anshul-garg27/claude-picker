@@ -117,9 +117,7 @@ fn render_task_drawer(f: &mut Frame<'_>, area: Rect, app: &mut App) {
         // the drawer this frame rather than crashing the UI.
         return;
     };
-    // `&*queue` drops us from `MutexGuard<TaskQueue>` to `&TaskQueue`, which
-    // is the reference shape `task_drawer::render` asks for.
-    task_drawer::render(f, area, &mut app.task_drawer, &*queue, &theme);
+    task_drawer::render(f, area, &mut app.task_drawer, &queue, &theme);
 }
 
 fn render_session_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
