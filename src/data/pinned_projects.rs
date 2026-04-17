@@ -44,6 +44,7 @@ pub enum ToggleResult {
 /// In-memory pinned-slot store. Slots are 1-indexed in the public API and
 /// stored at index `slot - 1` internally. Every mutating method automatically
 /// persists; callers don't have to remember to call [`save`](Self::save).
+#[derive(Debug)]
 pub struct PinnedProjects {
     path: Option<PathBuf>,
     /// Slot `slot - 1` holds the project cwd pinned at slot number `slot`.
