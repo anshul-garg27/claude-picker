@@ -15,6 +15,7 @@ use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
+use std::time::Duration;
 
 use chrono::{DateTime, Utc};
 use serde::Deserialize;
@@ -146,6 +147,9 @@ pub struct Session {
     /// `~/.claude/projects/<encoded>/<sid>/subagents/agent-*.jsonl`; we
     /// stat the directory and count matching files.
     pub subagent_count: u32,
+    /// Per-turn wall-clock durations from `system.subtype=="turn_duration"`
+    /// records. Empty for older sessions that predate the field.
+    pub turn_durations: Vec<Duration>,
 }
 
 impl Session {
@@ -213,6 +217,12 @@ struct RawLine {
     permission_mode: Option<String>,
     #[serde(default)]
     mode: Option<String>,
+    /// On `system` records — subtype discriminator.
+    #[serde(default)]
+    subtype: Option<String>,
+    /// On `system.subtype=="turn_duration"` — wall-clock ms.
+    #[serde(default, rename = "durationMs")]
+    duration_ms: Option<u64>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -403,6 +413,7 @@ pub fn load_session_from_jsonl(
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
     let mut forked_from: Option<String> = None;
+    let mut turn_durations: Vec<Duration> = Vec::new();
 
     for (line_no, line) in reader.lines().enumerate() {
         let line = match line {
@@ -482,6 +493,15 @@ pub fn load_session_from_jsonl(
                 .trim();
             if !prompt.is_empty() {
                 last_prompt = Some(clean_auto_name(prompt));
+            }
+            continue;
+        }
+
+        // `system.subtype==turn_duration` → append to the per-turn log.
+        if raw.kind.as_deref() == Some("system") && raw.subtype.as_deref() == Some("turn_duration")
+        {
+            if let Some(ms) = raw.duration_ms {
+                turn_durations.push(Duration::from_millis(ms));
             }
             continue;
         }
@@ -596,6 +616,7 @@ pub fn load_session_from_jsonl(
         entrypoint,
         permission_mode,
         subagent_count,
+        turn_durations,
     }))
 }
 
@@ -867,6 +888,29 @@ mod tests {
             .expect("ok")
             .expect("session");
         assert_eq!(s.subagent_count, 0);
+    }
+
+    #[test]
+    fn turn_duration_records_parsed_in_order() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let jsonl = tmp.path().join("x.jsonl");
+        fs::write(
+            &jsonl,
+            concat!(
+                "{\"type\":\"user\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"hi\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-7\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+                "{\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":12345}\n",
+                "{\"type\":\"system\",\"subtype\":\"turn_duration\",\"durationMs\":60000}\n",
+                "{\"type\":\"system\",\"subtype\":\"local_command\",\"durationMs\":999}\n",
+            ),
+        )
+        .expect("write");
+        let s = load_session_from_jsonl(&jsonl, tmp.path().to_path_buf())
+            .expect("ok")
+            .expect("session");
+        assert_eq!(s.turn_durations.len(), 2);
+        assert_eq!(s.turn_durations[0], Duration::from_millis(12345));
+        assert_eq!(s.turn_durations[1], Duration::from_millis(60_000));
     }
 
     #[test]

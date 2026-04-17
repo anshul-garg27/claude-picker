@@ -504,6 +504,9 @@ fn run_diff_screen(
             Event::End => data.scroll_offset = MAX_SCROLL,
             Event::Tab => data.focus_right = !data.focus_right,
             Event::Key('s') | Event::Key('S') => data.swap(),
+            // `d` toggles the word-level diff renderer. Delta-style inline
+            // highlights replace the two-column body when on.
+            Event::Key('d') | Event::Key('D') => data.toggle_word_mode(),
             _ => {}
         }
     }
@@ -549,6 +552,7 @@ pub fn build_diff_data(a: &Session, b: &Session) -> DiffData {
         topics_unique_b,
         scroll_offset: 0,
         focus_right: false,
+        word_mode: false,
     }
 }
 
@@ -996,6 +1000,7 @@ mod tests {
                 entrypoint: SessionKind::Cli,
                 permission_mode: None,
                 subagent_count: 0,
+                turn_durations: Vec::new(),
             }
         }
         let sessions = vec![mk("ABC123", "Auth-Refactor"), mk("def456", "db-migration")];

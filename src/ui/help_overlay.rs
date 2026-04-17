@@ -46,6 +46,8 @@ pub enum Screen {
     Diff,
     /// Full-screen conversation viewer — the `v` keybinding overlay.
     Viewer,
+    /// `claude-picker --files` file-centric pivot view.
+    Files,
 }
 
 /// One key-to-description pair.
@@ -363,6 +365,67 @@ const ACTIONS_SEARCH: &[KeyEntry] = &[
     },
 ];
 
+const NAV_FILES: &[KeyEntry] = &[
+    KeyEntry {
+        key: "↑ ↓ / j k",
+        desc: "move up / down one row",
+    },
+    KeyEntry {
+        key: "PgUp / PgDn",
+        desc: "jump 10 rows",
+    },
+    KeyEntry {
+        key: "Tab",
+        desc: "switch focus between file list and session list",
+    },
+    KeyEntry {
+        key: "/",
+        desc: "focus filter (fuzzy match on file path)",
+    },
+    KeyEntry {
+        key: "Esc",
+        desc: "clear filter / back to file list",
+    },
+    KeyEntry {
+        key: "q",
+        desc: "quit",
+    },
+];
+
+const ACTIONS_FILES: &[KeyEntry] = &[
+    KeyEntry {
+        key: "s",
+        desc: "cycle sort (edits → recency → sessions → path)",
+    },
+    KeyEntry {
+        key: "o",
+        desc: "open focused file in $EDITOR",
+    },
+    KeyEntry {
+        key: "Enter",
+        desc: "resume focused session (when session pane is focused)",
+    },
+    KeyEntry {
+        key: "v",
+        desc: "open conversation viewer for focused session",
+    },
+];
+
+const FILES_GROUPS: &[KeyGroup] = &[
+    KeyGroup {
+        title: "NAVIGATION",
+        entries: NAV_FILES,
+    },
+    KeyGroup {
+        title: "ACTIONS",
+        entries: ACTIONS_FILES,
+    },
+    KeyGroup {
+        title: "HELP",
+        entries: HELP_GROUP,
+    },
+];
+
 const SEARCH_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "NAVIGATION",
@@ -382,13 +445,49 @@ const SEARCH_GROUPS: &[KeyGroup] = &[
     },
 ];
 
+const STATS_NAV: &[KeyEntry] = &[
+    KeyEntry {
+        key: "Esc / q",
+        desc: "quit",
+    },
+    KeyEntry {
+        key: "r",
+        desc: "refresh (full rescan)",
+    },
+    KeyEntry {
+        key: "e",
+        desc: "export CSV to ~/Desktop",
+    },
+];
+
+const STATS_TIMELINE: &[KeyEntry] = &[KeyEntry {
+    key: "t",
+    desc: "cycle: days → weeks → hours → month",
+}];
+
+const STATS_BUDGET: &[KeyEntry] = &[
+    KeyEntry {
+        key: "b",
+        desc: "open budget modal (set monthly limit)",
+    },
+    KeyEntry {
+        key: "f",
+        desc: "toggle forecast band",
+    },
+];
+
 const STATS_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "NAVIGATION",
-        entries: &[KeyEntry {
-            key: "Esc / q",
-            desc: "quit",
-        }],
+        entries: STATS_NAV,
+    },
+    KeyGroup {
+        title: "TIMELINE",
+        entries: STATS_TIMELINE,
+    },
+    KeyGroup {
+        title: "BUDGET",
+        entries: STATS_BUDGET,
     },
     KeyGroup {
         title: "HELP",
@@ -495,6 +594,7 @@ pub fn help_for(screen: Screen) -> HelpContent {
         Screen::Stats => STATS_GROUPS,
         Screen::Diff => DIFF_GROUPS,
         Screen::Viewer => VIEWER_GROUPS,
+        Screen::Files => FILES_GROUPS,
     };
     HelpContent { screen, groups }
 }

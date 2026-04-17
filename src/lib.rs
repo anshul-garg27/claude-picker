@@ -10,6 +10,12 @@
 //! - [`ui`] — ratatui widgets for every screen (picker, preview, pills, …).
 //! - [`commands`] — subcommand dispatchers (default picker, pipe, stats, …).
 
+// These clippy lints are expected trade-offs for a feature-rich TUI crate:
+// - `large_enum_variant`: TreeNode deliberately stores owned Session/Project
+//   variants; boxing every variant would hurt ergonomics with no perf gain
+//   since these live inside Vecs we already heap-allocate.
+#![allow(clippy::large_enum_variant)]
+
 pub mod app;
 pub mod commands;
 pub mod config;

@@ -816,6 +816,7 @@ mod tests {
             entrypoint: SessionKind::Cli,
             permission_mode: None,
             subagent_count: 0,
+            turn_durations: Vec::new(),
         }
     }
 

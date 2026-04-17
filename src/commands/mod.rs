@@ -5,7 +5,13 @@
 //! ever has to wire CLI → command-fn; the command implementations carry
 //! their own dependencies.
 
+pub mod ai_titles_cmd;
+pub mod audit_cmd;
+pub mod checkpoints_cmd;
 pub mod diff_cmd;
+pub mod files_cmd;
+pub mod hooks_cmd;
+pub mod mcp_cmd;
 pub mod pick;
 pub mod pipe_cmd;
 pub mod search_cmd;

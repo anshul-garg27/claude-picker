@@ -67,6 +67,20 @@ struct Cli {
     #[arg(long = "pipe", short = 'p', conflicts_with_all = ["stats", "tree_flag", "diff_flag", "search_flag"])]
     pipe_flag: bool,
 
+    /// File-centric pivot view (alias for `files`).
+    ///
+    /// Lists every file Claude Code ever touched, with the sessions that
+    /// touched each one. Answers "which sessions modified
+    /// `src/auth/middleware.ts`?" — a pivot no other session manager
+    /// offers. Pair with `--project <name>` to scope to one project.
+    #[arg(long = "files")]
+    files_flag: bool,
+
+    /// Restrict the `--files` view to a single project (by basename).
+    /// Example: `claude-picker --files --project architex`.
+    #[arg(long, global = true, value_name = "NAME")]
+    project: Option<String>,
+
     /// Write a commented default `config.toml` and exit.
     ///
     /// Target is `~/.config/claude-picker/config.toml` unless `--config-file`
@@ -85,6 +99,26 @@ struct Cli {
     #[arg(long, global = true, value_name = "PATH")]
     config_file: Option<PathBuf>,
 
+    /// Override the built-in preview renderer with a user command.
+    ///
+    /// When set, the picker spawns the given shell snippet for every
+    /// highlighted session. `{sid}` is substituted with the session id
+    /// and `{cwd}` with the project path. Stdout becomes the preview
+    /// body; a non-zero exit renders stderr with error styling. Output
+    /// is cached per session-id so scrolling doesn't re-run the command.
+    ///
+    /// Only `{sid}` and `{cwd}` are placeholders — the rest of the
+    /// string is passed to the user's shell verbatim. Do not embed
+    /// untrusted data into the command itself.
+    ///
+    /// Examples:
+    ///
+    ///   --preview-cmd='cat ~/.claude/projects/*/{sid}.jsonl | head -100'
+    ///
+    ///   --preview-cmd='git -C {cwd} log --oneline -10'
+    #[arg(long, global = true, value_name = "CMD")]
+    preview_cmd: Option<String>,
+
     #[command(subcommand)]
     command: Option<Command>,
 }
@@ -101,6 +135,8 @@ enum Command {
     Search,
     /// Print selected session ID to stdout (for scripting).
     Pipe,
+    /// File-centric pivot view — list every file, pivot to sessions.
+    Files,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -176,12 +212,17 @@ fn main() -> anyhow::Result<()> {
     if cli.pipe_flag {
         return commands::pipe_cmd::run();
     }
+    if cli.files_flag {
+        return commands::files_cmd::run(cli.project.clone());
+    }
 
     match cli.command {
         None => {
             // Default: the picker. If the user made a selection, hand off to
             // claude itself rather than just printing the id.
-            if let Some((id, cwd)) = commands::pick::run_with_theme(theme_name)? {
+            if let Some((id, cwd)) =
+                commands::pick::run_with_theme_and_preview(theme_name, cli.preview_cmd.clone())?
+            {
                 resume::resume_session(&id, &cwd); // diverges
             }
             Ok(())
@@ -191,6 +232,7 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Tree) => commands::tree_cmd::run(),
         Some(Command::Diff) => commands::diff_cmd::run(),
         Some(Command::Search) => commands::search_cmd::run(),
+        Some(Command::Files) => commands::files_cmd::run(cli.project.clone()),
     }
 }
 

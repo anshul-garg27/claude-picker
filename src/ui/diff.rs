@@ -62,6 +62,11 @@ pub struct DiffData {
     pub scroll_offset: usize,
     /// Which column has focus — tinted borders + footer hint reflect this.
     pub focus_right: bool,
+    /// True when the word-level diff renderer is active. Toggled by the `d`
+    /// key in the diff screen event loop. The two-column layout collapses
+    /// into a single merged stream of message pairs, each showing
+    /// deletions/insertions inline (delta-style).
+    pub word_mode: bool,
 }
 
 impl DiffData {
@@ -79,6 +84,36 @@ impl DiffData {
         let next = (current + delta).max(0) as usize;
         self.scroll_offset = next.min(max);
     }
+
+    /// Flip word-diff mode on/off.
+    pub fn toggle_word_mode(&mut self) {
+        self.word_mode = !self.word_mode;
+        // Reset scroll so the new layout starts at the top; word-mode tends
+        // to render a very different number of lines than the side-by-side
+        // view.
+        self.scroll_offset = 0;
+    }
+}
+
+/// Return `(inserted_words, deleted_words)` when comparing `a` → `b`.
+/// Separate from the renderer so it's easy to benchmark and unit-test.
+///
+/// Delegates to the `similar` crate (LCS / Myers-style diff) to keep the
+/// word-by-word pairing correct regardless of length or edit distance.
+pub fn word_diff_counts(a: &str, b: &str) -> (usize, usize) {
+    let a_words: Vec<&str> = a.split_whitespace().collect();
+    let b_words: Vec<&str> = b.split_whitespace().collect();
+    let diff = similar::TextDiff::from_slices(&a_words, &b_words);
+    let mut ins = 0;
+    let mut del = 0;
+    for op in diff.iter_all_changes() {
+        match op.tag() {
+            similar::ChangeTag::Insert => ins += 1,
+            similar::ChangeTag::Delete => del += 1,
+            similar::ChangeTag::Equal => {}
+        }
+    }
+    (ins, del)
 }
 
 /// Render the diff screen into `area`.
@@ -363,6 +398,11 @@ fn render_hrule(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
 }
 
 fn render_previews(frame: &mut Frame<'_>, area: Rect, data: &DiffData, theme: &Theme) {
+    if data.word_mode {
+        render_word_diff(frame, area, data, theme);
+        return;
+    }
+
     // Split into [left col] [1-wide vertical rule] [right col].
     let cols = Layout::default()
         .direction(Direction::Horizontal)
@@ -392,6 +432,175 @@ fn render_previews(frame: &mut Frame<'_>, area: Rect, data: &DiffData, theme: &T
         data.focus_right,
         theme,
     );
+}
+
+/// Render the word-level diff stream. For each corresponding message pair
+/// between A and B (same position in the preview ring), emit a labelled
+/// line showing B's body with insertions in green-bold and deletions from A
+/// in red with a strikethrough-feel modifier. Delta-style.
+fn render_word_diff(frame: &mut Frame<'_>, area: Rect, data: &DiffData, theme: &Theme) {
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([Constraint::Length(2), Constraint::Min(1)])
+        .split(area);
+
+    let name_a = data.session_a.display_label();
+    let name_b = data.session_b.display_label();
+    let header = Line::from(vec![
+        Span::raw(" "),
+        Span::styled(
+            name_a.to_string(),
+            Style::default()
+                .fg(theme.green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  →  ", theme.dim()),
+        Span::styled(
+            name_b.to_string(),
+            Style::default()
+                .fg(theme.yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   —   ", theme.dim()),
+        Span::styled(
+            "word diff",
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ]);
+    frame.render_widget(Paragraph::new(vec![header, Line::raw("")]), rows[0]);
+
+    let pair_count = data.preview_a.len().max(data.preview_b.len());
+    if pair_count == 0 {
+        frame.render_widget(
+            Paragraph::new(Line::from(vec![
+                Span::raw("  "),
+                Span::styled("(no exchanges to diff)", theme.muted()),
+            ])),
+            rows[1],
+        );
+        return;
+    }
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(pair_count * 4);
+    for i in 0..pair_count {
+        let a = data.preview_a.get(i);
+        let b = data.preview_b.get(i);
+        match (a, b) {
+            (Some((role_a, body_a)), Some((_role_b, body_b))) => {
+                let (label, label_style) = word_diff_role_label(role_a, theme);
+                let (ins, del) = word_diff_counts(body_a, body_b);
+                lines.push(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(label, label_style),
+                    Span::raw("  "),
+                    Span::styled(format!("+{ins} / -{del} words"), theme.muted()),
+                ]));
+                let spans = render_word_diff_spans(body_a, body_b, theme);
+                lines.push(Line::from(
+                    std::iter::once(Span::raw("    "))
+                        .chain(spans)
+                        .collect::<Vec<_>>(),
+                ));
+                lines.push(Line::raw(""));
+            }
+            (Some((role, body)), None) => {
+                let (label, label_style) = word_diff_role_label(role, theme);
+                lines.push(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(label, label_style),
+                    Span::raw("  "),
+                    Span::styled("only in A — deleted", Style::default().fg(theme.red)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        body.clone(),
+                        Style::default()
+                            .fg(theme.red)
+                            .add_modifier(Modifier::CROSSED_OUT),
+                    ),
+                ]));
+                lines.push(Line::raw(""));
+            }
+            (None, Some((role, body))) => {
+                let (label, label_style) = word_diff_role_label(role, theme);
+                lines.push(Line::from(vec![
+                    Span::raw(" "),
+                    Span::styled(label, label_style),
+                    Span::raw("  "),
+                    Span::styled("only in B — added", Style::default().fg(theme.green)),
+                ]));
+                lines.push(Line::from(vec![
+                    Span::raw("    "),
+                    Span::styled(
+                        body.clone(),
+                        Style::default()
+                            .fg(theme.green)
+                            .add_modifier(Modifier::BOLD),
+                    ),
+                ]));
+                lines.push(Line::raw(""));
+            }
+            (None, None) => {}
+        }
+    }
+
+    let p = Paragraph::new(lines)
+        .wrap(Wrap { trim: false })
+        .scroll((data.scroll_offset as u16, 0));
+    frame.render_widget(p, rows[1]);
+}
+
+fn word_diff_role_label(role: &Role, theme: &Theme) -> (&'static str, Style) {
+    match role {
+        Role::User => (
+            "you",
+            Style::default().fg(theme.blue).add_modifier(Modifier::BOLD),
+        ),
+        Role::Claude => (
+            "claude",
+            Style::default()
+                .fg(theme.yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    }
+}
+
+/// Walk a word-level LCS diff between two strings and render the result as
+/// a flat stream of styled spans. Insertions are bold green, deletions are
+/// red with the crossed-out modifier, unchanged words are muted. Matches
+/// the delta visual style (without copying delta's code).
+fn render_word_diff_spans<'a>(a: &'a str, b: &'a str, theme: &Theme) -> Vec<Span<'a>> {
+    let a_words: Vec<&str> = a.split_whitespace().collect();
+    let b_words: Vec<&str> = b.split_whitespace().collect();
+    let diff = similar::TextDiff::from_slices(&a_words, &b_words);
+
+    let mut out: Vec<Span<'_>> = Vec::with_capacity(a_words.len() + b_words.len());
+    let mut first = true;
+    for change in diff.iter_all_changes() {
+        let word = change.value();
+        if word.is_empty() {
+            continue;
+        }
+        if !first {
+            out.push(Span::raw(" "));
+        }
+        first = false;
+
+        let style = match change.tag() {
+            similar::ChangeTag::Equal => theme.muted(),
+            similar::ChangeTag::Insert => Style::default()
+                .fg(theme.green)
+                .add_modifier(Modifier::BOLD),
+            similar::ChangeTag::Delete => Style::default()
+                .fg(theme.red)
+                .add_modifier(Modifier::CROSSED_OUT),
+        };
+        out.push(Span::styled(word.to_string(), style));
+    }
+    out
 }
 
 fn render_vrule(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
@@ -476,11 +685,17 @@ fn render_conversation_column(
     frame.render_widget(p, rows[1]);
 }
 
-fn render_footer(frame: &mut Frame<'_>, area: Rect, _data: &DiffData, theme: &Theme) {
+fn render_footer(frame: &mut Frame<'_>, area: Rect, data: &DiffData, theme: &Theme) {
+    let d_hint = if data.word_mode {
+        ("d", "side-by-side")
+    } else {
+        ("d", "word diff")
+    };
     let hints = [
         ("↑↓", "scroll"),
         ("Tab", "switch side"),
         ("s", "swap A↔B"),
+        d_hint,
         ("q", "quit"),
         ("Esc", "back"),
     ];
@@ -522,6 +737,7 @@ mod tests {
             entrypoint: SessionKind::Cli,
             permission_mode: None,
             subagent_count: 0,
+            turn_durations: Vec::new(),
         }
     }
 
@@ -536,6 +752,7 @@ mod tests {
             topics_unique_b: vec!["oauth2".into()],
             scroll_offset: 0,
             focus_right: false,
+            word_mode: false,
         }
     }
 
@@ -588,5 +805,84 @@ mod tests {
         let centered = center_to_max(area, 140);
         assert_eq!(centered.width, 100);
         assert_eq!(centered.x, 0);
+    }
+
+    #[test]
+    fn toggle_word_mode_flips_flag_and_resets_scroll() {
+        let mut d = mk_data();
+        d.scroll_offset = 7;
+        assert!(!d.word_mode);
+        d.toggle_word_mode();
+        assert!(d.word_mode);
+        assert_eq!(d.scroll_offset, 0);
+        d.toggle_word_mode();
+        assert!(!d.word_mode);
+    }
+
+    #[test]
+    fn word_diff_counts_pure_insert() {
+        let (ins, del) = word_diff_counts("hello world", "hello brave new world");
+        assert_eq!(del, 0);
+        assert_eq!(ins, 2);
+    }
+
+    #[test]
+    fn word_diff_counts_pure_delete() {
+        let (ins, del) = word_diff_counts("one two three four", "one four");
+        assert_eq!(ins, 0);
+        assert_eq!(del, 2);
+    }
+
+    #[test]
+    fn word_diff_counts_mixed_insert_and_delete() {
+        let (ins, del) = word_diff_counts("the cat sat on the mat", "the dog sat under the mat");
+        assert_eq!(ins, 2);
+        assert_eq!(del, 2);
+    }
+
+    #[test]
+    fn word_diff_counts_identical_strings_yield_zeros() {
+        let (ins, del) = word_diff_counts(
+            "the auth middleware is storing tokens",
+            "the auth middleware is storing tokens",
+        );
+        assert_eq!(ins, 0);
+        assert_eq!(del, 0);
+    }
+
+    #[test]
+    fn word_diff_counts_empty_strings() {
+        let (ins, del) = word_diff_counts("", "");
+        assert_eq!((ins, del), (0, 0));
+    }
+
+    #[test]
+    fn word_diff_counts_single_word_swap() {
+        let (ins, del) = word_diff_counts("fix bug", "fix crash");
+        assert_eq!(ins, 1);
+        assert_eq!(del, 1);
+    }
+
+    #[test]
+    fn word_diff_counts_handles_long_bodies() {
+        // Perf sanity check — a 1000-word body should diff quickly and
+        // return exact counts (each 10th word changes).
+        let a: String = (0..1000)
+            .map(|i| format!("word{i}"))
+            .collect::<Vec<_>>()
+            .join(" ");
+        let b: String = (0..1000)
+            .map(|i| {
+                if i % 10 == 0 {
+                    format!("changed{i}")
+                } else {
+                    format!("word{i}")
+                }
+            })
+            .collect::<Vec<_>>()
+            .join(" ");
+        let (ins, del) = word_diff_counts(&a, &b);
+        assert_eq!(ins, 100);
+        assert_eq!(del, 100);
     }
 }

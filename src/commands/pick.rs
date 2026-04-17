@@ -26,6 +26,17 @@ pub fn run() -> anyhow::Result<Option<(String, PathBuf)>> {
 /// Same as [`run`] but with an explicit theme. Called from `main` after it
 /// has resolved the CLI / env / persisted precedence chain.
 pub fn run_with_theme(theme_name: ThemeName) -> anyhow::Result<Option<(String, PathBuf)>> {
+    run_with_theme_and_preview(theme_name, None)
+}
+
+/// Like [`run_with_theme`] but with an optional `--preview-cmd` override.
+/// When `preview_cmd` is `Some`, the picker uses a shell-snippet preview
+/// instead of the built-in renderer; see [`crate::ui::preview`] for how the
+/// command's output is cached and displayed.
+pub fn run_with_theme_and_preview(
+    theme_name: ThemeName,
+    preview_cmd: Option<String>,
+) -> anyhow::Result<Option<(String, PathBuf)>> {
     let projects = project::discover_projects()?;
     let bookmarks = BookmarkStore::load().unwrap_or_else(|_| {
         BookmarkStore::load_from(PathBuf::from("/tmp/.claude-picker-bookmarks.json"))
@@ -49,7 +60,7 @@ pub fn run_with_theme(theme_name: ThemeName) -> anyhow::Result<Option<(String, P
         None => (Mode::ProjectList, vec![], None),
     };
 
-    let app = App::new_with_theme(
+    let mut app = App::new_with_theme(
         projects,
         sessions,
         bookmarks,
@@ -57,6 +68,7 @@ pub fn run_with_theme(theme_name: ThemeName) -> anyhow::Result<Option<(String, P
         selected_project,
         theme_name,
     );
+    app.preview_cmd = preview_cmd;
     let selection = app::run(app)?;
 
     if let Some((id, _cwd)) = &selection {

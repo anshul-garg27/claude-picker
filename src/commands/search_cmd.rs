@@ -25,8 +25,10 @@ use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32String};
 
 use crate::app::{restore_terminal, setup_terminal};
+use crate::data::bookmarks::BookmarkStore;
 use crate::data::project::discover_projects;
-use crate::data::session::{load_session_from_jsonl, noise_prefixes};
+use crate::data::search_filters::{self, Filters};
+use crate::data::session::{load_session_from_jsonl, noise_prefixes, PermissionMode};
 use crate::data::{clipboard, editor, Session};
 use crate::events::{self, Event};
 use crate::theme::Theme;
@@ -55,6 +57,17 @@ struct Indexed {
     /// Cached Utf32String for the nucleo matcher. Same allocation gets reused
     /// across keystrokes.
     haystack: Utf32String,
+    // ── Filter-attribute fields — populated from the loaded Session so
+    //    the pre-nucleo filter pass can decide without re-reading JSONLs.
+    //    history-only rows default these to "no, no, no" since we don't
+    //    have the per-session metadata there.
+    is_bookmarked: bool,
+    has_custom_name: bool,
+    model_summary: String,
+    permission_mode: Option<PermissionMode>,
+    total_cost_usd: f64,
+    total_tokens: u64,
+    message_count: u32,
 }
 
 /// Cap on scored results we carry around. With ~1000 sessions and a loose
@@ -455,7 +468,20 @@ fn is_query_char(c: char) -> bool {
     c.is_alphanumeric()
         || matches!(
             c,
-            ' ' | '-' | '_' | '.' | '/' | '@' | '\'' | '"' | '!' | '^' | '$'
+            ' ' | '-'
+                | '_'
+                | '.'
+                | '/'
+                | '@'
+                | '\''
+                | '"'
+                | '!'
+                | '^'
+                | '$'
+                | '#'
+                | '>'
+                | '<'
+                | '='
         )
 }
 
@@ -483,14 +509,30 @@ fn recompute_matches(
     if index.is_empty() {
         state.all_matches.clear();
         state.cursor = 0;
+        state.active_filters = Vec::new();
         return;
     }
 
-    if state.query.is_empty() {
-        // Empty query: just mirror the index in recency order. No snippet.
-        state.all_matches = index
+    // Parse the query into (filters, fuzzy_text). Filters apply *before*
+    // nucleo so we only fuzzy-score rows that passed the hard filter —
+    // cheaper and the ranking stays honest.
+    let (filters, fuzzy_text) = search_filters::parse(&state.query);
+    state.active_filters = filters.chip_labels();
+
+    // Pre-filter the corpus. Collect (row_idx, &Indexed) so we can still
+    // retrieve the original for snippet extraction after fuzzy scoring.
+    let now = chrono::Utc::now();
+    let prefiltered: Vec<(usize, &Indexed)> = index
+        .iter()
+        .enumerate()
+        .filter(|(_, ix)| session_matches_filters(ix, &filters, now))
+        .collect();
+
+    if fuzzy_text.trim().is_empty() {
+        // No fuzzy text — surviving rows in recency order.
+        state.all_matches = prefiltered
             .iter()
-            .map(|ix| SearchMatch {
+            .map(|(_, ix)| SearchMatch {
                 session_id: ix.session_id.clone(),
                 project_name: ix.project_name.clone(),
                 project_cwd: ix.project_cwd.clone(),
@@ -499,22 +541,27 @@ fn recompute_matches(
                 score: 0,
             })
             .collect();
-        // Default to showing nothing in the list when the query is empty —
-        // the "type to search" empty state reads cleaner than a ranked list
-        // of every session.
         *pattern_slot = None;
+        // A query that's pure filters (`!bookmarked`) shows its matches
+        // immediately. A truly-empty query still shows the "type to
+        // search" empty state — consistent with the pre-filters UI.
+        if filters.is_empty() {
+            state.filtered_indices.clear();
+        } else {
+            state.filtered_indices = (0..state.all_matches.len()).collect();
+        }
         state.cursor = 0;
         return;
     }
 
     // Build a Pattern per keystroke — `Pattern::parse` handles multi-word
     // queries, smart case, and normalization (the brief's preferred API).
-    let pattern = Pattern::parse(&state.query, CaseMatching::Smart, Normalization::Smart);
+    let pattern = Pattern::parse(&fuzzy_text, CaseMatching::Smart, Normalization::Smart);
 
     let mut scored: Vec<(u32, usize)> = Vec::new();
-    for (i, ix) in index.iter().enumerate() {
+    for (i, ix) in prefiltered.iter() {
         if let Some(score) = pattern.score(ix.haystack.slice(..), matcher) {
-            scored.push((score, i));
+            scored.push((score, *i));
         }
     }
     // Higher score first; tiebreak on recency (newer wins).
@@ -528,7 +575,7 @@ fn recompute_matches(
     scored.truncate(MAX_MATCHES);
     *pattern_slot = Some(pattern);
 
-    let needle = search_ui::dominant_word(&state.query);
+    let needle = search_ui::dominant_word(&fuzzy_text);
     state.all_matches = scored
         .iter()
         .map(|(score, i)| {
@@ -547,12 +594,106 @@ fn recompute_matches(
     state.cursor = 0;
 }
 
+/// Evaluate a session's metadata against a parsed [`Filters`] set.
+///
+/// Each dimension is ANDed: a row must pass every active filter to survive.
+/// `None` fields on the filter mean "no restriction" — they always pass.
+fn session_matches_filters(ix: &Indexed, f: &Filters, now: chrono::DateTime<chrono::Utc>) -> bool {
+    if let Some(want) = f.bookmarked {
+        if ix.is_bookmarked != want {
+            return false;
+        }
+    }
+    if let Some(want) = f.named {
+        if ix.has_custom_name != want {
+            return false;
+        }
+    }
+    if !f.models.is_empty() {
+        let lower = ix.model_summary.to_lowercase();
+        if !f.models.iter().any(|m| lower.contains(m)) {
+            return false;
+        }
+    }
+    if !f.permission_modes.is_empty() {
+        let Some(actual) = ix.permission_mode else {
+            return false;
+        };
+        if !f.permission_modes.contains(&actual) {
+            return false;
+        }
+    }
+
+    // Age / date filters — skipped when the session has no timestamp.
+    if f.min_age.is_some() || f.max_age.is_some() || f.specific_date.is_some() {
+        let Some(ts) = ix.last_ts else {
+            return false;
+        };
+        if let Some(date) = f.specific_date {
+            if search_filters::timestamp_to_local_date(ts) != date {
+                return false;
+            }
+        } else {
+            let age = now.signed_duration_since(ts);
+            let age = age.to_std().unwrap_or_default();
+            if let Some(min) = f.min_age {
+                if age < min {
+                    return false;
+                }
+            }
+            if let Some(max) = f.max_age {
+                if age > max {
+                    return false;
+                }
+            }
+        }
+    }
+
+    if let Some(min) = f.min_cost {
+        if ix.total_cost_usd < min {
+            return false;
+        }
+    }
+    if let Some(max) = f.max_cost {
+        if ix.total_cost_usd > max {
+            return false;
+        }
+    }
+    if let Some(min) = f.min_tokens {
+        if ix.total_tokens < min {
+            return false;
+        }
+    }
+    if let Some(max) = f.max_tokens {
+        if ix.total_tokens > max {
+            return false;
+        }
+    }
+    if let Some(min) = f.min_msgs {
+        if ix.message_count < min {
+            return false;
+        }
+    }
+    if let Some(max) = f.max_msgs {
+        if ix.message_count > max {
+            return false;
+        }
+    }
+
+    true
+}
+
 /// Scan every project + JSONL under `~/.claude/projects/`, build a searchable
 /// body for each, and return the indexed set.
 fn build_corpus() -> anyhow::Result<Vec<Indexed>> {
     let projects = discover_projects()?;
     let home = dirs::home_dir().ok_or_else(|| anyhow::anyhow!("no home directory"))?;
     let projects_root = home.join(".claude").join("projects");
+
+    // Bookmarks drive the `!bookmarked` filter. Failure (missing home dir,
+    // unreadable file) is non-fatal — we just fall back to "no sessions
+    // are bookmarked" so the filter still behaves in a consistent way.
+    let bookmarks = BookmarkStore::load().ok();
 
     let mut out: Vec<Indexed> = Vec::new();
     // Keep project cwd → (project_name, project_cwd) so we can attribute
@@ -591,6 +732,14 @@ fn build_corpus() -> anyhow::Result<Vec<Indexed>> {
             let composite = format!("{} {} {}", project.name, display_name(&session), body);
             let haystack = Utf32String::from(composite);
 
+            let is_bookmarked = bookmarks.as_ref().is_some_and(|b| b.contains(&session.id));
+            let has_custom_name = session.name.is_some();
+            let model_summary = session.model_summary.clone();
+            let permission_mode = session.permission_mode;
+            let total_cost_usd = session.total_cost_usd;
+            let total_tokens = session.tokens.total();
+            let message_count = session.message_count;
+
             out.push(Indexed {
                 session_id: session.id.clone(),
                 project_name: project.name.clone(),
@@ -599,6 +748,13 @@ fn build_corpus() -> anyhow::Result<Vec<Indexed>> {
                 body,
                 last_ts: session.last_timestamp,
                 haystack,
+                is_bookmarked,
+                has_custom_name,
+                model_summary,
+                permission_mode,
+                total_cost_usd,
+                total_tokens,
+                message_count,
             });
         }
     }
@@ -718,6 +874,18 @@ fn merge_history_into_corpus(
             body: text.to_string(),
             last_ts,
             haystack: Utf32String::from(composite),
+            // History-only rows lack the per-session metadata, so they're
+            // treated as "not-bookmarked, no custom name, no model, no
+            // cost". Filters that check those dimensions will exclude
+            // them — which is the honest answer because the session's
+            // per-project file is the source of truth for cost/tokens.
+            is_bookmarked: false,
+            has_custom_name: false,
+            model_summary: String::new(),
+            permission_mode: None,
+            total_cost_usd: 0.0,
+            total_tokens: 0,
+            message_count: 0,
         };
         id_to_idx.insert(sid.to_string(), corpus.len());
         corpus.push(ix);
@@ -863,6 +1031,13 @@ mod tests {
             body: "one line of body".into(),
             last_ts: None,
             haystack: Utf32String::from("alpha alpha session one line of body"),
+            is_bookmarked: false,
+            has_custom_name: false,
+            model_summary: String::new(),
+            permission_mode: None,
+            total_cost_usd: 0.0,
+            total_tokens: 0,
+            message_count: 0,
         }];
         let mut project_by_cwd: std::collections::HashMap<PathBuf, String> =
             std::collections::HashMap::new();

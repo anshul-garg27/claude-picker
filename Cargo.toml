@@ -2,7 +2,7 @@
 name = "claude-picker"
 version = "0.2.0"
 edition = "2021"
-rust-version = "1.75"
+rust-version = "1.86"
 authors = ["Anshul Garg"]
 description = "Terminal session manager for Claude Code — browse, preview, and resume sessions with per-model cost tracking."
 license = "MIT"
@@ -49,6 +49,9 @@ unicode-width = "0.2"
 # Grapheme-boundary-safe iteration for truncation. Also a transitive dep
 # through ratatui; pinned here so the call sites can `use` it directly.
 unicode-segmentation = "1.12"
+# LCS / Myers-style diff for word-level inline diffs. Pure Rust so it works
+# everywhere ratatui does; used by `ui::diff`'s word-mode rendering.
+similar = "2.6"
 
 [dev-dependencies]
 insta = "1.39"

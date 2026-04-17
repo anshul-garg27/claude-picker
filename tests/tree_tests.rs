@@ -36,6 +36,7 @@ fn mk_session(
         entrypoint: SessionKind::Cli,
         permission_mode: None,
         subagent_count: 0,
+        turn_durations: Vec::new(),
     }
 }
 

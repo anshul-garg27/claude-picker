@@ -72,6 +72,10 @@ pub struct SearchState {
     pub palette: Option<crate::ui::command_palette::CommandPalette>,
     /// Full-screen conversation viewer — `Some` while reading a transcript.
     pub viewer: Option<crate::ui::conversation_viewer::ViewerState>,
+    /// Chip labels for filters parsed from the current query. Empty when
+    /// the query has no filter operators. Rendered as pill-like chips on
+    /// the `active:` row above the match list.
+    pub active_filters: Vec<String>,
 }
 
 /// Local toast kind — kept lightweight so the UI module stays self-contained.
@@ -95,6 +99,7 @@ impl SearchState {
             toast: None,
             palette: None,
             viewer: None,
+            active_filters: Vec::new(),
         }
     }
 
@@ -287,8 +292,47 @@ fn render_list_column(frame: &mut Frame<'_>, area: Rect, state: &SearchState, th
         .split(inner);
 
     render_query_input(frame, rows[1], state, theme);
+    // The "breathing room" line (rows[2]) doubles as the active-filter
+    // chip bar when any filters are parsed out of the current query.
+    if !state.active_filters.is_empty() {
+        render_filter_chips(frame, rows[2], &state.active_filters, theme);
+    }
     render_body(frame, rows[3], state, theme);
     render_footer(frame, rows[4], theme);
+}
+
+/// Render the chip-bar underneath the query input:
+///
+///   `  active: [bookmarked] [@opus] [#week] [$>1]`
+///
+/// Chips get a type-colored accent so the filter kind reads at a glance.
+fn render_filter_chips(frame: &mut Frame<'_>, area: Rect, chips: &[String], theme: &Theme) {
+    let mut spans: Vec<Span<'_>> = Vec::with_capacity(chips.len() * 3 + 2);
+    spans.push(Span::raw("  "));
+    spans.push(Span::styled("active:", theme.muted()));
+    for chip in chips {
+        spans.push(Span::raw(" "));
+        // Accent colour by chip prefix — `@`=blue (model/mode),
+        // `#`=green (time), `$`/quantities=yellow, bang=mauve.
+        let accent = if chip.starts_with('@') {
+            theme.blue
+        } else if chip.starts_with('#') {
+            theme.green
+        } else if chip.starts_with('$')
+            || chip.starts_with("tokens")
+            || chip.starts_with("msgs")
+            || chip.starts_with('<')
+        {
+            theme.yellow
+        } else {
+            theme.mauve
+        };
+        spans.push(Span::styled(
+            format!("[{chip}]"),
+            Style::default().fg(accent).add_modifier(Modifier::BOLD),
+        ));
+    }
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_query_input(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Theme) {

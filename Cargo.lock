@@ -256,6 +256,7 @@ dependencies = [
  "regex",
  "serde",
  "serde_json",
+ "similar",
  "tempfile",
  "thiserror 1.0.69",
  "toml",

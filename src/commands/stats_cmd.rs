@@ -24,7 +24,7 @@ use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chrono::{NaiveDate, Utc};
+use chrono::{Datelike, NaiveDate, Timelike, Utc};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -33,6 +33,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::data::budget::Budget;
 use crate::data::claude_json_cache::ClaudeJsonCache;
 use crate::data::pricing::{family, Family, TokenCounts};
 use crate::data::session::{load_session_from_jsonl, Session};
@@ -40,10 +41,11 @@ use crate::data::{project, Project};
 use crate::events::{self, Event};
 use crate::theme::Theme;
 
+use crate::ui::heatmap::MonthlyActivity;
 use crate::ui::stats;
 use stats::{
     build_daily_window, build_weekly_window, DailyStats, ProjectStats, StatsData, StatsView,
-    TimelineMode, ToastKind, Totals,
+    TimelineMode, ToastKind, Totals, TurnDurationStats,
 };
 
 // ── Entry point ──────────────────────────────────────────────────────────
@@ -70,13 +72,15 @@ pub fn run() -> anyhow::Result<()> {
         let theme = Theme::mocha();
         let mut mode = TimelineMode::Days30;
         let mut raw_daily = take_raw_daily(&data);
-        // Replace `data.daily` with the 30-day window for first render.
-        data.daily = build_daily_window(today(), &raw_daily, mode.buckets());
+        data.daily = build_daily_window(today(), &raw_daily, 30);
 
         let mut toast: Option<(String, ToastKind, Instant)> = None;
         let mut should_quit = false;
-        // `?` help overlay toggle.
         let mut show_help = false;
+
+        // v3.0 budget state — persisted at ~/.config/claude-picker/budget.toml.
+        let mut budget = Budget::load();
+        let mut budget_input: Option<String> = None;
 
         // Driver loop. `events::next()` blocks up to 50 ms, so toasts get a
         // free redraw tick without us needing a separate timer.
@@ -101,6 +105,9 @@ pub fn run() -> anyhow::Result<()> {
                     mode,
                     toast: toast_msg.as_deref(),
                     toast_kind,
+                    show_forecast: budget.show_forecast,
+                    monthly_limit_usd: budget.monthly_limit_usd,
+                    budget_modal: budget_input.as_deref(),
                 };
                 stats::render(f, f.area(), &view, &theme);
                 if show_help {
@@ -121,6 +128,64 @@ pub fn run() -> anyhow::Result<()> {
                     Event::Escape => show_help = false,
                     Event::Key(c) if crate::ui::help_overlay::is_dismiss_key(c) => {
                         show_help = false;
+                    }
+                    _ => {}
+                }
+                continue;
+            }
+
+            // Budget modal swallows keys when open.
+            if let Some(buf) = budget_input.as_mut() {
+                match ev {
+                    Event::Escape => budget_input = None,
+                    Event::Enter => {
+                        let trimmed = buf.trim();
+                        let new_limit = if trimmed.is_empty() {
+                            0.0
+                        } else {
+                            match trimmed.parse::<f64>() {
+                                Ok(v) if v >= 0.0 => v,
+                                _ => {
+                                    toast = Some((
+                                        "invalid number".to_string(),
+                                        ToastKind::Error,
+                                        Instant::now() + Duration::from_millis(1500),
+                                    ));
+                                    continue;
+                                }
+                            }
+                        };
+                        budget.monthly_limit_usd = new_limit;
+                        match budget.save() {
+                            Ok(()) => {
+                                let msg = if new_limit > 0.0 {
+                                    format!("budget set to ${new_limit:.0}/mo")
+                                } else {
+                                    "budget cleared".to_string()
+                                };
+                                toast = Some((
+                                    msg,
+                                    ToastKind::Success,
+                                    Instant::now() + Duration::from_millis(1500),
+                                ));
+                            }
+                            Err(e) => {
+                                toast = Some((
+                                    format!("save failed: {e}"),
+                                    ToastKind::Error,
+                                    Instant::now() + Duration::from_millis(2500),
+                                ));
+                            }
+                        }
+                        budget_input = None;
+                    }
+                    Event::Backspace => {
+                        buf.pop();
+                    }
+                    Event::Key(c)
+                        if (c.is_ascii_digit() || c == '.') && buf.chars().count() < 12 =>
+                    {
+                        buf.push(c);
                     }
                     _ => {}
                 }
@@ -148,26 +213,43 @@ pub fn run() -> anyhow::Result<()> {
                     }
                 },
                 Event::Key('t') => {
-                    mode = match mode {
-                        TimelineMode::Days30 => TimelineMode::Weeks12,
-                        TimelineMode::Weeks12 => TimelineMode::Days30,
-                    };
+                    mode = mode.next();
                     data.daily = match mode {
-                        TimelineMode::Days30 => {
-                            build_daily_window(today(), &raw_daily, mode.buckets())
-                        }
+                        TimelineMode::Days30 => build_daily_window(today(), &raw_daily, 30),
                         TimelineMode::Weeks12 => build_weekly_window(today(), &raw_daily),
+                        TimelineMode::Hours24 | TimelineMode::Month => {
+                            build_daily_window(today(), &raw_daily, 30)
+                        }
                     };
+                }
+                Event::Key('b') => {
+                    let prefill = if budget.monthly_limit_usd > 0.0 {
+                        format!("{:.0}", budget.monthly_limit_usd)
+                    } else {
+                        String::new()
+                    };
+                    budget_input = Some(prefill);
+                }
+                Event::Key('f') => {
+                    budget.show_forecast = !budget.show_forecast;
+                    if let Err(e) = budget.save() {
+                        toast = Some((
+                            format!("save failed: {e}"),
+                            ToastKind::Error,
+                            Instant::now() + Duration::from_millis(2000),
+                        ));
+                    }
                 }
                 Event::Key('r') => match aggregate() {
                     Ok(fresh) => {
                         data = fresh;
                         raw_daily = take_raw_daily(&data);
                         data.daily = match mode {
-                            TimelineMode::Days30 => {
-                                build_daily_window(today(), &raw_daily, mode.buckets())
-                            }
+                            TimelineMode::Days30 => build_daily_window(today(), &raw_daily, 30),
                             TimelineMode::Weeks12 => build_weekly_window(today(), &raw_daily),
+                            TimelineMode::Hours24 | TimelineMode::Month => {
+                                build_daily_window(today(), &raw_daily, 30)
+                            }
                         };
                         toast = Some((
                             "refreshed".to_string(),
@@ -305,6 +387,10 @@ fn build_stats_data_from_cache(
     let mut by_model_vec: Vec<(String, f64)> = by_model.into_iter().collect();
     by_model_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
+    // v3.0 fields — the cache fast-path has no per-day fidelity, so we
+    // populate empties. Users see real values after pressing `r`.
+    let today = today();
+    let days_in_month = MonthlyActivity::days_in_month(today.year(), today.month()) as usize;
     Some(StatsData {
         totals,
         by_project,
@@ -312,6 +398,17 @@ fn build_stats_data_from_cache(
         by_model: by_model_vec,
         named_count: 0,
         unnamed_count: 0,
+        month_to_date_cost: 0.0,
+        today,
+        hourly_buckets: [0u32; 24],
+        monthly: MonthlyActivity {
+            year: today.year(),
+            month: today.month(),
+            today,
+            day_counts: vec![0u32; days_in_month],
+        },
+        monthly_tokens: vec![0u64; days_in_month],
+        turn_durations: TurnDurationStats::default(),
     })
 }
 
@@ -380,17 +477,22 @@ pub fn aggregate_from_dirs(
 /// Pure aggregation function — separate from `aggregate` so tests can hand
 /// it a synthetic set of sessions.
 pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveDate) -> StatsData {
-    // ── Lifetime totals ──────────────────────────────────────────────────
     let mut totals = Totals::default();
     let mut named_count = 0u32;
     let mut unnamed_count = 0u32;
     let mut by_model: HashMap<String, f64> = HashMap::new();
-
-    // Per-project accumulators keyed by project name.
     let mut by_project: HashMap<String, ProjectStats> = HashMap::new();
-
-    // Per-day accumulators keyed by the session's last-timestamp date.
     let mut daily: HashMap<NaiveDate, DailyStats> = HashMap::new();
+
+    // v3.0 aggregates.
+    let mut hourly_buckets = [0u32; 24];
+    let mut month_by_day: HashMap<u32, (u32, u64)> = HashMap::new();
+    let mut month_to_date_cost: f64 = 0.0;
+    let mut turn_durations = TurnDurationStats::default();
+
+    let current_year = today_date.year();
+    let current_month = today_date.month();
+    let seven_days_ago = today_date - chrono::Duration::days(6);
 
     for (project, sessions) in projects {
         for s in sessions {
@@ -419,16 +521,15 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
             entry.cost_usd += s.total_cost_usd;
             entry.total_tokens = entry.total_tokens.saturating_add(s.tokens.total());
             entry.session_count = entry.session_count.saturating_add(1);
-            // Prefer a non-Unknown family if we saw one.
             if entry.color_family == Family::Unknown {
                 entry.color_family = family(&s.model_summary);
             }
 
-            // Daily bucket — only sessions in the last 30 days contribute.
             if let Some(ts) = s.last_timestamp {
                 let d = ts.date_naive();
                 let age = today_date.signed_duration_since(d).num_days();
-                if (0..=29).contains(&age) {
+                let in_30d = (0..=29).contains(&age);
+                if in_30d {
                     let bucket = daily.entry(d).or_insert(DailyStats {
                         date: d,
                         sessions: 0,
@@ -438,16 +539,34 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
                     bucket.sessions = bucket.sessions.saturating_add(1);
                     bucket.tokens = bucket.tokens.saturating_add(s.tokens.total());
                     bucket.cost_usd += s.total_cost_usd;
+
+                    for &td in &s.turn_durations {
+                        turn_durations.push(td);
+                    }
+                }
+
+                // Month-to-date for the budget band.
+                if d.year() == current_year && d.month() == current_month {
+                    month_to_date_cost += s.total_cost_usd;
+                    let entry = month_by_day.entry(d.day()).or_insert((0, 0));
+                    entry.0 = entry.0.saturating_add(1);
+                    entry.1 = entry.1.saturating_add(s.tokens.total());
+                }
+
+                // Hourly bucket (local time).
+                if d >= seven_days_ago && d <= today_date {
+                    let local_hour = ts.with_timezone(&chrono::Local).hour() as usize;
+                    if local_hour < 24 {
+                        hourly_buckets[local_hour] = hourly_buckets[local_hour].saturating_add(1);
+                    }
                 }
             }
         }
     }
 
-    // Mean cost over the last 30 days (for the KPI subtitle).
     let last_30_cost: f64 = daily.values().map(|d| d.cost_usd).sum();
     totals.avg_cost_per_day = last_30_cost / 30.0;
 
-    // Flatten + sort the per-project block by cost descending, cap at 8.
     let mut by_project_vec: Vec<ProjectStats> = by_project.into_values().collect();
     by_project_vec.sort_by(|a, b| {
         b.cost_usd
@@ -455,12 +574,27 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
-    // Flatten per-model, sort by cost descending.
     let mut by_model_vec: Vec<(String, f64)> = by_model.into_iter().collect();
     by_model_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
-    // Flatten daily — unsorted, the caller will window/reorder it.
     let daily_vec: Vec<DailyStats> = daily.into_values().collect();
+
+    // Monthly activity materialisation.
+    let days_in_month = MonthlyActivity::days_in_month(current_year, current_month) as usize;
+    let mut day_counts = vec![0u32; days_in_month];
+    let mut monthly_tokens = vec![0u64; days_in_month];
+    for (day, (sessions, tokens)) in month_by_day {
+        if (day as usize) <= days_in_month {
+            day_counts[(day - 1) as usize] = sessions;
+            monthly_tokens[(day - 1) as usize] = tokens;
+        }
+    }
+    let monthly = MonthlyActivity {
+        year: current_year,
+        month: current_month,
+        today: today_date,
+        day_counts,
+    };
 
     StatsData {
         totals,
@@ -469,6 +603,12 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
         by_model: by_model_vec,
         named_count,
         unnamed_count,
+        month_to_date_cost,
+        today: today_date,
+        hourly_buckets,
+        monthly,
+        monthly_tokens,
+        turn_durations,
     }
 }
 
@@ -619,7 +759,64 @@ mod tests {
             entrypoint: SessionKind::Cli,
             permission_mode: None,
             subagent_count: 0,
+            turn_durations: Vec::new(),
         }
+    }
+
+    #[test]
+    fn build_stats_data_populates_mtd_and_monthly_and_histogram() {
+        use std::time::Duration as StdDuration;
+        let today = NaiveDate::from_ymd_opt(2026, 4, 16).unwrap();
+        let project = mk_project("mtd");
+        let tokens = TokenCounts {
+            input: 100,
+            output: 100,
+            ..Default::default()
+        };
+        let mut s1 = mk_session(
+            "s1",
+            &project.path,
+            12.50,
+            tokens,
+            today,
+            "claude-opus-4-7",
+            true,
+        );
+        s1.turn_durations = vec![StdDuration::from_secs(20), StdDuration::from_secs(500)];
+        let mut s2 = mk_session(
+            "s2",
+            &project.path,
+            7.25,
+            tokens,
+            today - chrono::Duration::days(5),
+            "claude-opus-4-7",
+            true,
+        );
+        s2.turn_durations = vec![StdDuration::from_secs(5)];
+        let s3 = mk_session(
+            "s3",
+            &project.path,
+            100.00,
+            tokens,
+            NaiveDate::from_ymd_opt(2026, 3, 20).unwrap(),
+            "claude-opus-4-7",
+            true,
+        );
+        let data = build_stats_data(&[(project, vec![s1, s2, s3])], today);
+        let expected_mtd = 12.50 + 7.25;
+        assert!(
+            (data.month_to_date_cost - expected_mtd).abs() < 1e-6,
+            "mtd mismatch: {}",
+            data.month_to_date_cost
+        );
+        assert_eq!(data.monthly.day_counts.len(), 30);
+        assert_eq!(data.monthly.day_counts[15], 1);
+        assert_eq!(data.monthly.day_counts[10], 1);
+        assert_eq!(data.monthly.day_counts[0], 0);
+        assert_eq!(data.turn_durations.total_turns, 3);
+        assert_eq!(data.turn_durations.counts[0], 1);
+        assert_eq!(data.turn_durations.counts[1], 1);
+        assert_eq!(data.turn_durations.counts[4], 1);
     }
 
     #[test]

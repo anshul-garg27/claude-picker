@@ -35,6 +35,7 @@ use crate::ui::command_palette::{self, CommandPalette};
 use crate::ui::conversation_viewer::{ToastKind as ViewerToastKind, ViewerAction, ViewerState};
 use crate::ui::help_overlay::{self, Screen as HelpScreen};
 use crate::ui::rename_modal::{self, RenameState};
+use crate::ui::replay::{ReplayAction, ReplayState, ToastKind as ReplayToastKind};
 
 /// Which screen is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -189,6 +190,9 @@ pub struct App {
     /// Full-screen conversation viewer — `Some` while the user is reading
     /// a session's transcript.
     pub viewer: Option<ViewerState>,
+    /// Full-screen time-travel replay — `Some` while the user is watching
+    /// a session play back message-by-message.
+    pub replay: Option<ReplayState>,
     /// Session ids the user has multi-selected via Tab.
     pub multi_selected: HashSet<String>,
     /// True when multi-select mode is engaged. Distinct from
@@ -204,6 +208,14 @@ pub struct App {
     matcher: Matcher,
     /// Precomputed haystacks for the current mode.
     haystacks: Vec<Utf32String>,
+
+    /// Shell-snippet override for the preview pane (CLI `--preview-cmd`).
+    /// When `Some`, [`crate::ui::preview::render`] spawns this command
+    /// instead of its built-in renderer and renders the stdout.
+    pub preview_cmd: Option<String>,
+    /// Cache of previous `preview_cmd` runs keyed by session id. Avoids
+    /// re-spawning the shell on every frame while the user navigates.
+    pub preview_cache: crate::ui::preview::PreviewCache,
 }
 
 /// Window in which two `g` presses collapse into a jump-to-top. Matches the
@@ -272,11 +284,14 @@ impl App {
             rename: None,
             palette: None,
             viewer: None,
+            replay: None,
             multi_selected: HashSet::new(),
             multi_mode: false,
             pending_g: None,
             matcher,
             haystacks: Vec::new(),
+            preview_cmd: None,
+            preview_cache: crate::ui::preview::PreviewCache::new(),
         };
         s.rebuild_haystacks();
         s.apply_filter();
@@ -409,6 +424,9 @@ impl App {
     /// Dispatch a single [`Event`] against the state.
     pub fn handle_event(&mut self, ev: Event) -> anyhow::Result<()> {
         // Modal inputs take precedence, in reverse visual-stack order.
+        if self.replay.is_some() {
+            return self.handle_replay(ev);
+        }
         if self.viewer.is_some() {
             return self.handle_viewer(ev);
         }
@@ -435,6 +453,7 @@ impl App {
 
         match ev {
             Event::Quit | Event::Ctrl('c') => self.should_quit = true,
+            Event::Ctrl('a') => self.summarize_session_ai(),
             Event::Ctrl('d') => self.request_delete(),
             Event::Ctrl('b') => self.toggle_bookmark(),
             Event::Ctrl('e') => self.export_session(),
@@ -486,6 +505,11 @@ impl App {
             Event::Key('Y') if self.filter.is_empty() => self.copy_project_path(),
             // `r` opens the rename modal for the selected session.
             Event::Key('r') if self.filter.is_empty() => self.request_rename(),
+            // `R` (uppercase) opens the time-travel replay. Only on the
+            // session list — project list has no session to replay.
+            Event::Key('R') if self.filter.is_empty() && self.mode == Mode::SessionList => {
+                self.open_replay();
+            }
             // `o` launches `$EDITOR <project_path>` detached.
             Event::Key('o') if self.filter.is_empty() => self.open_editor_for_selection(),
             Event::Key(c) if c == 'q' && self.filter.is_empty() => self.should_quit = true,
@@ -547,6 +571,37 @@ impl App {
             return;
         };
         self.viewer = Some(ViewerState::open(&session));
+    }
+
+    /// Open the time-travel replay for the session under the cursor.
+    /// Quietly no-ops if nothing's selected.
+    pub fn open_replay(&mut self) {
+        let Some(session) = self.selected_session_ref().cloned() else {
+            return;
+        };
+        self.replay = Some(ReplayState::open(&session));
+    }
+
+    /// Forward an event to the open replay and act on the reply.
+    fn handle_replay(&mut self, ev: Event) -> anyhow::Result<()> {
+        let Some(replay) = self.replay.as_mut() else {
+            return Ok(());
+        };
+        match replay.handle_event(ev) {
+            ReplayAction::None => {}
+            ReplayAction::Close => {
+                self.replay = None;
+            }
+            ReplayAction::Toast(message, kind) => {
+                let app_kind = match kind {
+                    ReplayToastKind::Info => ToastKind::Info,
+                    ReplayToastKind::Success => ToastKind::Success,
+                    ReplayToastKind::Error => ToastKind::Error,
+                };
+                self.toast = Some(Toast::new(message, app_kind));
+            }
+        }
+        Ok(())
     }
 
     /// Toggle multi-select on the row under the cursor. First Tab press
@@ -1064,6 +1119,58 @@ impl App {
         }
     }
 
+    /// `Ctrl+A` — summarise the selected session with a Haiku-backed call to
+    /// the `claude` CLI and surface the one-line result as a quote-style
+    /// toast. Cached summaries return instantly. Keeps the user on the
+    /// picker — this is an informational overlay, not a navigation verb.
+    ///
+    /// Deliberately blocks the main loop (multi-second model call) rather
+    /// than spawning a thread + channel. The tradeoff: we don't spin up
+    /// async plumbing for one feature, and the user's next keystroke
+    /// happens after the summary lands — matching `Ctrl+E`'s existing
+    /// shell-out model.
+    fn summarize_session_ai(&mut self) {
+        if self.mode != Mode::SessionList {
+            return;
+        }
+        let Some(s) = self.selected_session_ref().cloned() else {
+            return;
+        };
+        if let Some(cached) = crate::data::ai_summarize::load_cached_summary(&s.id) {
+            self.toast = Some(Toast::new_with_visible(
+                format!("\u{226B} \"{cached}\""),
+                ToastKind::Info,
+                Duration::from_millis(3_500),
+            ));
+            return;
+        }
+        self.toast = Some(Toast::new(
+            format!(
+                "summarizing session… (~${:.3})",
+                crate::data::ai_summarize::ESTIMATED_COST_USD
+            ),
+            ToastKind::Info,
+        ));
+        match crate::data::ai_summarize::summarize_session(&s.id) {
+            Ok(summary) => {
+                self.toast = Some(Toast::new_with_visible(
+                    format!(
+                        "\u{226B} \"{summary}\" \u{00B7} ~${:.3}",
+                        crate::data::ai_summarize::ESTIMATED_COST_USD
+                    ),
+                    ToastKind::Success,
+                    Duration::from_millis(3_500),
+                ));
+            }
+            Err(e) => {
+                self.toast = Some(Toast::new(
+                    format!("summarize failed: {e}"),
+                    ToastKind::Error,
+                ));
+            }
+        }
+    }
+
     fn export_session(&mut self) {
         // Multi-select: export every selected session in sequence.
         if self.multi_mode && !self.multi_selected.is_empty() {
@@ -1144,6 +1251,10 @@ impl App {
     }
 
     /// Called once per frame to retire expired toasts + cursor-glide trails.
+    ///
+    /// Also advances the replay's virtual clock when a replay is open — the
+    /// 50ms event poll in [`events::next`] acts as our tick timer, so the
+    /// replay progresses even when no keys are pressed.
     pub fn tick(&mut self) {
         if let Some(t) = &self.toast {
             if t.is_expired() {
@@ -1158,6 +1269,10 @@ impl App {
                 self.previous_cursor = None;
                 self.cursor_changed_at = None;
             }
+        }
+        // Advance replay virtual clock if a replay is open.
+        if let Some(replay) = self.replay.as_mut() {
+            replay.advance(Instant::now());
         }
     }
 }
@@ -1288,6 +1403,7 @@ mod tests {
             entrypoint: SessionKind::Cli,
             permission_mode: None,
             subagent_count: 0,
+            turn_durations: Vec::new(),
         }
     }
 
