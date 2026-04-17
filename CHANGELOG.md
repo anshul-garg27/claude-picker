@@ -5,6 +5,56 @@ All notable changes to `claude-picker` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-04-18
+
+The "UI ultra-mode" release. 19+ UI features from the v4.0 research — keyboard discoverability, project pinning, filter ribbon, task drawer, fork summaries, heatmap gutter, chunk jump, scrollback-to-editor, plus 4 new themes.
+
+### Added
+
+#### Keyboard discoverability (helix + lazygit patterns)
+- **Which-key popup** — press a leader key (`Space`, `g`) and wait 250ms for a grid overlay listing every follow-up with descriptions. No cheat sheet needed.
+- **Undo / redo** — `z` / `Z` for destructive actions (currently: rename). 50-entry capped stack.
+- **Repeat-count prefix** — vim-style `3j`, `12G`, `5dd` work in every list; `Esc` clears.
+- **Jump ring** — `Ctrl-o` / `Ctrl-i` history across views (32-slot); footer shows position.
+
+#### Project navigation (k9s favorites + atuin auto-activate)
+- **Pinned project slots** — `u` toggles, `1-9` jumps, `0` = all. Persisted at `~/.config/claude-picker/pinned.toml`. Strip rendered atop the project list.
+- **Filter ribbon** `[ALL] [REPO*] [7D] [RUNNING] [FORKED]` — `Ctrl-r` cycles. Auto-activates `REPO` when launched inside a known project directory (atuin-workspace pattern).
+- **Contextual sticky header** — breadcrumb changes per screen; truncation-safe with unicode-width.
+
+#### Session-list visual density (btop + Bloomberg patterns)
+- **Gradient context-usage gutter** — 1-cell right-edge tint (green/amber/rose) by 40%/80% token-window threshold.
+- **Cost-burn bar** — 1-cell heat chip before the $ column (4 thresholds).
+- Both degrade gracefully below 80/60 col widths.
+
+#### Fork tree (jless preview mode)
+- **Collapsed-node summaries** — `{N branches · N turns · $X.XX}` rolled up per subtree.
+- **`e` / `E`** — expand / collapse ALL descendants of selected node.
+
+#### Conversation viewer
+- **Heatmap gutter** — right-edge colored bar by cost / duration / tokens. `c` cycles dimension with 2s toast.
+- **`Ctrl-e`** — pipe current turn to `$EDITOR` as a temp markdown file.
+- **`n` / `N`** — jump to next / prev user-message boundary.
+
+#### Diff
+- **`n` / `N`** — stride-aware hunk jump (side-by-side vs word-diff mode).
+
+#### Background task drawer (yazi + superfile patterns)
+- **`w`** toggles a bottom drawer showing async tasks with progress bars.
+- `j` / `k` navigate, `x` cancels focused task, `Esc` closes.
+- Completed / canceled rows auto-sweep after 10s.
+- Data layer at `src/data/task_queue.rs` (SharedTaskQueue with push/update/finish/cancel).
+
+#### Inline rename errors (Carbon pattern)
+- Rename modal now keeps itself open on validation failure, flips border red, shows error under the input. Typing clears.
+
+#### 4 new themes (now 10 total)
+- **nord-aurora** — cool polar-night + aurora accents.
+- **rose-pine-moon** — warm desaturated, WCAG-friendly.
+- **high-contrast** — AAA 7:1 ratios for a11y.
+- **colorblind-safe** — blue/orange diff pair (Tableau CB-safe).
+- All cyclable with `t`; `claude-picker --list-themes` lists all 10.
+
 ## [0.2.2] - 2026-04-17
 
 ### Fixed
