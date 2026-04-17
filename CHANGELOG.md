@@ -5,6 +5,12 @@ All notable changes to `claude-picker` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-04-17
+
+### Fixed
+
+- **Windows build** — `src/resume.rs` now cfg-gates `CommandExt::exec()` behind `#[cfg(unix)]` and falls back to spawn-and-wait on Windows. Fixes E0433/E0599 release build failures for `x86_64-pc-windows-msvc`.
+
 ## [0.2.0] - 2026-04-16
 
 The "v3.0 mega-sprint" release. claude-picker grew from a picker-plus-stats tool into a full 12-screen session manager, with three pivots no other Claude TUI offers: file-centric navigation, time-travel replay, and one-key AI summaries.
