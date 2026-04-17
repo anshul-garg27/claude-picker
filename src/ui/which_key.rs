@@ -224,7 +224,7 @@ mod tests {
     fn delay_is_tight_enough_for_fast_typists() {
         // Sanity: we don't want to accidentally push this past a human's
         // minimum comfortable chord interval.
-        assert!(WHICH_KEY_DELAY_MS <= 300);
-        assert!(WHICH_KEY_DELAY_MS >= 100);
+        const { assert!(WHICH_KEY_DELAY_MS <= 300) };
+        const { assert!(WHICH_KEY_DELAY_MS >= 100) };
     }
 }
