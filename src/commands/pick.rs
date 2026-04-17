@@ -15,10 +15,17 @@ use std::path::{Path, PathBuf};
 use crate::app::{self, App, Mode};
 use crate::data::bookmarks::BookmarkStore;
 use crate::data::{project, session, Project, Session};
+use crate::theme::ThemeName;
 
-/// Entry point for the default picker. Returns the chosen session id (if
-/// any) and the project cwd so a shell wrapper can `cd` + `claude --resume`.
+/// Entry point for the default picker. Uses the default theme — kept for
+/// backwards compatibility with test callers that don't care about theming.
 pub fn run() -> anyhow::Result<Option<(String, PathBuf)>> {
+    run_with_theme(ThemeName::default())
+}
+
+/// Same as [`run`] but with an explicit theme. Called from `main` after it
+/// has resolved the CLI / env / persisted precedence chain.
+pub fn run_with_theme(theme_name: ThemeName) -> anyhow::Result<Option<(String, PathBuf)>> {
     let projects = project::discover_projects()?;
     let bookmarks = BookmarkStore::load().unwrap_or_else(|_| {
         BookmarkStore::load_from(PathBuf::from("/tmp/.claude-picker-bookmarks.json"))
@@ -42,7 +49,14 @@ pub fn run() -> anyhow::Result<Option<(String, PathBuf)>> {
         None => (Mode::ProjectList, vec![], None),
     };
 
-    let app = App::new(projects, sessions, bookmarks, mode, selected_project);
+    let app = App::new_with_theme(
+        projects,
+        sessions,
+        bookmarks,
+        mode,
+        selected_project,
+        theme_name,
+    );
     let selection = app::run(app)?;
 
     if let Some((id, _cwd)) = &selection {

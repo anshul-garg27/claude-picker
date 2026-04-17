@@ -1,4 +1,5 @@
-//! Coloured model pill widget — the "[opus]", "[sonnet]", "[haiku]" tag.
+//! Coloured model pill widget — the "[opus]", "[sonnet]", "[haiku]" tag,
+//! plus the secondary "permission-mode" pill (`PLAN`, `BYPASS`, `ACCEPT`).
 //!
 //! A tiny renderer that converts a model family into a single [`Span`] coloured
 //! to match the website mockup: peach for Opus, teal for Sonnet, blue for
@@ -13,6 +14,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::Span;
 
 use crate::data::pricing::Family;
+use crate::data::PermissionMode;
 use crate::theme::Theme;
 
 /// Build the Span for a single model family. Callers compose this into a row
@@ -48,6 +50,35 @@ pub fn pills<'a>(families: &[Family], theme: &Theme) -> Vec<Span<'a>> {
     out
 }
 
+/// Pill for a non-default [`PermissionMode`]. Returns `None` when the mode
+/// is `Default` — we deliberately don't render a badge for the common case
+/// to avoid visual noise.
+///
+/// Colors:
+/// - `PLAN`     → cyan (`sky`) — neutral, explanatory
+/// - `BYPASS`   → red — "this is risky, pay attention"
+/// - `ACCEPT`   → yellow — "semi-auto, still careful"
+/// - `DONTASK`  → pink — a step past `acceptEdits`
+/// - `AUTO`     → lavender — managed-auto mode
+/// - other      → mauve (fallback)
+pub fn permission_pill<'a>(mode: PermissionMode, theme: &Theme) -> Option<Span<'a>> {
+    let label = mode.pill_label()?;
+    let bg = match mode {
+        PermissionMode::Plan => theme.sky,
+        PermissionMode::BypassPermissions => theme.red,
+        PermissionMode::AcceptEdits => theme.yellow,
+        PermissionMode::DontAsk => theme.pink,
+        PermissionMode::Auto => theme.lavender,
+        PermissionMode::Other(_) => theme.mauve,
+        PermissionMode::Default => return None,
+    };
+    let style = Style::default()
+        .bg(bg)
+        .fg(theme.crust)
+        .add_modifier(Modifier::BOLD);
+    Some(Span::styled(format!(" {label} "), style))
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -67,5 +98,27 @@ mod tests {
         let t = Theme::mocha();
         let span = pill(Family::Unknown, &t);
         assert_eq!(span.style.bg, Some(t.mauve));
+    }
+
+    #[test]
+    fn default_mode_has_no_pill() {
+        let t = Theme::mocha();
+        assert!(permission_pill(PermissionMode::Default, &t).is_none());
+    }
+
+    #[test]
+    fn bypass_is_red_plan_is_sky() {
+        let t = Theme::mocha();
+        let bypass = permission_pill(PermissionMode::BypassPermissions, &t).expect("pill");
+        assert!(bypass.content.contains("BYPASS"));
+        assert_eq!(bypass.style.bg, Some(t.red));
+
+        let plan = permission_pill(PermissionMode::Plan, &t).expect("pill");
+        assert!(plan.content.contains("PLAN"));
+        assert_eq!(plan.style.bg, Some(t.sky));
+
+        let accept = permission_pill(PermissionMode::AcceptEdits, &t).expect("pill");
+        assert!(accept.content.contains("ACCEPT"));
+        assert_eq!(accept.style.bg, Some(t.yellow));
     }
 }

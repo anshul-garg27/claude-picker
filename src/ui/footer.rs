@@ -24,10 +24,8 @@ pub fn render_session_list(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let hints = [
         ("↑↓", "navigate"),
         ("Enter", "resume"),
-        ("a-z", "filter"),
-        ("Ctrl+B", "pin"),
-        ("Ctrl+E", "export"),
-        ("Esc", "reset"),
+        ("type", "filter"),
+        ("?", "help"),
         ("q", "quit"),
     ];
     render_hints(f, area, theme, &hints);
@@ -38,7 +36,8 @@ pub fn render_project_list(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
     let hints = [
         ("↑↓", "navigate"),
         ("Enter", "open"),
-        ("a-z", "filter"),
+        ("type", "filter"),
+        ("?", "help"),
         ("q", "quit"),
     ];
     render_hints(f, area, theme, &hints);

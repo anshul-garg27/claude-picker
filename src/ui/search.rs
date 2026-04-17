@@ -61,6 +61,19 @@ pub struct SearchState {
     /// True while the background loader is still populating `all_matches`.
     /// Drives the "Loading sessions…" placeholder.
     pub loading: bool,
+    /// `?` help overlay visible.
+    pub show_help: bool,
+    /// One-shot status message shown in a toast — set by clipboard / editor
+    /// shortcuts. Cleared by the event loop's tick.
+    pub toast: Option<(String, ToastKind, std::time::Instant)>,
+}
+
+/// Local toast kind — kept lightweight so the UI module stays self-contained.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum ToastKind {
+    Info,
+    Success,
+    Error,
 }
 
 impl SearchState {
@@ -72,6 +85,26 @@ impl SearchState {
             cursor: 0,
             preview_visible: false,
             loading: true,
+            show_help: false,
+            toast: None,
+        }
+    }
+
+    /// Set a toast that lives for 1.5s. Called from the command handler.
+    pub fn set_toast(&mut self, message: impl Into<String>, kind: ToastKind) {
+        self.toast = Some((
+            message.into(),
+            kind,
+            std::time::Instant::now() + std::time::Duration::from_millis(1500),
+        ));
+    }
+
+    /// Drop any toast that has lived past its expiry. Call once per frame.
+    pub fn tick(&mut self) {
+        if let Some((_, _, expires)) = &self.toast {
+            if std::time::Instant::now() >= *expires {
+                self.toast = None;
+            }
         }
     }
 
@@ -124,6 +157,56 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Th
     if let Some(pv) = preview_area {
         render_preview_column(frame, pv, state, theme);
     }
+
+    if let Some((msg, kind, _)) = &state.toast {
+        render_toast(frame, area, msg, *kind, theme);
+    }
+    if state.show_help {
+        let content = crate::ui::help_overlay::help_for(crate::ui::help_overlay::Screen::Search);
+        crate::ui::help_overlay::render(frame, area, content, theme);
+    }
+}
+
+/// Centred toast, sibling to the one in `ui::picker`. Duplicated rather than
+/// moved because toasting is self-contained here — the search state owns its
+/// own local toast type.
+fn render_toast(frame: &mut Frame<'_>, area: Rect, msg: &str, kind: ToastKind, theme: &Theme) {
+    use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
+    let w = 52u16.min(area.width.saturating_sub(4));
+    let h = 3u16;
+    let x = area.x + area.width.saturating_sub(w) / 2;
+    let y = area
+        .y
+        .saturating_add(area.height.saturating_sub(h))
+        .saturating_sub(4);
+    let rect = Rect {
+        x,
+        y,
+        width: w,
+        height: h,
+    };
+    frame.render_widget(Clear, rect);
+    let (accent, label) = match kind {
+        ToastKind::Info => (theme.mauve, "info"),
+        ToastKind::Success => (theme.green, "done"),
+        ToastKind::Error => (theme.red, "error"),
+    };
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(accent))
+        .title(Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                label,
+                Style::default().fg(accent).add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+        ]));
+    let p = Paragraph::new(Line::from(Span::styled(format!(" {msg} "), theme.body())))
+        .block(block)
+        .alignment(Alignment::Center);
+    frame.render_widget(p, rect);
 }
 
 fn render_list_column(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &Theme) {
@@ -403,6 +486,10 @@ fn render_footer(frame: &mut Frame<'_>, area: Rect, theme: &Theme) {
         Span::styled("p", theme.key_hint()),
         Span::raw(" "),
         Span::styled("preview", theme.key_desc()),
+        Span::styled("  ·  ", theme.dim()),
+        Span::styled("?", theme.key_hint()),
+        Span::raw(" "),
+        Span::styled("help", theme.key_desc()),
         Span::styled("  ·  ", theme.dim()),
         Span::styled("q", theme.key_hint()),
         Span::raw(" "),

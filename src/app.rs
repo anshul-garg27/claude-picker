@@ -27,9 +27,11 @@ use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
 use crate::data::bookmarks::BookmarkStore;
-use crate::data::{Project, Session};
+use crate::data::{clipboard, editor, session_rename, Project, Session};
 use crate::events::{self, Event};
-use crate::theme::Theme;
+use crate::theme::{self, Theme, ThemeName};
+use crate::ui::help_overlay::{self, Screen as HelpScreen};
+use crate::ui::rename_modal::{self, RenameState};
 
 /// Which screen is active.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -100,6 +102,13 @@ pub struct App {
     pub toast: Option<Toast>,
     /// Confirmation modal for delete.
     pub show_delete_confirm: bool,
+    /// `?` help overlay visible.
+    pub show_help: bool,
+    /// Rename modal state — `Some` while the user is editing a name.
+    pub rename: Option<RenameState>,
+    /// Timestamp of the last `g` press, used for the `gg` vim chord. Cleared
+    /// on any unrelated key press or after [`G_CHORD_WINDOW`].
+    pending_g: Option<Instant>,
 
     /// nucleo scratch. Rebuilt on filter change.
     matcher: Matcher,
@@ -107,11 +116,15 @@ pub struct App {
     haystacks: Vec<Utf32String>,
 }
 
+/// Window in which two `g` presses collapse into a jump-to-top. Matches the
+/// vim / lazygit norm — 500 ms is forgiving but still feels chord-y.
+const G_CHORD_WINDOW: Duration = Duration::from_millis(500);
+
 impl App {
-    /// Construct an initial state. Callers decide whether to land on
-    /// [`Mode::ProjectList`] or [`Mode::SessionList`] by pre-seeding the
-    /// sessions vector. If both are set, session-list wins and the
-    /// project-list pops back in when the user hits Esc.
+    /// Construct an initial state with the default (Mocha) theme. Callers
+    /// decide whether to land on [`Mode::ProjectList`] or [`Mode::SessionList`]
+    /// by pre-seeding the sessions vector. If both are set, session-list wins
+    /// and the project-list pops back in when the user hits Esc.
     pub fn new(
         projects: Vec<Project>,
         sessions: Vec<Session>,
@@ -119,7 +132,28 @@ impl App {
         mode: Mode,
         selected_project: Option<usize>,
     ) -> Self {
-        let theme = Theme::mocha();
+        Self::new_with_theme(
+            projects,
+            sessions,
+            bookmarks,
+            mode,
+            selected_project,
+            ThemeName::default(),
+        )
+    }
+
+    /// Like [`Self::new`] but starts with an explicit theme. Separate method
+    /// rather than an overload so existing test callers don't need to learn
+    /// about theme resolution.
+    pub fn new_with_theme(
+        projects: Vec<Project>,
+        sessions: Vec<Session>,
+        bookmarks: BookmarkStore,
+        mode: Mode,
+        selected_project: Option<usize>,
+        theme_name: ThemeName,
+    ) -> Self {
+        let theme = Theme::from_name(theme_name);
         let matcher = Matcher::new(Config::DEFAULT);
         let mut s = Self {
             mode,
@@ -137,12 +171,38 @@ impl App {
             selection_result: None,
             toast: None,
             show_delete_confirm: false,
+            show_help: false,
+            rename: None,
+            pending_g: None,
             matcher,
             haystacks: Vec::new(),
         };
         s.rebuild_haystacks();
         s.apply_filter();
         s
+    }
+
+    /// Cycle to the next theme in [`ThemeName::ALL`], replace the live
+    /// `self.theme`, show a 1-second confirmation toast, and persist the
+    /// choice to `~/.config/claude-picker/theme` (best-effort — persistence
+    /// errors surface as toasts but don't revert the change).
+    pub fn cycle_theme(&mut self) {
+        let next = self.theme.name.next();
+        self.theme = Theme::from_name(next);
+        match theme::save_persisted_theme(next) {
+            Ok(()) => {
+                self.toast = Some(Toast::new(
+                    format!("theme: {}", next.label()),
+                    ToastKind::Info,
+                ));
+            }
+            Err(e) => {
+                self.toast = Some(Toast::new(
+                    format!("theme: {} (save failed: {})", next.label(), e),
+                    ToastKind::Error,
+                ));
+            }
+        }
     }
 
     /// Active project, when one is selected.
@@ -228,9 +288,23 @@ impl App {
 
     /// Dispatch a single [`Event`] against the state.
     pub fn handle_event(&mut self, ev: Event) -> anyhow::Result<()> {
-        // Delete-confirmation modal steals input.
+        // Modal inputs take precedence, in reverse visual-stack order.
+        if self.rename.is_some() {
+            return self.handle_rename(ev);
+        }
         if self.show_delete_confirm {
             return self.handle_delete_confirm(ev);
+        }
+        if self.show_help {
+            return self.handle_help_overlay(ev);
+        }
+
+        // Expire a stale `gg` chord before processing further — a key other
+        // than `g` arriving outside the window should not linger as pending.
+        if let Some(t) = self.pending_g {
+            if t.elapsed() > G_CHORD_WINDOW {
+                self.pending_g = None;
+            }
         }
 
         match ev {
@@ -247,12 +321,218 @@ impl App {
             Event::Home => self.cursor = 0,
             Event::End => self.cursor = self.filtered_indices.len().saturating_sub(1),
             Event::Backspace => self.filter_backspace(),
+            // `?` opens the context-sensitive help overlay whenever the filter
+            // is empty. If someone's typing `?` into the filter they can
+            // still escape-and-type.
+            Event::Key('?') if self.filter.is_empty() => self.show_help = true,
+            // `G` (shift-G) jumps to the end — no chord.
+            Event::Key('G') if self.filter.is_empty() => {
+                self.cursor = self.filtered_indices.len().saturating_sub(1);
+                self.pending_g = None;
+            }
+            // `g` pressed: if a previous `g` is still within the window, this
+            // completes a `gg` chord → jump to top. Otherwise remember the
+            // keystroke so the next `g` can complete the chord.
+            Event::Key('g') if self.filter.is_empty() => {
+                if self
+                    .pending_g
+                    .map(|t| t.elapsed() <= G_CHORD_WINDOW)
+                    .unwrap_or(false)
+                {
+                    self.cursor = 0;
+                    self.pending_g = None;
+                } else {
+                    self.pending_g = Some(Instant::now());
+                }
+            }
+            // `y` / `Y` copy to clipboard (lowercase = session id, uppercase
+            // = project path). Both require an empty filter so typing them
+            // into a search still works.
+            Event::Key('y') if self.filter.is_empty() => self.copy_session_id(),
+            Event::Key('Y') if self.filter.is_empty() => self.copy_project_path(),
+            // `r` opens the rename modal for the selected session.
+            Event::Key('r') if self.filter.is_empty() => self.request_rename(),
+            // `o` launches `$EDITOR <project_path>` detached.
+            Event::Key('o') if self.filter.is_empty() => self.open_editor_for_selection(),
             Event::Key(c) if c == 'q' && self.filter.is_empty() => self.should_quit = true,
-            Event::Key(c) if is_filter_char(c) => self.filter_push(c),
+            // `t` cycles the theme when the filter is empty. If the user is
+            // typing a filter (including searches with `t` in them) the letter
+            // goes to the filter via the fallthrough branch below.
+            Event::Key('t') if self.filter.is_empty() => self.cycle_theme(),
+            Event::Key(c) if is_filter_char(c) => {
+                // Any keystroke other than the chord letters breaks `gg`.
+                self.pending_g = None;
+                self.filter_push(c);
+            }
+            Event::Resize(_, _) => {}
+            _ => {
+                // Unknown event — clear any pending chord so we don't match
+                // `g<tab>g` or similar across stale timers.
+                self.pending_g = None;
+            }
+        }
+        Ok(())
+    }
+
+    /// Current screen for the help overlay. Only the picker-level modes are
+    /// reachable from `App`; subcommand screens own their own event loops.
+    pub fn help_screen(&self) -> HelpScreen {
+        match self.mode {
+            Mode::SessionList => HelpScreen::SessionList,
+            Mode::ProjectList => HelpScreen::ProjectList,
+        }
+    }
+
+    fn handle_help_overlay(&mut self, ev: Event) -> anyhow::Result<()> {
+        match ev {
+            Event::Escape => self.show_help = false,
+            Event::Key(c) if help_overlay::is_dismiss_key(c) => self.show_help = false,
             Event::Resize(_, _) => {}
             _ => {}
         }
         Ok(())
+    }
+
+    fn handle_rename(&mut self, ev: Event) -> anyhow::Result<()> {
+        let Some(state) = self.rename.as_mut() else {
+            return Ok(());
+        };
+        match ev {
+            Event::Enter => {
+                let new_name = state.buffer.trim().to_string();
+                let session_id = state.session_id.clone();
+                self.rename = None;
+                if new_name.is_empty() {
+                    self.toast = Some(Toast::new("rename: name can't be empty", ToastKind::Error));
+                    return Ok(());
+                }
+                match session_rename::rename_session(&session_id, &new_name) {
+                    Ok(_) => {
+                        // Update in-memory so the list reflects immediately.
+                        if let Some(s) = self.sessions.iter_mut().find(|s| s.id == session_id) {
+                            s.name = Some(new_name.clone());
+                        }
+                        self.rebuild_haystacks();
+                        self.apply_filter();
+                        self.toast = Some(Toast::new(
+                            format!("renamed to \"{new_name}\""),
+                            ToastKind::Success,
+                        ));
+                    }
+                    Err(e) => {
+                        self.toast =
+                            Some(Toast::new(format!("rename failed: {e}"), ToastKind::Error));
+                    }
+                }
+            }
+            Event::Escape => {
+                self.rename = None;
+            }
+            Event::Backspace => state.pop(),
+            Event::Key(c) if rename_modal::is_name_char(c) => state.push(c),
+            _ => {}
+        }
+        Ok(())
+    }
+
+    fn copy_session_id(&mut self) {
+        let Some(s) = self.selected_session_ref().cloned() else {
+            return;
+        };
+        let short = s.id.chars().take(8).collect::<String>();
+        match clipboard::copy(s.id.clone()) {
+            Ok(()) => {
+                self.toast = Some(Toast::new(
+                    format!("copied {short} to clipboard"),
+                    ToastKind::Success,
+                ));
+            }
+            Err(e) => {
+                self.toast = Some(Toast::new(
+                    format!("clipboard unavailable: {e}"),
+                    ToastKind::Error,
+                ));
+            }
+        }
+    }
+
+    fn copy_project_path(&mut self) {
+        let path: PathBuf = match self.mode {
+            Mode::SessionList => match self.selected_session_ref() {
+                Some(s) => s.project_dir.clone(),
+                None => return,
+            },
+            Mode::ProjectList => {
+                let Some(&idx) = self.filtered_indices.get(self.cursor) else {
+                    return;
+                };
+                match self.projects.get(idx) {
+                    Some(p) => p.path.clone(),
+                    None => return,
+                }
+            }
+        };
+        let display = path.display().to_string();
+        match clipboard::copy(display.clone()) {
+            Ok(()) => {
+                // Shorten long paths in the toast so it doesn't wrap weirdly.
+                let shown = if display.len() > 40 {
+                    format!("…{}", &display[display.len() - 39..])
+                } else {
+                    display
+                };
+                self.toast = Some(Toast::new(
+                    format!("copied {shown} to clipboard"),
+                    ToastKind::Success,
+                ));
+            }
+            Err(e) => {
+                self.toast = Some(Toast::new(
+                    format!("clipboard unavailable: {e}"),
+                    ToastKind::Error,
+                ));
+            }
+        }
+    }
+
+    fn request_rename(&mut self) {
+        // Only session-list has per-session names we can edit.
+        if self.mode != Mode::SessionList {
+            return;
+        }
+        let Some(s) = self.selected_session_ref() else {
+            return;
+        };
+        self.rename = Some(RenameState::new(s.id.clone(), s.name.as_deref()));
+    }
+
+    fn open_editor_for_selection(&mut self) {
+        let path: PathBuf = match self.mode {
+            Mode::SessionList => match self.selected_session_ref() {
+                Some(s) => s.project_dir.clone(),
+                None => return,
+            },
+            Mode::ProjectList => {
+                let Some(&idx) = self.filtered_indices.get(self.cursor) else {
+                    return;
+                };
+                match self.projects.get(idx) {
+                    Some(p) => p.path.clone(),
+                    None => return,
+                }
+            }
+        };
+        match editor::open_in_editor(&path) {
+            Ok(name) => {
+                self.toast = Some(Toast::new(
+                    format!("opened {} in {name}", path.display()),
+                    ToastKind::Info,
+                ));
+            }
+            Err(e) => {
+                self.toast = Some(Toast::new(format!("editor: {e}"), ToastKind::Error));
+            }
+        }
     }
 
     fn handle_delete_confirm(&mut self, ev: Event) -> anyhow::Result<()> {
@@ -554,6 +834,7 @@ mod tests {
             project_dir: PathBuf::from("/tmp"),
             name: name.map(|s| s.to_string()),
             auto_name: None,
+            last_prompt: None,
             message_count: 5,
             tokens: TokenCounts::default(),
             total_cost_usd: 0.0,
@@ -563,6 +844,8 @@ mod tests {
             is_fork: false,
             forked_from: None,
             entrypoint: SessionKind::Cli,
+            permission_mode: None,
+            subagent_count: 0,
         }
     }
 

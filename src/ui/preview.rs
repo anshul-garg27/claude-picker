@@ -252,6 +252,13 @@ fn render_footer(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
         Span::styled("  ·  ", theme.dim()),
     ];
     spans.push(model_pill::pill(fam, theme));
+    // Permission-mode pill right after the model pill, when interesting.
+    if let Some(mode) = session.permission_mode {
+        if let Some(pill) = model_pill::permission_pill(mode, theme) {
+            spans.push(Span::raw(" "));
+            spans.push(pill);
+        }
+    }
     spans.extend([
         Span::styled("  ·  ", theme.dim()),
         Span::styled(
@@ -261,6 +268,15 @@ fn render_footer(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
                 .add_modifier(Modifier::BOLD),
         ),
     ]);
+    // Subagent count appended at the tail so the cost stays the last
+    // high-signal piece. Keeps the ◈ N marker from overshadowing.
+    if session.subagent_count > 0 {
+        spans.push(Span::styled("  ·  ", theme.dim()));
+        spans.push(Span::styled(
+            format!("◈ {} subagents", session.subagent_count),
+            Style::default().fg(theme.teal).add_modifier(Modifier::BOLD),
+        ));
+    }
     f.render_widget(
         Paragraph::new(Line::from(spans)).wrap(Wrap { trim: true }),
         chunks[1],

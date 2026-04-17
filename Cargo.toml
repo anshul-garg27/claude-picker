@@ -37,6 +37,8 @@ thiserror = "1.0"
 dirs = "5.0"
 # Regex
 regex = "1.10"
+# Clipboard — cross-platform, no X11 deps on macOS. Used for `y`/`Y` copy shortcuts.
+arboard = "3"
 
 [dev-dependencies]
 insta = "1.39"

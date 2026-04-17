@@ -6,10 +6,13 @@
 //! git branch badge.
 
 use chrono::{DateTime, Utc};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -69,10 +72,18 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
         ])
     };
 
+    // When the filter has content, promote the border to mauve so the user
+    // sees at-a-glance that typing is landing in the filter.
+    let border_color = if !app.filter.is_empty() {
+        Style::default().fg(theme.mauve)
+    } else {
+        Style::default().fg(theme.surface1)
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.surface1));
+        .border_style(border_color);
 
     f.render_widget(Paragraph::new(text).block(block), area);
 }
@@ -108,6 +119,27 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     state.select(app.cursor_position());
     let list = List::new(items).highlight_symbol("");
     f.render_stateful_widget(list, area, &mut state);
+
+    // Scrollbar on the right edge, only when the list overflows.
+    let total = app.filtered_indices.len();
+    if total > area.height as usize {
+        let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+            .begin_symbol(None)
+            .end_symbol(None)
+            .track_style(Style::default().fg(theme.surface1))
+            .thumb_style(Style::default().fg(theme.mauve));
+        let mut sb_state = ScrollbarState::new(total)
+            .position(app.cursor)
+            .viewport_content_length(area.height as usize);
+        f.render_stateful_widget(
+            scrollbar,
+            area.inner(Margin {
+                vertical: 0,
+                horizontal: 0,
+            }),
+            &mut sb_state,
+        );
+    }
 }
 
 fn render_row<'a>(p: &'a Project, theme: &Theme, selected: bool) -> Line<'a> {

@@ -468,15 +468,34 @@ fn run_diff_screen(
     data: &mut DiffData,
 ) -> anyhow::Result<()> {
     let theme = Theme::mocha();
+    let mut show_help = false;
     loop {
         terminal.draw(|f| {
             diff::render(f, f.area(), data, &theme);
+            if show_help {
+                let content =
+                    crate::ui::help_overlay::help_for(crate::ui::help_overlay::Screen::Diff);
+                crate::ui::help_overlay::render(f, f.area(), content, &theme);
+            }
         })?;
 
         let Some(ev) = events::next()? else { continue };
+
+        if show_help {
+            match ev {
+                Event::Escape => show_help = false,
+                Event::Key(c) if crate::ui::help_overlay::is_dismiss_key(c) => {
+                    show_help = false;
+                }
+                _ => {}
+            }
+            continue;
+        }
+
         match ev {
             Event::Quit | Event::Ctrl('c') | Event::Escape => return Ok(()),
             Event::Key('q') => return Ok(()),
+            Event::Key('?') => show_help = true,
             Event::Up | Event::Key('k') => data.scroll_by(-1, MAX_SCROLL),
             Event::Down | Event::Key('j') => data.scroll_by(1, MAX_SCROLL),
             Event::PageUp => data.scroll_by(-10, MAX_SCROLL),
@@ -965,6 +984,7 @@ mod tests {
                 project_dir: PathBuf::from("/tmp"),
                 name: Some(name.into()),
                 auto_name: None,
+                last_prompt: None,
                 message_count: 1,
                 tokens: TokenCounts::default(),
                 total_cost_usd: 0.0,
@@ -974,6 +994,8 @@ mod tests {
                 is_fork: false,
                 forked_from: None,
                 entrypoint: SessionKind::Cli,
+                permission_mode: None,
+                subagent_count: 0,
             }
         }
         let sessions = vec![mk("ABC123", "Auth-Refactor"), mk("def456", "db-migration")];

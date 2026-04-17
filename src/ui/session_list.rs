@@ -14,10 +14,13 @@
 use std::borrow::Cow;
 
 use chrono::{DateTime, Utc};
-use ratatui::layout::{Constraint, Direction, Layout, Rect};
+use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
+use ratatui::widgets::{
+    Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Scrollbar,
+    ScrollbarOrientation, ScrollbarState,
+};
 use ratatui::Frame;
 
 use crate::app::App;
@@ -94,6 +97,10 @@ fn border_style(app: &App, theme: &Theme) -> Style {
 }
 
 /// Filter input at the top of the pane — rendered as a bordered paragraph.
+///
+/// When the filter has content the border pops to mauve so users can tell at
+/// a glance that typing is landing in the filter. Empty filter keeps the
+/// dim `surface1` border so the pane's active outline isn't duplicated.
 fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
@@ -111,14 +118,20 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
         ])
     };
 
+    let border_color = if !app.filter.is_empty() {
+        // Active filter: bright mauve so it's unmistakable the keystrokes
+        // are landing here.
+        Style::default().fg(theme.mauve)
+    } else if app.filter_focused {
+        theme.panel_border_active()
+    } else {
+        Style::default().fg(theme.surface1)
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
         .border_type(BorderType::Rounded)
-        .border_style(if app.filter_focused {
-            theme.panel_border_active()
-        } else {
-            Style::default().fg(theme.surface1)
-        });
+        .border_style(border_color);
 
     let p = Paragraph::new(text).block(block);
     f.render_widget(p, area);
@@ -158,6 +171,35 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let mut state = ListState::default();
     state.select(app.cursor_position());
     f.render_stateful_widget(list, area, &mut state);
+
+    // Scrollbar on the right edge. Skip entirely when everything fits — a
+    // thumb that covers the whole track is noisy.
+    let total = app.filtered_indices.len();
+    if total > area.height as usize {
+        render_scrollbar(f, area, total, app.cursor, theme);
+    }
+}
+
+/// Draw a minimalist Catppuccin-coloured scrollbar on the right edge of
+/// `area`. The scrollbar is a separate stateful widget — Ratatui renders the
+/// track + thumb in a 1-column column at the right of whatever rect we pass.
+fn render_scrollbar(f: &mut Frame<'_>, area: Rect, total: usize, position: usize, theme: &Theme) {
+    let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
+        .begin_symbol(None)
+        .end_symbol(None)
+        .track_style(Style::default().fg(theme.surface1))
+        .thumb_style(Style::default().fg(theme.mauve));
+    let mut scrollbar_state = ScrollbarState::new(total)
+        .position(position)
+        .viewport_content_length(area.height as usize);
+    f.render_stateful_widget(
+        scrollbar,
+        area.inner(Margin {
+            vertical: 0,
+            horizontal: 0,
+        }),
+        &mut scrollbar_state,
+    );
 }
 
 /// Render a single row as a styled [`Line`].
@@ -197,6 +239,27 @@ fn render_row<'a>(s: &'a Session, theme: &Theme, selected: bool, bookmarked: boo
 
     let pill = model_pill::pill(crate::data::pricing::family(&s.model_summary), theme);
 
+    // Optional permission-mode pill — only drawn for non-default modes.
+    let perm_pill = s
+        .permission_mode
+        .and_then(|m| model_pill::permission_pill(m, theme));
+
+    // Subagent marker — tiny "◈ N" glyph when the session spawned
+    // sub-agents, otherwise nothing. Using ASCII to stay brand-aligned
+    // (no emojis anywhere in the UI).
+    let subagent_marker = if s.subagent_count > 0 {
+        Some(Span::styled(
+            format!(" ◈{} ", s.subagent_count),
+            if selected {
+                theme.selected_row()
+            } else {
+                Style::default().fg(theme.teal).add_modifier(Modifier::BOLD)
+            },
+        ))
+    } else {
+        None
+    };
+
     let cost = format_cost(s.total_cost_usd);
     let cost_style = cost_style(s.total_cost_usd, theme, selected);
     let cost_span = Span::styled(format!("{cost:>7}"), cost_style);
@@ -217,10 +280,17 @@ fn render_row<'a>(s: &'a Session, theme: &Theme, selected: bool, bookmarked: boo
         name_span,
         Span::raw(" "),
         pill,
-        Span::raw(" "),
-        cost_span,
-        age_span,
     ];
+    if let Some(p) = perm_pill {
+        spans.push(Span::raw(" "));
+        spans.push(p);
+    }
+    if let Some(m) = subagent_marker {
+        spans.push(m);
+    }
+    spans.push(Span::raw(" "));
+    spans.push(cost_span);
+    spans.push(age_span);
 
     // If selected, stripe the row background by injecting a surface0 span
     // of leading whitespace. We already styled pieces, so just ensure the

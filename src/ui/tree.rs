@@ -603,6 +603,7 @@ mod tests {
             project_dir: PathBuf::from("/tmp"),
             name: name.map(|s| s.to_string()),
             auto_name: None,
+            last_prompt: None,
             message_count: 5,
             tokens: TokenCounts::default(),
             total_cost_usd: 0.0,
@@ -612,6 +613,8 @@ mod tests {
             is_fork: forked_from.is_some(),
             forked_from: forked_from.map(|s| s.to_string()),
             entrypoint: SessionKind::Cli,
+            permission_mode: None,
+            subagent_count: 0,
         }
     }
 

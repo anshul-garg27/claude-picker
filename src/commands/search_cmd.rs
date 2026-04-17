@@ -19,7 +19,7 @@
 use std::path::PathBuf;
 use std::sync::mpsc;
 use std::thread;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use nucleo::pattern::{CaseMatching, Normalization, Pattern};
 use nucleo::{Config, Matcher, Utf32String};
@@ -27,12 +27,16 @@ use nucleo::{Config, Matcher, Utf32String};
 use crate::app::{restore_terminal, setup_terminal};
 use crate::data::project::discover_projects;
 use crate::data::session::{load_session_from_jsonl, noise_prefixes};
-use crate::data::Session;
+use crate::data::{clipboard, editor, Session};
 use crate::events::{self, Event};
 use crate::theme::Theme;
+use crate::ui::help_overlay;
 use crate::ui::search as search_ui;
 
-use search_ui::{extract_snippet, render, SearchMatch, SearchState};
+use search_ui::{extract_snippet, render, SearchMatch, SearchState, ToastKind};
+
+/// Window for the `gg` vim chord.
+const G_CHORD_WINDOW: Duration = Duration::from_millis(500);
 
 /// An indexed session — the raw body text we search against, plus the
 /// metadata we need to build a [`SearchMatch`] once we have a score.
@@ -79,6 +83,9 @@ pub fn run() -> anyhow::Result<()> {
     let mut pattern: Option<Pattern> = None;
     // The universe of indexed sessions; filled in once the loader reports.
     let mut index: Vec<Indexed> = Vec::new();
+    // Pending `g` for the gg chord. Local so it doesn't live on SearchState
+    // (which is shared across UI modules that don't care about it).
+    let mut pending_g: Option<Instant> = None;
 
     let result = (|| -> anyhow::Result<Option<(String, PathBuf)>> {
         loop {
@@ -104,10 +111,18 @@ pub fn run() -> anyhow::Result<()> {
                 }
             }
 
+            state.tick();
             terminal.draw(|f| render(f, f.area(), &state, &theme))?;
 
             if let Some(ev) = events::next()? {
-                let outcome = handle_event(&mut state, ev, &index, &mut matcher, &mut pattern);
+                let outcome = handle_event(
+                    &mut state,
+                    ev,
+                    &index,
+                    &mut matcher,
+                    &mut pattern,
+                    &mut pending_g,
+                );
                 match outcome {
                     EventOutcome::Continue => {}
                     EventOutcome::Quit => return Ok(None),
@@ -145,7 +160,25 @@ fn handle_event(
     index: &[Indexed],
     matcher: &mut Matcher,
     pattern: &mut Option<Pattern>,
+    pending_g: &mut Option<Instant>,
 ) -> EventOutcome {
+    // Help overlay steals input while visible.
+    if state.show_help {
+        match ev {
+            Event::Escape => state.show_help = false,
+            Event::Key(c) if help_overlay::is_dismiss_key(c) => state.show_help = false,
+            _ => {}
+        }
+        return EventOutcome::Continue;
+    }
+
+    // Expire stale `gg` chord.
+    if let Some(t) = *pending_g {
+        if t.elapsed() > G_CHORD_WINDOW {
+            *pending_g = None;
+        }
+    }
+
     match ev {
         Event::Quit | Event::Ctrl('c') | Event::Escape => EventOutcome::Quit,
         Event::Key('q') if state.query.is_empty() => EventOutcome::Quit,
@@ -157,32 +190,73 @@ fn handle_event(
             }
         }
         Event::Up | Event::Key('k') => {
+            *pending_g = None;
             move_cursor(state, -1);
             EventOutcome::Continue
         }
         Event::Down | Event::Key('j') => {
+            *pending_g = None;
             move_cursor(state, 1);
             EventOutcome::Continue
         }
         Event::PageUp => {
+            *pending_g = None;
             move_cursor(state, -10);
             EventOutcome::Continue
         }
         Event::PageDown => {
+            *pending_g = None;
             move_cursor(state, 10);
             EventOutcome::Continue
         }
         Event::Home => {
+            *pending_g = None;
             state.cursor = 0;
             EventOutcome::Continue
         }
         Event::End => {
+            *pending_g = None;
             state.cursor = state.filtered_indices.len().saturating_sub(1);
             EventOutcome::Continue
         }
         Event::Backspace => {
             state.query.pop();
             recompute_matches(state, index, matcher, pattern);
+            EventOutcome::Continue
+        }
+        // Shortcuts only fire when the query is empty so they don't collide
+        // with search input.
+        Event::Key('?') if state.query.is_empty() => {
+            state.show_help = true;
+            EventOutcome::Continue
+        }
+        Event::Key('G') if state.query.is_empty() => {
+            *pending_g = None;
+            state.cursor = state.filtered_indices.len().saturating_sub(1);
+            EventOutcome::Continue
+        }
+        Event::Key('g') if state.query.is_empty() => {
+            if pending_g
+                .map(|t| t.elapsed() <= G_CHORD_WINDOW)
+                .unwrap_or(false)
+            {
+                state.cursor = 0;
+                *pending_g = None;
+            } else {
+                *pending_g = Some(Instant::now());
+            }
+            EventOutcome::Continue
+        }
+        Event::Key('y') if state.query.is_empty() => {
+            copy_session_id(state);
+            EventOutcome::Continue
+        }
+        Event::Key('Y') if state.query.is_empty() => {
+            copy_project_path(state);
+            EventOutcome::Continue
+        }
+        Event::Key('o') if state.query.is_empty() => {
+            open_editor(state);
             EventOutcome::Continue
         }
         Event::Key('p') if state.query.is_empty() => {
@@ -192,6 +266,7 @@ fn handle_event(
             EventOutcome::Continue
         }
         Event::Key(c) if is_query_char(c) => {
+            *pending_g = None;
             state.query.push(c);
             recompute_matches(state, index, matcher, pattern);
             EventOutcome::Continue
@@ -203,7 +278,55 @@ fn handle_event(
             state.preview_visible = !state.preview_visible;
             EventOutcome::Continue
         }
-        _ => EventOutcome::Continue,
+        _ => {
+            *pending_g = None;
+            EventOutcome::Continue
+        }
+    }
+}
+
+fn copy_session_id(state: &mut SearchState) {
+    let Some(m) = state.selected_match() else {
+        return;
+    };
+    let id = m.session_id.clone();
+    let short = id.chars().take(8).collect::<String>();
+    match clipboard::copy(id) {
+        Ok(()) => state.set_toast(format!("copied {short} to clipboard"), ToastKind::Success),
+        Err(e) => state.set_toast(format!("clipboard unavailable: {e}"), ToastKind::Error),
+    }
+}
+
+fn copy_project_path(state: &mut SearchState) {
+    let Some(m) = state.selected_match() else {
+        return;
+    };
+    let path = m.project_cwd.clone();
+    let display = path.display().to_string();
+    match clipboard::copy(display.clone()) {
+        Ok(()) => {
+            let shown = if display.len() > 40 {
+                format!("…{}", &display[display.len() - 39..])
+            } else {
+                display
+            };
+            state.set_toast(format!("copied {shown} to clipboard"), ToastKind::Success);
+        }
+        Err(e) => state.set_toast(format!("clipboard unavailable: {e}"), ToastKind::Error),
+    }
+}
+
+fn open_editor(state: &mut SearchState) {
+    let Some(m) = state.selected_match() else {
+        return;
+    };
+    let path = m.project_cwd.clone();
+    match editor::open_in_editor(&path) {
+        Ok(name) => state.set_toast(
+            format!("opened {} in {name}", path.display()),
+            ToastKind::Info,
+        ),
+        Err(e) => state.set_toast(format!("editor: {e}"), ToastKind::Error),
     }
 }
 
@@ -311,7 +434,15 @@ fn build_corpus() -> anyhow::Result<Vec<Indexed>> {
     let projects_root = home.join(".claude").join("projects");
 
     let mut out: Vec<Indexed> = Vec::new();
-    for project in projects {
+    // Keep project cwd → (project_name, project_cwd) so we can attribute
+    // history.jsonl entries back to a project without re-discovering.
+    let mut project_by_cwd: std::collections::HashMap<PathBuf, String> =
+        std::collections::HashMap::with_capacity(projects.len());
+    for project in &projects {
+        project_by_cwd.insert(project.path.clone(), project.name.clone());
+    }
+
+    for project in &projects {
         let dir = projects_root.join(&project.encoded_dir);
         if !dir.is_dir() {
             continue;
@@ -350,9 +481,126 @@ fn build_corpus() -> anyhow::Result<Vec<Indexed>> {
             });
         }
     }
+
+    // Supplementary corpus: `~/.claude/history.jsonl` is a cross-session
+    // rollup of every prompt the user typed. Entries we don't already
+    // have in the per-project corpus become standalone hits so a search
+    // hits them too. Entries *already* covered (same sessionId as a
+    // project-level row) just append text to that row's body so the
+    // ranking benefits without double-counting.
+    let history_path = home.join(".claude").join("history.jsonl");
+    if let Some(history) = load_history_entries(&history_path) {
+        merge_history_into_corpus(&mut out, history, &project_by_cwd);
+    }
+
     // Newest first — ties in score prefer recent sessions.
     out.sort_by_key(|ix| std::cmp::Reverse(ix.last_ts));
     Ok(out)
+}
+
+/// One line of `~/.claude/history.jsonl` — a cross-session user-prompt
+/// rollup Claude Code writes independent of the per-project JSONL.
+#[derive(serde::Deserialize)]
+struct HistoryEntry {
+    #[serde(default)]
+    display: Option<String>,
+    #[serde(default, rename = "sessionId")]
+    session_id: Option<String>,
+    #[serde(default)]
+    project: Option<PathBuf>,
+    /// Epoch millis.
+    #[serde(default)]
+    timestamp: Option<i64>,
+}
+
+fn load_history_entries(path: &std::path::Path) -> Option<Vec<HistoryEntry>> {
+    use std::fs::File;
+    use std::io::{BufRead, BufReader};
+    let file = File::open(path).ok()?;
+    let reader = BufReader::new(file);
+    let mut out = Vec::new();
+    for line in reader.lines().map_while(Result::ok) {
+        let trimmed = line.trim();
+        if trimmed.is_empty() {
+            continue;
+        }
+        let Ok(entry): Result<HistoryEntry, _> = serde_json::from_str(trimmed) else {
+            continue;
+        };
+        // Drop empty or slash-command-only rows — they're noise, not intent.
+        let text = entry.display.as_deref().unwrap_or("").trim();
+        if text.is_empty() || (text.starts_with('/') && !text.contains(' ')) {
+            continue;
+        }
+        out.push(entry);
+    }
+    Some(out)
+}
+
+/// Fold history.jsonl entries into the existing corpus.
+///
+/// Two outcomes per entry:
+///
+/// 1. Session already in corpus → append the prompt text to that row's
+///    body + haystack so score/snippet improve. This is the common case
+///    because the session's own JSONL has the same text in richer form.
+/// 2. Session missing → create a new entry. This picks up sessions the
+///    per-project loader drops (too few messages, non-CLI entrypoint,
+///    …) but that still had a human-readable prompt worth searching.
+fn merge_history_into_corpus(
+    corpus: &mut Vec<Indexed>,
+    history: Vec<HistoryEntry>,
+    project_by_cwd: &std::collections::HashMap<PathBuf, String>,
+) {
+    let mut id_to_idx: std::collections::HashMap<String, usize> =
+        std::collections::HashMap::with_capacity(corpus.len());
+    for (i, ix) in corpus.iter().enumerate() {
+        id_to_idx.insert(ix.session_id.clone(), i);
+    }
+
+    for entry in history {
+        let Some(sid) = entry.session_id.as_deref() else {
+            continue;
+        };
+        let text = entry.display.as_deref().unwrap_or("").trim();
+        if text.is_empty() {
+            continue;
+        }
+        if let Some(&i) = id_to_idx.get(sid) {
+            let ix = &mut corpus[i];
+            ix.body.push('\n');
+            ix.body.push_str(text);
+            ix.haystack = Utf32String::from(format!(
+                "{} {} {}",
+                ix.project_name, ix.session_name, ix.body
+            ));
+            continue;
+        }
+        // New entry. Attribute it to a project when we can resolve the
+        // cwd; otherwise synthesise a minimal row so the prompt is still
+        // searchable.
+        let cwd = entry.project.unwrap_or_default();
+        let project_name = project_by_cwd.get(&cwd).cloned().unwrap_or_else(|| {
+            cwd.file_name()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "unknown".to_string())
+        });
+        let last_ts = entry
+            .timestamp
+            .and_then(chrono::DateTime::from_timestamp_millis);
+        let composite = format!("{} {} {}", project_name, sid, text);
+        let ix = Indexed {
+            session_id: sid.to_string(),
+            project_name,
+            project_cwd: cwd,
+            session_name: text.chars().take(50).collect(),
+            body: text.to_string(),
+            last_ts,
+            haystack: Utf32String::from(composite),
+        };
+        id_to_idx.insert(sid.to_string(), corpus.len());
+        corpus.push(ix);
+    }
 }
 
 fn display_name(session: &Session) -> String {
@@ -482,5 +730,89 @@ mod tests {
         assert!(is_query_char('\''));
         assert!(!is_query_char('\n'));
         assert!(!is_query_char('\t'));
+    }
+
+    #[test]
+    fn merge_history_appends_to_existing_rows_and_creates_new_ones() {
+        let mut corpus = vec![Indexed {
+            session_id: "existing".into(),
+            project_name: "alpha".into(),
+            project_cwd: PathBuf::from("/tmp/alpha"),
+            session_name: "alpha session".into(),
+            body: "one line of body".into(),
+            last_ts: None,
+            haystack: Utf32String::from("alpha alpha session one line of body"),
+        }];
+        let mut project_by_cwd: std::collections::HashMap<PathBuf, String> =
+            std::collections::HashMap::new();
+        project_by_cwd.insert(PathBuf::from("/tmp/beta"), "beta".into());
+
+        let history = vec![
+            HistoryEntry {
+                display: Some("extra prompt for existing".into()),
+                session_id: Some("existing".into()),
+                project: Some(PathBuf::from("/tmp/alpha")),
+                timestamp: Some(1_700_000_000_000),
+            },
+            HistoryEntry {
+                display: Some("a brand-new prompt".into()),
+                session_id: Some("missing".into()),
+                project: Some(PathBuf::from("/tmp/beta")),
+                timestamp: Some(1_700_000_100_000),
+            },
+            // Slash-only row should be filtered out before reaching merge.
+            HistoryEntry {
+                display: Some("/help".into()),
+                session_id: Some("ignored".into()),
+                project: Some(PathBuf::from("/tmp/alpha")),
+                timestamp: None,
+            },
+        ];
+
+        merge_history_into_corpus(&mut corpus, history, &project_by_cwd);
+
+        // Existing row grew.
+        assert!(corpus[0].body.contains("extra prompt for existing"));
+        // New row appended.
+        assert!(corpus.iter().any(|ix| ix.session_id == "missing"));
+        assert_eq!(
+            corpus
+                .iter()
+                .find(|ix| ix.session_id == "missing")
+                .unwrap()
+                .project_name,
+            "beta"
+        );
+        // Slash-only rows were pre-filtered by `load_history_entries`; if
+        // one slips through merge still accepts non-empty display values.
+        assert!(corpus.iter().any(|ix| ix.session_id == "ignored"));
+    }
+
+    #[test]
+    fn load_history_entries_drops_empty_and_slash_only_rows() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let path = tmp.path().join("history.jsonl");
+        std::fs::write(
+            &path,
+            concat!(
+                "{\"display\":\"fix the auth redirect loop\",\"sessionId\":\"sid-1\"}\n",
+                "{\"display\":\"/cost \",\"sessionId\":\"sid-2\"}\n",
+                "{\"display\":\"\",\"sessionId\":\"sid-3\"}\n",
+                "{\"display\":\"/rename to banana\",\"sessionId\":\"sid-4\"}\n",
+            ),
+        )
+        .expect("write");
+        let entries = load_history_entries(&path).expect("some");
+        let ids: Vec<_> = entries
+            .iter()
+            .map(|e| e.session_id.as_deref().unwrap_or(""))
+            .collect();
+        assert!(ids.contains(&"sid-1"), "kept real prompt");
+        assert!(!ids.contains(&"sid-2"), "dropped bare /cost");
+        assert!(!ids.contains(&"sid-3"), "dropped empty");
+        assert!(
+            ids.contains(&"sid-4"),
+            "kept /rename ... (has space so not bare-command)"
+        );
     }
 }

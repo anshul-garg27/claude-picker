@@ -46,6 +46,69 @@ impl SessionKind {
     }
 }
 
+/// How a session handles tool-use approval. Claude Code logs this in two
+/// places: standalone `{"type":"permission-mode", ...}` records that fire
+/// whenever the mode switches mid-session, and a `permissionMode` field on
+/// each user message. We tally both and pick whichever value is most common.
+///
+/// `Default` is the built-in "ask each time" mode — not interesting enough
+/// to render in the row, so we treat it as "no pill worth drawing" in the
+/// UI layer. Every other variant is badged.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum PermissionMode {
+    /// Ask on every tool use. The out-of-the-box default.
+    Default,
+    /// Auto-approve file edits, still ask for everything else.
+    AcceptEdits,
+    /// Plan-mode: Claude drafts but does not execute.
+    Plan,
+    /// `--dangerously-skip-permissions`. Approves everything.
+    BypassPermissions,
+    /// Never ask. Similar to bypass but kept separate because Claude Code
+    /// logs it distinctly in the JSONL.
+    DontAsk,
+    /// Managed-auto mode.
+    Auto,
+    /// Any mode we don't recognise. Payload carries the raw string so the
+    /// UI can still surface something useful.
+    Other(&'static str),
+}
+
+impl PermissionMode {
+    /// Parse the stringly-typed value Claude Code writes. Unknown values
+    /// fall into `Other(&'static str)` by leaking the string via
+    /// [`Box::leak`] — the set of possible values is tiny (the CLI ships a
+    /// fixed enum), so this never grows unbounded in practice.
+    ///
+    /// Deliberately not named `from_str` — we don't want `FromStr`'s
+    /// fallible signature, and clippy complains if we shadow the trait.
+    pub fn parse(s: &str) -> Self {
+        match s {
+            "default" => Self::Default,
+            "acceptEdits" => Self::AcceptEdits,
+            "plan" => Self::Plan,
+            "bypassPermissions" => Self::BypassPermissions,
+            "dontAsk" => Self::DontAsk,
+            "auto" => Self::Auto,
+            other => Self::Other(Box::leak(other.to_string().into_boxed_str())),
+        }
+    }
+
+    /// The short label rendered on the pill. `None` means "don't draw a
+    /// pill" — we only badge non-default modes.
+    pub fn pill_label(self) -> Option<&'static str> {
+        match self {
+            Self::Default => None,
+            Self::AcceptEdits => Some("ACCEPT"),
+            Self::Plan => Some("PLAN"),
+            Self::BypassPermissions => Some("BYPASS"),
+            Self::DontAsk => Some("DONTASK"),
+            Self::Auto => Some("AUTO"),
+            Self::Other(_) => Some("MODE"),
+        }
+    }
+}
+
 /// A fully-aggregated session. Built once from a `.jsonl` file; cheap to
 /// clone and pass around.
 #[derive(Debug, Clone)]
@@ -58,6 +121,11 @@ pub struct Session {
     pub name: Option<String>,
     /// Fallback title derived from the first non-noise user message.
     pub auto_name: Option<String>,
+    /// Most recent user prompt the session recorded (parsed from
+    /// `{"type":"last-prompt","lastPrompt": ...}` records). Cheaper to
+    /// display than `auto_name` because it reflects where the session
+    /// *ended up*, not where it started.
+    pub last_prompt: Option<String>,
     pub message_count: u32,
     pub tokens: TokenCounts,
     pub total_cost_usd: f64,
@@ -68,13 +136,30 @@ pub struct Session {
     pub is_fork: bool,
     pub forked_from: Option<String>,
     pub entrypoint: SessionKind,
+    /// Dominant permission mode across every `permission-mode` record and
+    /// every `permissionMode` field on user messages. `None` if no mode was
+    /// ever recorded (older sessions, or CLI versions that predate the
+    /// field).
+    pub permission_mode: Option<PermissionMode>,
+    /// Number of sub-agent transcripts written alongside this session.
+    /// Claude Code stores them at
+    /// `~/.claude/projects/<encoded>/<sid>/subagents/agent-*.jsonl`; we
+    /// stat the directory and count matching files.
+    pub subagent_count: u32,
 }
 
 impl Session {
-    /// Display label used in the picker list. Falls back: name → auto_name → "unnamed".
+    /// Display label used in the picker list. Falls back:
+    /// `name` → `last_prompt` → `auto_name` → "unnamed".
+    ///
+    /// `last_prompt` sits above `auto_name` because it's a better one-line
+    /// summary of what the session is about right now — the first user
+    /// message is often just "help me with…" where the last one is
+    /// concrete.
     pub fn display_label(&self) -> &str {
         self.name
             .as_deref()
+            .or(self.last_prompt.as_deref())
             .or(self.auto_name.as_deref())
             .unwrap_or("unnamed")
     }
@@ -115,6 +200,19 @@ struct RawLine {
     forked_from: Option<ForkInfo>,
     #[serde(default, rename = "parentSessionId")]
     parent_session_id: Option<String>,
+    /// On `last-prompt` records — the most recent user prompt, truncated
+    /// to ~200 chars by Claude Code itself.
+    #[serde(default, rename = "lastPrompt")]
+    last_prompt: Option<String>,
+    /// Fallback key some versions write instead of `lastPrompt`.
+    #[serde(default)]
+    text: Option<String>,
+    /// On `permission-mode` records — the mode string. Some versions use
+    /// `mode` instead of `permissionMode`, so we accept both.
+    #[serde(default, rename = "permissionMode")]
+    permission_mode: Option<String>,
+    #[serde(default)]
+    mode: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
@@ -294,10 +392,14 @@ pub fn load_session_from_jsonl(
     let mut entrypoint: Option<SessionKind> = None;
     let mut name: Option<String> = None;
     let mut auto_name: Option<String> = None;
+    let mut last_prompt: Option<String> = None;
     let mut message_count: u32 = 0;
     let mut tokens = TokenCounts::default();
     let mut total_cost = 0.0_f64;
     let mut model_counts: HashMap<String, u32> = HashMap::new();
+    // Each `permission-mode` record or user-level `permissionMode` field
+    // bumps the corresponding counter here; the most common wins.
+    let mut permission_counts: HashMap<PermissionMode, u32> = HashMap::new();
     let mut first_ts: Option<DateTime<Utc>> = None;
     let mut last_ts: Option<DateTime<Utc>> = None;
     let mut forked_from: Option<String> = None;
@@ -369,8 +471,49 @@ pub fn load_session_from_jsonl(
             continue;
         }
 
+        // `last-prompt` records — later ones overwrite earlier because the
+        // file is chronological.
+        if raw.kind.as_deref() == Some("last-prompt") {
+            let prompt = raw
+                .last_prompt
+                .as_deref()
+                .or(raw.text.as_deref())
+                .unwrap_or("")
+                .trim();
+            if !prompt.is_empty() {
+                last_prompt = Some(clean_auto_name(prompt));
+            }
+            continue;
+        }
+
+        // Standalone `permission-mode` records — bump the dominant tally.
+        if raw.kind.as_deref() == Some("permission-mode") {
+            let mode_raw = raw
+                .permission_mode
+                .as_deref()
+                .or(raw.mode.as_deref())
+                .unwrap_or("");
+            if !mode_raw.is_empty() {
+                let mode = PermissionMode::parse(mode_raw);
+                *permission_counts.entry(mode).or_default() += 1;
+            }
+            continue;
+        }
+
         // User + assistant message bookkeeping.
         let kind = raw.kind.as_deref().unwrap_or("");
+
+        // Embedded `permissionMode` on user records — also votes in the
+        // dominant tally. We handle this *before* the role filter below so
+        // even non-standard user records contribute.
+        if kind == "user" {
+            if let Some(mode_raw) = raw.permission_mode.as_deref() {
+                if !mode_raw.is_empty() {
+                    let mode = PermissionMode::parse(mode_raw);
+                    *permission_counts.entry(mode).or_default() += 1;
+                }
+            }
+        }
         if kind == "user" || kind == "assistant" {
             let Some(msg) = raw.message.as_ref() else {
                 continue;
@@ -423,11 +566,25 @@ pub fn load_session_from_jsonl(
         .map(|(m, _)| m)
         .unwrap_or_default();
 
+    // Dominant permission mode: same "most common wins" rule as the model.
+    // Ties broken by a fixed enum ordering so the result is deterministic.
+    let permission_mode = permission_counts
+        .into_iter()
+        .max_by(|a, b| {
+            a.1.cmp(&b.1)
+                .then_with(|| permission_tie_break_key(b.0).cmp(&permission_tie_break_key(a.0)))
+        })
+        .map(|(m, _)| m);
+
+    // Subagent count — stat the sibling `<sid>/subagents/` directory.
+    let subagent_count = count_subagents(path, &id);
+
     Ok(Some(Session {
         id,
         project_dir,
         name,
         auto_name,
+        last_prompt,
         message_count,
         tokens,
         total_cost_usd: total_cost,
@@ -437,7 +594,55 @@ pub fn load_session_from_jsonl(
         is_fork: forked_from.is_some(),
         forked_from,
         entrypoint,
+        permission_mode,
+        subagent_count,
     }))
+}
+
+/// Stable tie-break ordering for [`PermissionMode`]. Used when two modes
+/// have the same occurrence count — higher number wins, which puts the
+/// "interesting" modes ahead of `Default`.
+fn permission_tie_break_key(mode: PermissionMode) -> u8 {
+    match mode {
+        PermissionMode::BypassPermissions => 6,
+        PermissionMode::Plan => 5,
+        PermissionMode::AcceptEdits => 4,
+        PermissionMode::DontAsk => 3,
+        PermissionMode::Auto => 2,
+        PermissionMode::Other(_) => 1,
+        PermissionMode::Default => 0,
+    }
+}
+
+/// Count the `agent-*.jsonl` files under the session's sibling subagent
+/// directory, if one exists.
+///
+/// Claude Code lays these out at
+/// `<projects-root>/<encoded>/<sid>/subagents/agent-<hash>.jsonl` for every
+/// sub-agent invocation; reading the directory is O(N) in the number of
+/// sub-agents (usually ≤ a handful).
+pub fn count_subagents(jsonl_path: &Path, session_id: &str) -> u32 {
+    let Some(parent) = jsonl_path.parent() else {
+        return 0;
+    };
+    let subagents_dir = parent.join(session_id).join("subagents");
+    let Ok(entries) = std::fs::read_dir(&subagents_dir) else {
+        return 0;
+    };
+    let mut count: u32 = 0;
+    for entry in entries.flatten() {
+        let path = entry.path();
+        if path.extension().and_then(|s| s.to_str()) != Some("jsonl") {
+            continue;
+        }
+        let Some(stem) = path.file_stem().and_then(|s| s.to_str()) else {
+            continue;
+        };
+        if stem.starts_with("agent-") {
+            count = count.saturating_add(1);
+        }
+    }
+    count
 }
 
 #[cfg(test)]
@@ -535,5 +740,153 @@ mod tests {
             .expect("session");
         assert!(s.is_fork);
         assert_eq!(s.forked_from.as_deref(), Some("parent-xyz"));
+    }
+
+    #[test]
+    fn last_prompt_parsed_and_used_for_label() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let jsonl = tmp.path().join("x.jsonl");
+        fs::write(
+            &jsonl,
+            concat!(
+                "{\"type\":\"user\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"first\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-7\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+                "{\"type\":\"last-prompt\",\"lastPrompt\":\"fix the auth redirect loop\",\"sessionId\":\"x\"}\n",
+            ),
+        )
+        .expect("write");
+        let s = load_session_from_jsonl(&jsonl, tmp.path().to_path_buf())
+            .expect("ok")
+            .expect("session");
+        assert_eq!(s.last_prompt.as_deref(), Some("fix the auth redirect loop"));
+        // With no explicit name, the fallback chain picks last_prompt over auto_name.
+        assert_eq!(s.display_label(), "fix the auth redirect loop");
+    }
+
+    #[test]
+    fn custom_title_still_beats_last_prompt() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let jsonl = tmp.path().join("x.jsonl");
+        fs::write(
+            &jsonl,
+            concat!(
+                "{\"type\":\"custom-title\",\"customTitle\":\"named-session\",\"sessionId\":\"x\"}\n",
+                "{\"type\":\"user\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"first user prompt\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-7\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+                "{\"type\":\"last-prompt\",\"lastPrompt\":\"fix bug\",\"sessionId\":\"x\"}\n",
+            ),
+        )
+        .expect("write");
+        let s = load_session_from_jsonl(&jsonl, tmp.path().to_path_buf())
+            .expect("ok")
+            .expect("session");
+        assert_eq!(s.display_label(), "named-session");
+    }
+
+    #[test]
+    fn permission_mode_parsed_from_standalone_and_user_fields() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let jsonl = tmp.path().join("x.jsonl");
+        // Three bypass votes (two standalone + one user-field) and one plan
+        // vote — bypass wins.
+        fs::write(
+            &jsonl,
+            concat!(
+                "{\"type\":\"permission-mode\",\"permissionMode\":\"bypassPermissions\",\"sessionId\":\"x\"}\n",
+                "{\"type\":\"permission-mode\",\"permissionMode\":\"bypassPermissions\",\"sessionId\":\"x\"}\n",
+                "{\"type\":\"user\",\"entrypoint\":\"cli\",\"permissionMode\":\"bypassPermissions\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n",
+                "{\"type\":\"permission-mode\",\"permissionMode\":\"plan\",\"sessionId\":\"x\"}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-7\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+            ),
+        )
+        .expect("write");
+        let s = load_session_from_jsonl(&jsonl, tmp.path().to_path_buf())
+            .expect("ok")
+            .expect("session");
+        assert_eq!(s.permission_mode, Some(PermissionMode::BypassPermissions));
+    }
+
+    #[test]
+    fn permission_mode_is_none_when_absent() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let jsonl = tmp.path().join("x.jsonl");
+        fs::write(
+            &jsonl,
+            concat!(
+                "{\"type\":\"user\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-7\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+            ),
+        )
+        .expect("write");
+        let s = load_session_from_jsonl(&jsonl, tmp.path().to_path_buf())
+            .expect("ok")
+            .expect("session");
+        assert!(s.permission_mode.is_none());
+    }
+
+    #[test]
+    fn subagent_count_counts_agent_files() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let jsonl = tmp.path().join("x.jsonl");
+        fs::write(
+            &jsonl,
+            concat!(
+                "{\"type\":\"user\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-7\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+            ),
+        )
+        .expect("write");
+        // Sibling directory: `<parent>/x/subagents/agent-*.jsonl`.
+        let subagents = tmp.path().join("x").join("subagents");
+        fs::create_dir_all(&subagents).expect("mkdir subagents");
+        fs::write(subagents.join("agent-a.jsonl"), b"").expect("write agent-a");
+        fs::write(subagents.join("agent-b.jsonl"), b"").expect("write agent-b");
+        // A non-agent file should be ignored.
+        fs::write(subagents.join("agent-a.meta.json"), b"{}").expect("write meta");
+        // Non-jsonl file should be ignored.
+        fs::write(subagents.join("not-an-agent.txt"), b"").expect("write junk");
+        let s = load_session_from_jsonl(&jsonl, tmp.path().to_path_buf())
+            .expect("ok")
+            .expect("session");
+        assert_eq!(s.subagent_count, 2);
+    }
+
+    #[test]
+    fn subagent_count_is_zero_when_dir_missing() {
+        let tmp = tempfile::tempdir().expect("tempdir");
+        let jsonl = tmp.path().join("x.jsonl");
+        fs::write(
+            &jsonl,
+            concat!(
+                "{\"type\":\"user\",\"entrypoint\":\"cli\",\"message\":{\"role\":\"user\",\"content\":\"hello\"}}\n",
+                "{\"type\":\"assistant\",\"message\":{\"role\":\"assistant\",\"model\":\"claude-opus-4-7\",\"usage\":{\"input_tokens\":1,\"output_tokens\":1}}}\n",
+            ),
+        )
+        .expect("write");
+        let s = load_session_from_jsonl(&jsonl, tmp.path().to_path_buf())
+            .expect("ok")
+            .expect("session");
+        assert_eq!(s.subagent_count, 0);
+    }
+
+    #[test]
+    fn permission_mode_from_str_round_trip() {
+        assert_eq!(PermissionMode::parse("default"), PermissionMode::Default);
+        assert_eq!(
+            PermissionMode::parse("bypassPermissions"),
+            PermissionMode::BypassPermissions
+        );
+        assert_eq!(PermissionMode::parse("plan"), PermissionMode::Plan);
+        assert_eq!(
+            PermissionMode::parse("acceptEdits"),
+            PermissionMode::AcceptEdits
+        );
+        assert_eq!(PermissionMode::Default.pill_label(), None);
+        assert_eq!(
+            PermissionMode::BypassPermissions.pill_label(),
+            Some("BYPASS")
+        );
+        assert_eq!(PermissionMode::Plan.pill_label(), Some("PLAN"));
+        assert_eq!(PermissionMode::AcceptEdits.pill_label(), Some("ACCEPT"));
     }
 }

@@ -14,8 +14,8 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::app::{App, Mode, Toast};
-use crate::theme::Theme;
-use crate::ui::{footer, layout, preview, project_list, session_list};
+use crate::theme::{Theme, ThemeName};
+use crate::ui::{footer, help_overlay, layout, preview, project_list, rename_modal, session_list};
 
 pub fn render(f: &mut Frame<'_>, app: &App) {
     let area = f.area();
@@ -30,12 +30,20 @@ pub fn render(f: &mut Frame<'_>, app: &App) {
         Mode::ProjectList => render_project_screen(f, area, app),
     }
 
-    // Toast / modal overlays render on top of everything.
+    // Toast / modal overlays render on top of everything. Z-order matters:
+    // help/rename/delete come above toasts so they're never obscured.
     if let Some(toast) = &app.toast {
         render_toast(f, area, toast, &app.theme);
     }
     if app.show_delete_confirm {
         render_delete_confirm(f, area, &app.theme);
+    }
+    if let Some(rename) = &app.rename {
+        rename_modal::render(f, area, rename, &app.theme);
+    }
+    if app.show_help {
+        let content = help_overlay::help_for(app.help_screen());
+        help_overlay::render(f, area, content, &app.theme);
     }
 }
 
@@ -56,37 +64,36 @@ fn render_project_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
-    let mode_badge = match app.mode {
+    let mut spans = vec![
+        Span::styled(
+            " claude-picker ",
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("·", theme.dim()),
+        Span::raw(" "),
+    ];
+    match app.mode {
         Mode::SessionList => {
             let project_name = app
                 .active_project()
                 .map(|p| p.name.as_str())
                 .unwrap_or("local");
-            Line::from(vec![
-                Span::styled(
-                    " claude-picker ",
-                    Style::default()
-                        .fg(theme.mauve)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled("·", theme.dim()),
-                Span::raw(" "),
-                Span::styled(project_name.to_string(), theme.subtle()),
-            ])
+            spans.push(Span::styled(project_name.to_string(), theme.subtle()));
         }
-        Mode::ProjectList => Line::from(vec![
-            Span::styled(
-                " claude-picker ",
-                Style::default()
-                    .fg(theme.mauve)
-                    .add_modifier(Modifier::BOLD),
-            ),
-            Span::styled("·", theme.dim()),
-            Span::raw(" "),
-            Span::styled("all projects", theme.subtle()),
-        ]),
-    };
-    f.render_widget(Paragraph::new(mode_badge), area);
+        Mode::ProjectList => {
+            spans.push(Span::styled("all projects", theme.subtle()));
+        }
+    }
+    // Subtly append the theme name when it's not the default. Muted so it
+    // doesn't compete with the main title, but legible enough that a user
+    // who pressed `t` by accident can confirm what they're looking at.
+    if theme.name != ThemeName::default() {
+        spans.push(Span::styled(" · ", theme.dim()));
+        spans.push(Span::styled(theme.name.label().to_string(), theme.muted()));
+    }
+    f.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 fn render_too_small(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
