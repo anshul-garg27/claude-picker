@@ -68,6 +68,14 @@ pub struct TreeNode {
     /// show a `(+N forks)` hint when the node is collapsed, and by the
     /// event loop to decide whether `→`/`←` do anything meaningful.
     pub fork_descendants: usize,
+    /// jless-style preview summary for the subtree under this node.
+    /// Aggregates: total turns (sum of `message_count` across self +
+    /// every descendant), total cost (USD, summed the same way), and
+    /// total fork descendants (mirrors `fork_descendants`). Populated
+    /// by [`build_tree_with_collapsed`] for every session row so the
+    /// renderer can show `{N branches · N turns · $X.XX}` on collapsed
+    /// roots without re-walking the tree each frame.
+    pub subtree_summary: SubtreeSummary,
     /// True when this session row has at least one direct or transitive
     /// fork child AND is currently expanded. Drives the `▾`/`▸` glyph
     /// shown in the gutter.
@@ -76,6 +84,21 @@ pub struct TreeNode {
     /// here so `←` on a collapsed root can jump to the parent (if any).
     /// `None` for project headers, spacers, and leaf sessions.
     pub parent_session_id: Option<String>,
+}
+
+/// Rollup of a fork subtree's metrics, used for jless-style collapsed
+/// previews. Computed once when the tree is flattened and memoized on
+/// every [`TreeNode`]; the renderer reads it without any traversal.
+#[derive(Debug, Clone, Copy, Default, PartialEq)]
+pub struct SubtreeSummary {
+    /// Total number of messages (turns) in the subtree rooted at this
+    /// node, including the node itself. Zero for non-session rows.
+    pub total_turns: u64,
+    /// Total USD cost across the same subtree.
+    pub total_cost: f64,
+    /// Fork descendant count — same value as [`TreeNode::fork_descendants`],
+    /// duplicated here so the summary is self-contained.
+    pub fork_count: usize,
 }
 
 /// Kind of row.
@@ -169,6 +192,7 @@ pub fn build_tree_with_collapsed(
                 is_last_child: true,
                 ancestor_bars: Vec::new(),
                 fork_descendants: 0,
+                subtree_summary: SubtreeSummary::default(),
                 is_expanded: false,
                 parent_session_id: None,
             });
@@ -184,6 +208,7 @@ pub fn build_tree_with_collapsed(
             is_last_child: true,
             ancestor_bars: Vec::new(),
             fork_descendants: 0,
+            subtree_summary: SubtreeSummary::default(),
             is_expanded: false,
             parent_session_id: None,
         });
@@ -273,6 +298,34 @@ fn append_project_sessions(
         count_desc(r, &children_of, &mut descendant_count);
     }
 
+    // Pre-compute subtree turn / cost rollups for jless-style previews on
+    // collapsed nodes. Each cell aggregates `message_count` and
+    // `total_cost_usd` for the node plus every descendant. Rolled up here
+    // so the renderer never has to re-walk the children.
+    let mut subtree_turns = vec![0u64; sessions.len()];
+    let mut subtree_cost = vec![0.0f64; sessions.len()];
+    fn roll_up(
+        idx: usize,
+        sessions: &[Session],
+        children_of: &[Vec<usize>],
+        turns_out: &mut [u64],
+        cost_out: &mut [f64],
+    ) -> (u64, f64) {
+        let mut turns = sessions[idx].message_count as u64;
+        let mut cost = sessions[idx].total_cost_usd;
+        for &c in &children_of[idx] {
+            let (tc, cc) = roll_up(c, sessions, children_of, turns_out, cost_out);
+            turns = turns.saturating_add(tc);
+            cost += cc;
+        }
+        turns_out[idx] = turns;
+        cost_out[idx] = cost;
+        (turns, cost)
+    }
+    for &r in &roots {
+        roll_up(r, sessions, &children_of, &mut subtree_turns, &mut subtree_cost);
+    }
+
     for (i, &root_idx) in roots.iter().enumerate() {
         let is_last = i + 1 == roots.len();
         walk(
@@ -280,6 +333,8 @@ fn append_project_sessions(
             sessions,
             &children_of,
             &descendant_count,
+            &subtree_turns,
+            &subtree_cost,
             collapsed,
             root_idx,
             None, // roots have no parent in-project.
@@ -298,6 +353,8 @@ fn walk(
     sessions: &[Session],
     children_of: &[Vec<usize>],
     descendant_count: &[usize],
+    subtree_turns: &[u64],
+    subtree_cost: &[f64],
     collapsed: &std::collections::HashSet<String>,
     idx: usize,
     parent_id: Option<&str>,
@@ -318,6 +375,11 @@ fn walk(
         is_last_child,
         ancestor_bars: ancestor_bars.to_vec(),
         fork_descendants: descendants,
+        subtree_summary: SubtreeSummary {
+            total_turns: subtree_turns[idx],
+            total_cost: subtree_cost[idx],
+            fork_count: descendants,
+        },
         is_expanded,
         parent_session_id: parent_id.map(|s| s.to_string()),
     });
@@ -339,6 +401,8 @@ fn walk(
             sessions,
             children_of,
             descendant_count,
+            subtree_turns,
+            subtree_cost,
             collapsed,
             child,
             Some(&this_id),
@@ -418,6 +482,135 @@ fn format_cost(cost: f64) -> String {
     } else {
         format!("${cost:.2}")
     }
+}
+
+/// jless-style preview summary rendered on collapsed fork roots:
+/// `{N branches · N turns · $X.XX}`. Mirrors the format the research doc
+/// calls for so the collapsed row telegraphs the shape of the hidden
+/// subtree without the user having to expand it.
+///
+/// Only the parts with non-zero values show — zero-cost subtrees drop the
+/// cost segment, zero-turn subtrees drop the turn segment — so the hint
+/// degrades gracefully on empty/new branches.
+pub fn format_subtree_summary(summary: &SubtreeSummary) -> String {
+    let branches = format!(
+        "{} branch{}",
+        summary.fork_count,
+        if summary.fork_count == 1 { "" } else { "es" }
+    );
+    let turns = if summary.total_turns > 0 {
+        Some(format!("{} turns", summary.total_turns))
+    } else {
+        None
+    };
+    let cost = if summary.total_cost > 0.0 {
+        Some(if summary.total_cost < 0.01 {
+            "<$0.01".to_string()
+        } else {
+            format!("${:.2}", summary.total_cost)
+        })
+    } else {
+        None
+    };
+    let mut parts: Vec<String> = vec![branches];
+    if let Some(t) = turns {
+        parts.push(t);
+    }
+    if let Some(c) = cost {
+        parts.push(c);
+    }
+    format!("{{{}}}", parts.join(" · "))
+}
+
+/// Collect the ids of every session descended from `root_id` inside this
+/// project's session list, excluding `root_id` itself. Returned in
+/// depth-first order. Used by [`expand_all_under`] / [`collapse_all_under`]
+/// so the caller can flip the collapsed set for a whole subtree in one
+/// pass.
+///
+/// Walks by `forked_from` so orphaned forks (parent not in-project) stay
+/// off the list — consistent with [`build_tree_with_collapsed`].
+pub fn descendants_of(sessions: &[Session], root_id: &str) -> Vec<String> {
+    let mut id_to_index: std::collections::HashMap<&str, usize> = std::collections::HashMap::new();
+    for (i, s) in sessions.iter().enumerate() {
+        id_to_index.insert(s.id.as_str(), i);
+    }
+    let Some(&root_idx) = id_to_index.get(root_id) else {
+        return Vec::new();
+    };
+    let mut children_of: Vec<Vec<usize>> = vec![Vec::new(); sessions.len()];
+    for (i, s) in sessions.iter().enumerate() {
+        if let Some(&parent_idx) = s.forked_from.as_deref().and_then(|p| id_to_index.get(p)) {
+            if parent_idx != i {
+                children_of[parent_idx].push(i);
+            }
+        }
+    }
+    let mut out: Vec<String> = Vec::new();
+    fn walk_ids(idx: usize, children_of: &[Vec<usize>], sessions: &[Session], out: &mut Vec<String>) {
+        for &c in &children_of[idx] {
+            out.push(sessions[c].id.clone());
+            walk_ids(c, children_of, sessions, out);
+        }
+    }
+    walk_ids(root_idx, &children_of, sessions, &mut out);
+    out
+}
+
+/// Recursive expand: for the selected `root_id` and each of its
+/// descendants, remove their id from `collapsed` so the whole subtree is
+/// visible. Matches jless `e`.
+///
+/// The caller is expected to call [`build_tree_with_collapsed`] after
+/// mutating to rebuild the flat node list. Returns the number of ids
+/// removed from the set (for toast messages / tests).
+pub fn expand_all_under(
+    collapsed: &mut std::collections::HashSet<String>,
+    sessions_by_project: &[Vec<Session>],
+    root_id: &str,
+) -> usize {
+    let mut removed = 0;
+    if collapsed.remove(root_id) {
+        removed += 1;
+    }
+    for sessions in sessions_by_project {
+        if sessions.iter().any(|s| s.id == root_id) {
+            for id in descendants_of(sessions, root_id) {
+                if collapsed.remove(&id) {
+                    removed += 1;
+                }
+            }
+            break;
+        }
+    }
+    removed
+}
+
+/// Recursive collapse: for the selected `root_id` and each of its
+/// descendants, insert their id into `collapsed`. Matches jless `E`.
+///
+/// The caller rebuilds the flat node list afterwards. Returns the number
+/// of ids added.
+pub fn collapse_all_under(
+    collapsed: &mut std::collections::HashSet<String>,
+    sessions_by_project: &[Vec<Session>],
+    root_id: &str,
+) -> usize {
+    let mut added = 0;
+    if collapsed.insert(root_id.to_string()) {
+        added += 1;
+    }
+    for sessions in sessions_by_project {
+        if sessions.iter().any(|s| s.id == root_id) {
+            for id in descendants_of(sessions, root_id) {
+                if collapsed.insert(id) {
+                    added += 1;
+                }
+            }
+            break;
+        }
+    }
+    added
 }
 
 /// Cap `s` to `max_cols` **display columns**, appending `…` if truncated.
@@ -683,15 +876,13 @@ fn render_session_row<'a>(
     let age_col = 10;
     let msgs_col = 9;
     let cost_col = 9;
-    // "(+N forks)" hint when collapsed — shown between name and meta,
-    // right-aligned against the meta block. Lets the user see at a
-    // glance "this root has things under it" without peeking.
+    // jless-style preview when collapsed: `{N branches · N turns · $X.XX}`.
+    // Shows "shape" metrics for the subtree so the user can see whether the
+    // hidden branch is worth opening. Falls back to the older "(+N forks)"
+    // form on very narrow terminals where the long version would crowd the
+    // right-aligned meta columns.
     let fork_hint = if !node.is_expanded && node.fork_descendants > 0 {
-        Some(format!(
-            "(+{} fork{})",
-            node.fork_descendants,
-            if node.fork_descendants == 1 { "" } else { "s" }
-        ))
+        Some(format_subtree_summary(&node.subtree_summary))
     } else {
         None
     };
@@ -716,7 +907,10 @@ fn render_session_row<'a>(
 
     // Colors for meta.
     let meta_muted = maybe_fade(Style::default().fg(theme.overlay0), theme, age, apply_fade);
-    let fork_hint_style = maybe_fade(Style::default().fg(theme.overlay0), theme, age, apply_fade);
+    // Summary hint styled as theme.dim() to match the jless-preview look —
+    // muted enough not to compete with the session name, present enough to
+    // still telegraph the subtree's shape.
+    let fork_hint_style = maybe_fade(theme.dim(), theme, age, apply_fade);
     // Heat-mapped cost — identical ramp to the session-list column.
     let cost_style_base = if session.total_cost_usd <= 0.0 {
         Style::default().fg(theme.subtext0)
@@ -893,6 +1087,7 @@ mod tests {
             is_last_child: false,
             ancestor_bars: vec![],
             fork_descendants: 0,
+            subtree_summary: SubtreeSummary::default(),
             is_expanded: false,
             parent_session_id: None,
         };
@@ -906,6 +1101,7 @@ mod tests {
             is_last_child: true,
             ancestor_bars: vec![],
             fork_descendants: 0,
+            subtree_summary: SubtreeSummary::default(),
             is_expanded: false,
             parent_session_id: None,
         };
@@ -925,6 +1121,7 @@ mod tests {
             // ancestor ("was last child?"), then the parent.
             ancestor_bars: vec![false, true],
             fork_descendants: 0,
+            subtree_summary: SubtreeSummary::default(),
             is_expanded: false,
             parent_session_id: None,
         };
@@ -1064,6 +1261,7 @@ mod tests {
             is_last_child: true,
             ancestor_bars: vec![],
             fork_descendants: 0,
+            subtree_summary: SubtreeSummary::default(),
             is_expanded: false,
             parent_session_id: None,
         };
@@ -1074,6 +1272,7 @@ mod tests {
             is_last_child: true,
             ancestor_bars: vec![],
             fork_descendants: 0,
+            subtree_summary: SubtreeSummary::default(),
             is_expanded: false,
             parent_session_id: None,
         };
@@ -1086,6 +1285,7 @@ mod tests {
             is_last_child: true,
             ancestor_bars: vec![],
             fork_descendants: 0,
+            subtree_summary: SubtreeSummary::default(),
             is_expanded: false,
             parent_session_id: None,
         };
@@ -1141,6 +1341,101 @@ mod tests {
         assert!(ids.contains("root_with_child"));
         assert!(!ids.contains("leaf_fork"));
         assert!(!ids.contains("lonely_root"));
+    }
+
+    #[test]
+    fn format_subtree_summary_basic() {
+        let s = SubtreeSummary {
+            total_turns: 127,
+            total_cost: 4.21,
+            fork_count: 3,
+        };
+        let out = format_subtree_summary(&s);
+        assert!(out.contains("3 branches"), "got: {out}");
+        assert!(out.contains("127 turns"), "got: {out}");
+        assert!(out.contains("$4.21"), "got: {out}");
+        assert!(out.starts_with('{') && out.ends_with('}'));
+    }
+
+    #[test]
+    fn format_subtree_summary_singular_branch() {
+        let s = SubtreeSummary {
+            total_turns: 0,
+            total_cost: 0.0,
+            fork_count: 1,
+        };
+        let out = format_subtree_summary(&s);
+        assert!(out.contains("1 branch"));
+        assert!(!out.contains("turns"), "zero-turn subtree hides the turn cell");
+        assert!(!out.contains("$"));
+    }
+
+    #[test]
+    fn subtree_summary_rolls_up_turns_and_cost() {
+        // Two-deep fork: root -> fork1 -> fork2. Verify that when the
+        // root is collapsed, its summary aggregates descendants.
+        let project = mk_project("p");
+        let mut root = mk_session("root", None, Some("root"));
+        root.message_count = 10;
+        root.total_cost_usd = 1.0;
+        let mut fork1 = mk_session("fork1", Some("root"), Some("f1"));
+        fork1.message_count = 7;
+        fork1.total_cost_usd = 0.5;
+        let mut fork2 = mk_session("fork2", Some("fork1"), Some("f2"));
+        fork2.message_count = 5;
+        fork2.total_cost_usd = 0.25;
+
+        let mut collapsed = std::collections::HashSet::new();
+        collapsed.insert("root".to_string());
+        let nodes =
+            build_tree_with_collapsed(&[project], &[vec![root, fork1, fork2]], &collapsed);
+        let root_row = nodes
+            .iter()
+            .find(|n| n.session_id() == Some("root"))
+            .unwrap();
+        assert_eq!(root_row.subtree_summary.total_turns, 22);
+        assert!((root_row.subtree_summary.total_cost - 1.75).abs() < 1e-9);
+        assert_eq!(root_row.subtree_summary.fork_count, 2);
+    }
+
+    #[test]
+    fn expand_all_under_clears_subtree_from_collapsed() {
+        let sessions = vec![vec![
+            mk_session("root", None, Some("r")),
+            mk_session("a", Some("root"), Some("a")),
+            mk_session("b", Some("a"), Some("b")),
+        ]];
+        let mut collapsed: std::collections::HashSet<String> =
+            ["root", "a", "b"].iter().map(|s| s.to_string()).collect();
+        let removed = expand_all_under(&mut collapsed, &sessions, "root");
+        assert_eq!(removed, 3);
+        assert!(collapsed.is_empty());
+    }
+
+    #[test]
+    fn collapse_all_under_adds_subtree_to_collapsed() {
+        let sessions = vec![vec![
+            mk_session("root", None, Some("r")),
+            mk_session("a", Some("root"), Some("a")),
+            mk_session("b", Some("a"), Some("b")),
+        ]];
+        let mut collapsed = std::collections::HashSet::new();
+        let added = collapse_all_under(&mut collapsed, &sessions, "root");
+        assert_eq!(added, 3);
+        assert!(collapsed.contains("root"));
+        assert!(collapsed.contains("a"));
+        assert!(collapsed.contains("b"));
+    }
+
+    #[test]
+    fn descendants_of_ignores_unrelated_sessions() {
+        let sessions = vec![
+            mk_session("root", None, Some("r")),
+            mk_session("child", Some("root"), Some("c")),
+            mk_session("other", None, Some("o")),
+        ];
+        let out = descendants_of(&sessions, "root");
+        assert_eq!(out, vec!["child".to_string()]);
     }
 
     #[test]

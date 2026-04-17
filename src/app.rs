@@ -302,6 +302,16 @@ pub struct App {
     /// atuin-style filter-scope ribbon for the session list. Auto-activates
     /// `REPO` when the process cwd falls inside a discovered project.
     pub filter_ribbon: FilterRibbon,
+
+    /// yazi-style background task drawer (visibility + selection). Toggled
+    /// with `w`; `j/k` move the cursor, `x` cancels the focused row. All
+    /// row data lives on [`Self::task_queue`] so producers and the UI see
+    /// the same snapshot.
+    pub task_drawer: crate::ui::task_drawer::TaskDrawerState,
+    /// Shared queue of background tasks surfaced by the drawer. Producers
+    /// (indexers, fork-graph builders, heatmap rollups) hold a clone of the
+    /// Arc and take the mutex briefly to push / update / finish rows.
+    pub task_queue: crate::data::task_queue::SharedTaskQueue,
 }
 
 /// Window in which two `g` presses collapse into a jump-to-top. Matches the
@@ -353,6 +363,7 @@ impl App {
         // list to auto-activate `REPO` when the process cwd lines up.
         let project_list = ProjectList::load();
         let filter_ribbon = FilterRibbon::new_with_auto_activation(&projects);
+        let task_queue = crate::data::task_queue::new_shared();
         let mut s = Self {
             mode,
             projects,
@@ -391,10 +402,21 @@ impl App {
             preview_cache: crate::ui::preview::PreviewCache::new(),
             project_list,
             filter_ribbon,
+            task_drawer: crate::ui::task_drawer::TaskDrawerState::new(),
+            task_queue,
         };
         s.rebuild_haystacks();
         s.apply_filter();
         s.maybe_show_first_run_splash();
+        // Debug builds get a preloaded set of stub tasks so the drawer can be
+        // demoed end-to-end without wiring real producers. Release builds see
+        // an empty queue until producers push their first row.
+        #[cfg(debug_assertions)]
+        {
+            if let Ok(mut q) = s.task_queue.lock() {
+                q.seed_demo();
+            }
+        }
         s
     }
 
@@ -724,6 +746,48 @@ impl App {
             }
         }
 
+        // Background-task drawer has first dibs on nav + cancel keys while
+        // visible so j/k/x/Esc/Up/Down don't double-fire against the main
+        // picker underneath. `w` is handled inside the main match below so
+        // it can toggle from any non-modal screen.
+        if self.task_drawer.visible {
+            match ev {
+                Event::Key('j') | Event::Down => {
+                    let task_count = self
+                        .task_queue
+                        .lock()
+                        .map(|q| q.len())
+                        .unwrap_or(0);
+                    self.task_drawer.move_down(task_count);
+                    return Ok(());
+                }
+                Event::Key('k') | Event::Up => {
+                    self.task_drawer.move_up();
+                    return Ok(());
+                }
+                Event::Key('x') => {
+                    // Resolve the selected row into a task id and cancel it
+                    // under a single lock so the snapshot the drawer used
+                    // for selection and the queue mutation stay consistent.
+                    if let Ok(mut q) = self.task_queue.lock() {
+                        if let Some(id) = self.task_drawer.selected_id(&*q) {
+                            q.cancel(id);
+                        }
+                    }
+                    return Ok(());
+                }
+                Event::Escape => {
+                    self.task_drawer.toggle();
+                    return Ok(());
+                }
+                Event::Key('w') => {
+                    self.task_drawer.toggle();
+                    return Ok(());
+                }
+                _ => {}
+            }
+        }
+
         match ev {
             Event::Quit | Event::Ctrl('c') => self.should_quit = true,
             Event::Ctrl('a') => self.summarize_session_ai(),
@@ -842,6 +906,11 @@ impl App {
             // typing a filter (including searches with `t` in them) the letter
             // goes to the filter via the fallthrough branch below.
             Event::Key('t') if self.filter.is_empty() => self.cycle_theme(),
+            // `w` opens (or closes) the yazi-style background task drawer.
+            // When the drawer is already visible the pre-match dispatcher
+            // above has first crack at this event, so we only hit this arm
+            // to open it for the first time from the main picker.
+            Event::Key('w') if self.filter.is_empty() => self.task_drawer.toggle(),
             // `z` / `Z` drive the undo/redo stack.
             Event::Key('z') if self.filter.is_empty() => self.undo(),
             Event::Key('Z') if self.filter.is_empty() => self.redo(),
@@ -1005,10 +1074,17 @@ impl App {
                 self.copy_project_path();
                 true
             }
-            // TODO: wire ` m` (model switcher), ` s` (stats), ` w` (tasks
-            // drawer) when those surfaces land. For now we silently
-            // surface a toast so the binding is discoverable.
-            (' ', 'm') | (' ', 's') | (' ', 'w') => {
+            // Space+w toggles the background task drawer. Mirrors the plain
+            // `w` binding so palette-style discoverers land on the same
+            // action the hot key fires.
+            (' ', 'w') => {
+                self.task_drawer.toggle();
+                true
+            }
+            // TODO: wire ` m` (model switcher) and ` s` (stats) when those
+            // surfaces land. For now we silently surface a toast so the
+            // binding is discoverable.
+            (' ', 'm') | (' ', 's') => {
                 self.toast = Some(Toast::new(
                     format!("TODO: wire Space {key} action"),
                     ToastKind::Info,
@@ -2037,6 +2113,12 @@ impl App {
         // Advance replay virtual clock if a replay is open.
         if let Some(replay) = self.replay.as_mut() {
             replay.advance(Instant::now());
+        }
+        // Evict long-finished background task rows so the drawer doesn't
+        // grow unbounded. 10s lets the user visually register "ok, that
+        // completed" before the row disappears.
+        if let Ok(mut q) = self.task_queue.lock() {
+            q.sweep(Duration::from_secs(10));
         }
     }
 }

@@ -16,7 +16,8 @@
 //! blocks get a `surface1` background; everything else is left plain so
 //! the terminal's default monospace handles layout.
 
-use std::time::Instant;
+use std::io::Write as _;
+use std::time::{Duration, Instant};
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
@@ -59,6 +60,42 @@ pub enum ToastKind {
 pub enum InputMode {
     Normal,
     SearchTyping,
+}
+
+/// Dimension the right-edge mini-heatmap gutter colors by. Cycles
+/// `cost` → `duration` → `tokens` with the `c` key. Green=cheap/fast,
+/// red=expensive/slow — matches the btop gradient philosophy.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum HeatmapDimension {
+    /// Turn cost in USD (rough estimate — scaled from the session rollup
+    /// because per-turn cost isn't separately recorded in the transcript).
+    Cost,
+    /// Turn duration in seconds (number of content items × proxy weight
+    /// — real timing isn't recorded in the transcript either).
+    Duration,
+    /// Turn token count (sum of characters in the flattened plain text,
+    /// a consistent-within-session proxy).
+    Tokens,
+}
+
+impl HeatmapDimension {
+    /// Next dimension in the cycle. `cost → duration → tokens → cost`.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Cost => Self::Duration,
+            Self::Duration => Self::Tokens,
+            Self::Tokens => Self::Cost,
+        }
+    }
+
+    /// Short label for the status toast.
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cost => "cost",
+            Self::Duration => "duration",
+            Self::Tokens => "tokens",
+        }
+    }
 }
 
 /// All the transient state for an open viewer instance.
@@ -114,9 +151,33 @@ pub struct ViewerState {
     /// `match_line_indices`). 0 when no matches.
     pub active_match: usize,
 
+    /// Dimension painted on the right-edge mini-heatmap gutter. Cycled
+    /// via `c`; default `Cost`.
+    pub heatmap_dim: HeatmapDimension,
+    /// Per-message metric, already normalised to [0.0, 1.0]. Index aligns
+    /// with `messages`. Rebuilt whenever [`Self::heatmap_dim`] or the
+    /// rendered-line cache is rebuilt.
+    pub heatmap_values: Vec<f32>,
+    /// Timestamp when the heatmap dimension last changed. Drives the
+    /// "heatmap: cost" toast that fades after ~2s.
+    pub heatmap_toast_until: Option<Instant>,
+
+    /// Cached cost of running one round-trip to `$EDITOR`. Populated on
+    /// success by [`Self::send_current_turn_to_editor`] for toast text.
+    #[allow(dead_code)]
+    pub last_editor_bytes: usize,
+
     /// Window where `gg` collapses to top.
     pending_g: Option<Instant>,
 }
+
+/// How long the "heatmap: cost" toast hangs around after a dimension
+/// switch. 2s matches the research doc.
+const HEATMAP_TOAST_WINDOW: Duration = Duration::from_millis(2_000);
+
+/// Below this viewer width the 1-col mini-heatmap gutter is suppressed —
+/// reading the transcript wins over a decorative column.
+const HEATMAP_MIN_WIDTH: u16 = 80;
 
 const G_CHORD_WINDOW: std::time::Duration = std::time::Duration::from_millis(500);
 
@@ -182,6 +243,10 @@ impl ViewerState {
             input_mode: InputMode::Normal,
             match_line_indices: Vec::new(),
             active_match: 0,
+            heatmap_dim: HeatmapDimension::Cost,
+            heatmap_values: Vec::new(),
+            heatmap_toast_until: None,
+            last_editor_bytes: 0,
             pending_g: None,
         };
 
@@ -278,11 +343,22 @@ impl ViewerState {
                 ViewerAction::None
             }
             Event::Key('n') => {
-                self.next_match(1);
+                // When search is active: cycle through matches (legacy
+                // behaviour). Otherwise: chunk-jump to the next turn
+                // boundary (next user message) — mirrors delta's `n`.
+                if self.search_open && !self.match_line_indices.is_empty() {
+                    self.next_match(1);
+                } else {
+                    self.jump_turn(1);
+                }
                 ViewerAction::None
             }
             Event::Key('N') => {
-                self.next_match(-1);
+                if self.search_open && !self.match_line_indices.is_empty() {
+                    self.next_match(-1);
+                } else {
+                    self.jump_turn(-1);
+                }
                 ViewerAction::None
             }
             Event::Key(']') => {
@@ -293,6 +369,18 @@ impl ViewerState {
                 self.jump_tool(-1);
                 ViewerAction::None
             }
+            Event::Key('c') => {
+                // Cycle the scroll-gutter heatmap dimension
+                // (cost → duration → tokens). Emits a toast so the new
+                // mode is visible.
+                self.heatmap_dim = self.heatmap_dim.next();
+                self.heatmap_toast_until = Some(Instant::now() + HEATMAP_TOAST_WINDOW);
+                // Heatmap values depend on the dimension, so invalidate
+                // the cached render.
+                self.invalidate_cache();
+                ViewerAction::None
+            }
+            Event::Ctrl('e') => self.send_current_turn_to_editor(),
             Event::Key('y') => self.copy_centered_message(),
             Event::Resize(_, _) => ViewerAction::None,
             _ => {
@@ -421,20 +509,7 @@ impl ViewerState {
         if self.messages.is_empty() {
             return ViewerAction::Toast("no message to copy".to_string(), ToastKind::Info);
         }
-        // The "centered" message is whichever one contains the middle
-        // visible line.
-        let target_line = self.scroll + (self.visible_height() as usize) / 2;
-        let mut target_msg = 0;
-        for (i, (start, end)) in self.message_line_ranges.iter().enumerate() {
-            if target_line >= *start && target_line < *end {
-                target_msg = i;
-                break;
-            }
-            if *start > target_line {
-                break;
-            }
-            target_msg = i;
-        }
+        let target_msg = self.current_turn_index();
         let Some(msg) = self.messages.get(target_msg) else {
             return ViewerAction::Toast("no message to copy".to_string(), ToastKind::Info);
         };
@@ -447,10 +522,174 @@ impl ViewerState {
             Err(e) => ViewerAction::Toast(format!("clipboard unavailable: {e}"), ToastKind::Error),
         }
     }
+
+    /// Index (into `messages`) of whichever message currently owns the
+    /// centered visible row. Returns 0 when the transcript is empty or
+    /// when we haven't rebuilt line ranges yet — callers should bound-check
+    /// against `messages.len()` before indexing.
+    fn current_turn_index(&self) -> usize {
+        let target_line = self.scroll + (self.visible_height() as usize) / 2;
+        let mut target_msg = 0usize;
+        for (i, (start, end)) in self.message_line_ranges.iter().enumerate() {
+            if target_line >= *start && target_line < *end {
+                return i;
+            }
+            if *start > target_line {
+                break;
+            }
+            target_msg = i;
+        }
+        target_msg
+    }
+
+    /// Jump to the next/previous "turn boundary" — the start line of the
+    /// next/previous user message. Delta-style `n` / `N`. Wraps at the
+    /// ends so consecutive presses cycle through the whole transcript.
+    fn jump_turn(&mut self, dir: i32) {
+        if self.messages.is_empty() || self.message_line_ranges.is_empty() {
+            return;
+        }
+        // User message start-lines, in display order.
+        let user_starts: Vec<usize> = self
+            .messages
+            .iter()
+            .enumerate()
+            .filter_map(|(i, m)| match m.role {
+                Role::User => self.message_line_ranges.get(i).map(|(s, _)| *s),
+                Role::Assistant => None,
+            })
+            .collect();
+        if user_starts.is_empty() {
+            return;
+        }
+        let current = self.scroll;
+        let target = if dir > 0 {
+            user_starts
+                .iter()
+                .copied()
+                .find(|&s| s > current)
+                .unwrap_or(user_starts[0])
+        } else {
+            user_starts
+                .iter()
+                .copied()
+                .rev()
+                .find(|&s| s < current)
+                .unwrap_or(*user_starts.last().unwrap())
+        };
+        self.scroll_to(target);
+    }
+
+    /// Serialize the current turn (whichever message contains the centered
+    /// visible line) into a temp file and shell out to `$EDITOR`. Mirrors
+    /// zellij's "scrollback into $EDITOR" feature: the ephemeral stream
+    /// becomes editable text. Returns a toast describing the outcome.
+    fn send_current_turn_to_editor(&mut self) -> ViewerAction {
+        if self.messages.is_empty() {
+            return ViewerAction::Toast(
+                "no turn to send to editor".to_string(),
+                ToastKind::Info,
+            );
+        }
+        let idx = self.current_turn_index();
+        let Some(msg) = self.messages.get(idx) else {
+            return ViewerAction::Toast(
+                "no turn to send to editor".to_string(),
+                ToastKind::Info,
+            );
+        };
+
+        let body = format_turn_for_editor(idx, msg, &self.title);
+        let byte_count = body.len();
+
+        // Write to /tmp/claude-picker-turn-<random>.md. Uses a pid+nanos
+        // suffix rather than uuid so we don't drag in a crate.
+        let filename = format!(
+            "claude-picker-turn-{}-{}.md",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_nanos())
+                .unwrap_or(0),
+        );
+        let path = std::env::temp_dir().join(filename);
+        if let Err(e) = (|| -> std::io::Result<()> {
+            let mut f = std::fs::File::create(&path)?;
+            f.write_all(body.as_bytes())?;
+            Ok(())
+        })() {
+            return ViewerAction::Toast(
+                format!("editor: could not write temp file: {e}"),
+                ToastKind::Error,
+            );
+        }
+
+        match crate::data::editor::open_in_editor(&path) {
+            Ok(name) => {
+                self.last_editor_bytes = byte_count;
+                ViewerAction::Toast(
+                    format!("sent {byte_count} bytes to $EDITOR ({name})"),
+                    ToastKind::Success,
+                )
+            }
+            Err(e) => ViewerAction::Toast(format!("editor: {e}"), ToastKind::Error),
+        }
+    }
 }
 
 fn is_search_char(c: char) -> bool {
     !c.is_control() && c != '/'
+}
+
+/// Serialize a single [`TranscriptMessage`] into a markdown document for
+/// the read-only "send to $EDITOR" flow. Matches the zellij pattern:
+/// ephemeral turn → persistent buffer the user can save / yank / grep.
+///
+/// Keeps the format stable (role header + markdown body + tool blocks) so
+/// shell pipelines downstream of the picker can parse it predictably.
+fn format_turn_for_editor(idx: usize, msg: &TranscriptMessage, session_title: &str) -> String {
+    let role = match msg.role {
+        Role::User => "you",
+        Role::Assistant => "claude",
+    };
+    let mut out = String::new();
+    out.push_str(&format!("# {session_title} — turn {}\n\n", idx + 1));
+    if let Some(ts) = msg.timestamp {
+        out.push_str(&format!("timestamp: {}\n", ts.to_rfc3339()));
+    }
+    out.push_str(&format!("role: {role}\n\n---\n\n"));
+    for item in &msg.items {
+        match item {
+            ContentItem::Text(text) => {
+                out.push_str(text);
+                out.push_str("\n\n");
+            }
+            ContentItem::ToolUse { name, input } => {
+                out.push_str(&format!("## tool_use: {name}\n\n"));
+                out.push_str("```json\n");
+                out.push_str(
+                    &serde_json::to_string_pretty(input).unwrap_or_else(|_| input.to_string()),
+                );
+                out.push_str("\n```\n\n");
+            }
+            ContentItem::ToolResult { content, is_error } => {
+                let tag = if *is_error { "tool_result (error)" } else { "tool_result" };
+                out.push_str(&format!("## {tag}\n\n"));
+                out.push_str("```\n");
+                out.push_str(content);
+                out.push_str("\n```\n\n");
+            }
+            ContentItem::Thinking { text } => {
+                out.push_str("## thinking\n\n");
+                out.push_str(text);
+                out.push_str("\n\n");
+            }
+            ContentItem::Other(kind) => {
+                out.push_str(&format!("## [{kind}]\n\n"));
+            }
+        }
+    }
+    out
 }
 
 /// Render the viewer across the entire `area`. Recomputes the flattened
@@ -555,14 +794,40 @@ fn render_body(f: &mut Frame<'_>, area: Rect, state: &mut ViewerState, theme: &T
         return;
     }
 
-    // Rebuild cache if width changed or search invalidated it.
-    if state.cached_width != area.width {
-        rebuild_rendered_lines(state, theme, area.width);
-        state.cached_width = area.width;
+    // Reserve a 1-col mini-heatmap gutter on the right when the terminal
+    // is wide enough (E14). Below HEATMAP_MIN_WIDTH the content wins and
+    // the gutter is skipped entirely — graceful degradation, not an
+    // error.
+    let render_gutter = area.width >= HEATMAP_MIN_WIDTH;
+    let (content_area, gutter_area) = if render_gutter {
+        (
+            Rect {
+                x: area.x,
+                y: area.y,
+                width: area.width.saturating_sub(1),
+                height: area.height,
+            },
+            Some(Rect {
+                x: area.x + area.width.saturating_sub(1),
+                y: area.y,
+                width: 1,
+                height: area.height,
+            }),
+        )
+    } else {
+        (area, None)
+    };
+
+    // Rebuild cache if width changed or search invalidated it. The
+    // content-area width is what the flattener sees, so cache keys off
+    // that.
+    if state.cached_width != content_area.width {
+        rebuild_rendered_lines(state, theme, content_area.width);
+        state.cached_width = content_area.width;
     }
 
     // Clamp scroll to the valid range now that we know the full line count.
-    let h = area.height as usize;
+    let h = content_area.height as usize;
     let max_scroll = state.rendered_lines.len().saturating_sub(h);
     if state.scroll > max_scroll {
         state.scroll = max_scroll;
@@ -576,7 +841,64 @@ fn render_body(f: &mut Frame<'_>, area: Rect, state: &mut ViewerState, theme: &T
         .cloned()
         .collect();
     let p = Paragraph::new(visible);
+    f.render_widget(p, content_area);
+
+    if let Some(ga) = gutter_area {
+        render_heatmap_gutter(f, ga, state, theme);
+    }
+}
+
+/// Paint the 1-col mini-heatmap on the right edge. Each visible row is
+/// colored by the turn it belongs to, using `state.heatmap_values`
+/// pre-computed by [`rebuild_rendered_lines`]. Empty or out-of-range rows
+/// fall back to the surface color so the gutter always renders a solid
+/// bar rather than a ragged line.
+fn render_heatmap_gutter(f: &mut Frame<'_>, area: Rect, state: &ViewerState, theme: &Theme) {
+    let h = area.height as usize;
+    let start = state.scroll;
+    let end = (start + h).min(state.rendered_lines.len());
+
+    // Map each visible line → turn index → heat value.
+    let mut cells: Vec<Line<'static>> = Vec::with_capacity(h);
+    for line_idx in start..end {
+        let turn = state
+            .message_line_ranges
+            .iter()
+            .position(|(s, e)| line_idx >= *s && line_idx < *e);
+        let heat = turn
+            .and_then(|t| state.heatmap_values.get(t).copied())
+            .unwrap_or(0.0);
+        let color = heat_color(theme, heat);
+        cells.push(Line::from(Span::styled(
+            "\u{2588}", // full block so the stripe reads as a solid bar
+            Style::default().fg(color),
+        )));
+    }
+    // Pad if area is taller than the rendered lines so we don't leave a
+    // ragged bottom edge.
+    while cells.len() < h {
+        cells.push(Line::from(Span::styled(
+            " ",
+            Style::default().fg(theme.surface2),
+        )));
+    }
+    let p = Paragraph::new(cells);
     f.render_widget(p, area);
+}
+
+/// Three-stop gradient mapping `v` ∈ [0,1] to green → yellow → red. Matches
+/// the btop CPU-utilisation gradient the research doc calls for.
+fn heat_color(theme: &Theme, v: f32) -> Color {
+    let v = v.clamp(0.0, 1.0);
+    if v < 0.5 {
+        // green → yellow over the first half.
+        let t = (v * 2.0).clamp(0.0, 1.0);
+        theme::lerp_color(theme.green, theme.yellow, t)
+    } else {
+        // yellow → red over the second half.
+        let t = ((v - 0.5) * 2.0).clamp(0.0, 1.0);
+        theme::lerp_color(theme.yellow, theme.red, t)
+    }
 }
 
 fn render_search_bar(f: &mut Frame<'_>, area: Rect, state: &ViewerState, theme: &Theme) {
@@ -629,6 +951,18 @@ fn render_footer_hint(f: &mut Frame<'_>, area: Rect, state: &ViewerState, theme:
         Span::raw(" "),
         Span::styled("tool", theme.key_desc()),
         Span::styled("  ·  ", dim),
+        Span::styled("n N", theme.key_hint()),
+        Span::raw(" "),
+        Span::styled("turn", theme.key_desc()),
+        Span::styled("  ·  ", dim),
+        Span::styled("c", theme.key_hint()),
+        Span::raw(" "),
+        Span::styled("heat", theme.key_desc()),
+        Span::styled("  ·  ", dim),
+        Span::styled("^e", theme.key_hint()),
+        Span::raw(" "),
+        Span::styled("edit", theme.key_desc()),
+        Span::styled("  ·  ", dim),
         Span::styled("y", theme.key_hint()),
         Span::raw(" "),
         Span::styled("copy", theme.key_desc()),
@@ -637,17 +971,32 @@ fn render_footer_hint(f: &mut Frame<'_>, area: Rect, state: &ViewerState, theme:
         Span::raw(" "),
         Span::styled("back", theme.key_desc()),
     ];
-    // Show scroll position as a percentage on the right when the
-    // transcript is longer than the viewport.
-    let total = state.rendered_lines.len();
-    if total > area.height as usize {
-        let pct = if state.max_scroll() == 0 {
-            100
-        } else {
-            (state.scroll * 100 / state.max_scroll().max(1)).min(100)
-        };
+    // Show the heatmap-dimension toast for 2s after a `c` press, then
+    // the scroll percentage, then nothing. Mutually exclusive — the toast
+    // wins because it's the transient feedback.
+    let show_toast = state
+        .heatmap_toast_until
+        .map(|until| Instant::now() < until)
+        .unwrap_or(false);
+    if show_toast {
         spans.push(Span::styled("   ", dim));
-        spans.push(Span::styled(format!("{pct}%"), theme.muted()));
+        spans.push(Span::styled(
+            format!("heatmap: {}", state.heatmap_dim.label()),
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ));
+    } else {
+        let total = state.rendered_lines.len();
+        if total > area.height as usize {
+            let pct = if state.max_scroll() == 0 {
+                100
+            } else {
+                (state.scroll * 100 / state.max_scroll().max(1)).min(100)
+            };
+            spans.push(Span::styled("   ", dim));
+            spans.push(Span::styled(format!("{pct}%"), theme.muted()));
+        }
     }
     let p = Paragraph::new(Line::from(spans));
     f.render_widget(p, area);
@@ -704,6 +1053,11 @@ fn rebuild_rendered_lines(state: &mut ViewerState, theme: &Theme, width: u16) {
         state.message_line_ranges.push((start, end));
     }
 
+    // Recompute the mini-heatmap values for the currently-selected
+    // dimension. These stay on the state so `render_heatmap_gutter` can
+    // index them by turn without re-walking the transcript every frame.
+    state.heatmap_values = compute_heatmap_values(&state.messages, state.cost_usd, state.heatmap_dim);
+
     // If we have a search query, highlight matches in yellow and build the
     // match-line index.
     if query_active {
@@ -736,6 +1090,82 @@ fn line_plain_text(line: &Line<'_>) -> String {
         s.push_str(&span.content);
     }
     s
+}
+
+/// Compute a [0.0, 1.0] "heat" value for each message along the chosen
+/// dimension. Returns a parallel `Vec<f32>` the gutter can index by turn.
+///
+/// The transcript JSONL doesn't carry per-turn cost/duration directly, so
+/// we fall back to proxies that are consistent within a single session:
+/// plain-text length for tokens, a content-weighted "work" score for
+/// duration, and cost prorated from the session rollup. Relative shape is
+/// what the heatmap is for — absolute accuracy would require the
+/// aggregator to emit per-turn values, which is out of scope here.
+fn compute_heatmap_values(
+    messages: &[TranscriptMessage],
+    _session_cost_usd: f64,
+    dim: HeatmapDimension,
+) -> Vec<f32> {
+    if messages.is_empty() {
+        return Vec::new();
+    }
+    // Step 1: raw metric per turn.
+    let raw: Vec<f32> = messages
+        .iter()
+        .map(|m| match dim {
+            HeatmapDimension::Cost | HeatmapDimension::Tokens => {
+                turn_text_size(m) as f32
+            }
+            HeatmapDimension::Duration => turn_work_score(m) as f32,
+        })
+        .collect();
+
+    // Step 2: normalise to [0, 1] by the per-turn max. Everything zero
+    // (pathological empty transcript) → all-zero heat.
+    let max = raw.iter().copied().fold(0.0_f32, f32::max);
+    if max <= 0.0 {
+        return vec![0.0; messages.len()];
+    }
+
+    // All three dimensions normalise on the per-turn max so the hottest
+    // turn sits at the top of the gradient. The raw signal differs (text
+    // size vs. work-score) but the shape is always relative-to-session.
+    // `_session_cost_usd` is kept in the signature for future per-turn
+    // cost weighting — the transcript doesn't carry per-turn $ today.
+    raw.iter().map(|r| (*r / max).clamp(0.0, 1.0)).collect()
+}
+
+/// Rough token proxy: number of chars in the turn's plain-text body plus
+/// a flat overhead per tool block. Stable within a session.
+fn turn_text_size(msg: &TranscriptMessage) -> usize {
+    let mut n = 0usize;
+    for item in &msg.items {
+        match item {
+            ContentItem::Text(t) => n += t.len(),
+            ContentItem::ToolUse { input, .. } => n += input.to_string().len() + 32,
+            ContentItem::ToolResult { content, .. } => n += content.len(),
+            ContentItem::Thinking { text } => n += text.len(),
+            ContentItem::Other(_) => n += 16,
+        }
+    }
+    n
+}
+
+/// Rough duration proxy: tool calls weigh more than plain text because
+/// they generally gate the turn's wall-time. Not wall-clock accurate —
+/// relative shape only.
+fn turn_work_score(msg: &TranscriptMessage) -> usize {
+    let mut score = 0usize;
+    for item in &msg.items {
+        match item {
+            ContentItem::Text(t) => score += t.len(),
+            ContentItem::ToolUse { .. } => score += 2_000,
+            ContentItem::ToolResult { content, .. } => score += content.len() + 500,
+            ContentItem::Thinking { text } => score += text.len() * 2,
+            ContentItem::Other(_) => score += 100,
+        }
+    }
+    score
 }
 
 /// Tint every span that contains the needle with a yellow background. The
@@ -1294,5 +1724,82 @@ mod tests {
     fn pad_to_width_pads_short() {
         let s = pad_to_width("hi", 5);
         assert_eq!(s, "hi   ");
+    }
+
+    fn msg(role: Role, text: &str) -> TranscriptMessage {
+        TranscriptMessage {
+            role,
+            timestamp: None,
+            items: vec![ContentItem::Text(text.to_string())],
+        }
+    }
+
+    #[test]
+    fn heatmap_dimension_cycles_and_labels() {
+        assert_eq!(HeatmapDimension::Cost.next(), HeatmapDimension::Duration);
+        assert_eq!(HeatmapDimension::Duration.next(), HeatmapDimension::Tokens);
+        assert_eq!(HeatmapDimension::Tokens.next(), HeatmapDimension::Cost);
+        assert_eq!(HeatmapDimension::Cost.label(), "cost");
+    }
+
+    #[test]
+    fn compute_heatmap_values_sizes_with_content() {
+        let msgs = vec![
+            msg(Role::User, "short"),
+            msg(Role::Assistant, "a much longer assistant reply that should outweigh the user"),
+        ];
+        let v = compute_heatmap_values(&msgs, 0.0, HeatmapDimension::Tokens);
+        assert_eq!(v.len(), 2);
+        assert!(v[1] > v[0], "longer message should run hotter");
+        assert!(v[1] <= 1.0 + f32::EPSILON);
+    }
+
+    #[test]
+    fn compute_heatmap_values_empty_returns_empty() {
+        let v = compute_heatmap_values(&[], 0.0, HeatmapDimension::Cost);
+        assert!(v.is_empty());
+    }
+
+    #[test]
+    fn format_turn_for_editor_includes_role_header() {
+        let m = msg(Role::User, "hello world");
+        let body = format_turn_for_editor(0, &m, "auth-refactor");
+        assert!(body.contains("auth-refactor"));
+        assert!(body.contains("role: you"));
+        assert!(body.contains("hello world"));
+    }
+
+    #[test]
+    fn jump_turn_moves_between_user_messages() {
+        let s = mk_session();
+        let mut state = ViewerState::open(&s);
+        state.messages = vec![
+            msg(Role::User, "q1"),
+            msg(Role::Assistant, "a1"),
+            msg(Role::User, "q2"),
+            msg(Role::Assistant, "a2"),
+        ];
+        // Spread start lines far enough that scroll_to's centering pads
+        // don't clamp everything to 0. user_starts = [100, 300].
+        state.message_line_ranges = vec![(100, 150), (200, 250), (300, 350), (400, 450)];
+        state.rendered_lines = (0..500).map(|_| Line::raw("x")).collect();
+        state.scroll = 0;
+        state.jump_turn(1);
+        let after_forward = state.scroll;
+        assert!(
+            after_forward > 0,
+            "forward jump should advance past 0 (got {after_forward})"
+        );
+        // Wrap: nothing after 300, goes to 100.
+        state.scroll = 400;
+        state.jump_turn(1);
+        assert!(state.scroll < 400, "wraps to earliest user turn");
+    }
+
+    #[test]
+    fn heatmap_dimension_defaults_to_cost() {
+        let s = mk_session();
+        let state = ViewerState::open(&s);
+        assert_eq!(state.heatmap_dim, HeatmapDimension::Cost);
     }
 }

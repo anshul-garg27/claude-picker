@@ -159,6 +159,24 @@ const HELP_GROUP: &[KeyEntry] = &[KeyEntry {
     desc: "this overlay",
 }];
 
+/// yazi-style background-task drawer bindings. Shown on every picker
+/// screen that owns an event loop on `App`, since the task queue itself
+/// is app-scoped and visible from anywhere.
+const ASYNC_GROUP: &[KeyEntry] = &[
+    KeyEntry {
+        key: "w",
+        desc: "toggle background task drawer",
+    },
+    KeyEntry {
+        key: "j / k",
+        desc: "move focus up / down (drawer mode)",
+    },
+    KeyEntry {
+        key: "x",
+        desc: "cancel focused task (drawer mode)",
+    },
+];
+
 /// Vim-style navigation and discoverability primitives shared by the
 /// picker screens. Added as part of the keyboard-UX pass — these land in
 /// every screen that owns an event loop on `App`.
@@ -197,6 +215,10 @@ const SESSION_LIST_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "ACTIONS",
         entries: ACTIONS_SESSION,
+    },
+    KeyGroup {
+        title: "ASYNC",
+        entries: ASYNC_GROUP,
     },
     KeyGroup {
         title: "HELP",
@@ -267,6 +289,10 @@ const PROJECT_LIST_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "ACTIONS",
         entries: ACTIONS_PROJECT,
+    },
+    KeyGroup {
+        title: "ASYNC",
+        entries: ASYNC_GROUP,
     },
     KeyGroup {
         title: "HELP",
@@ -449,6 +475,10 @@ const FILES_GROUPS: &[KeyGroup] = &[
     KeyGroup {
         title: "ACTIONS",
         entries: ACTIONS_FILES,
+    },
+    KeyGroup {
+        title: "ASYNC",
+        entries: ASYNC_GROUP,
     },
     KeyGroup {
         title: "HELP",

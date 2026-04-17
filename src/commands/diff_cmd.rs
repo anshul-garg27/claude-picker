@@ -507,6 +507,12 @@ fn run_diff_screen(
             // `d` toggles the word-level diff renderer. Delta-style inline
             // highlights replace the two-column body when on.
             Event::Key('d') | Event::Key('D') => data.toggle_word_mode(),
+            // `n` / `N`: chunk-jump between hunks (delta-style). Each
+            // exchange pair is one hunk; stride is kept inside
+            // `DiffData::jump_hunk` so both side-by-side and word-diff
+            // modes agree on what "next pair" means.
+            Event::Key('n') => data.jump_hunk(1, MAX_SCROLL),
+            Event::Key('N') => data.jump_hunk(-1, MAX_SCROLL),
             _ => {}
         }
     }

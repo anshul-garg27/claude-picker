@@ -42,7 +42,8 @@ use crate::ui::conversation_viewer::{
 };
 use crate::ui::help_overlay::{self, Screen as HelpScreen};
 use crate::ui::tree::{
-    build_tree_with_collapsed, collapsible_fork_root_ids, render as render_tree, NodeKind, TreeNode,
+    build_tree_with_collapsed, collapse_all_under, collapsible_fork_root_ids, expand_all_under,
+    render as render_tree, NodeKind, TreeNode,
 };
 
 /// Window in which two `g` presses become a jump-to-top chord.
@@ -473,10 +474,51 @@ impl TreeState {
             Event::Key('Y') => self.copy_project_path(),
             Event::Key('o') => self.open_in_editor(),
             Event::Key('v') => self.open_viewer(),
+            // jless-style recursive expand / collapse for the selected
+            // node's whole subtree. `h`/`l` still drive single-node
+            // open/close.
+            Event::Key('e') => {
+                self.pending_g = None;
+                self.expand_subtree();
+            }
+            Event::Key('E') => {
+                self.pending_g = None;
+                self.collapse_subtree();
+            }
             _ => {
                 self.pending_g = None;
             }
         }
+    }
+
+    /// Recursive expand from the selected node — matches jless `e`.
+    /// Walks the selected session's fork descendants and clears every id
+    /// from `collapsed` so the whole subtree becomes visible in one
+    /// press. No-op on leaf sessions and headers.
+    fn expand_subtree(&mut self) {
+        let Some(node) = self.nodes.get(self.cursor) else {
+            return;
+        };
+        let Some(root_id) = node.session_id().map(|s| s.to_string()) else {
+            return;
+        };
+        expand_all_under(&mut self.collapsed, &self.sessions_by_project, &root_id);
+        self.rebuild();
+    }
+
+    /// Recursive collapse from the selected node — matches jless `E`.
+    /// Adds the node and every descendant to `collapsed`. Cursor stays
+    /// on the same session row (post-rebuild) so the user keeps their
+    /// place.
+    fn collapse_subtree(&mut self) {
+        let Some(node) = self.nodes.get(self.cursor) else {
+            return;
+        };
+        let Some(root_id) = node.session_id().map(|s| s.to_string()) else {
+            return;
+        };
+        collapse_all_under(&mut self.collapsed, &self.sessions_by_project, &root_id);
+        self.rebuild();
     }
 
     /// Open the conversation viewer for the session under the cursor.
