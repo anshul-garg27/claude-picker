@@ -76,6 +76,26 @@ struct Cli {
     #[arg(long = "files")]
     files_flag: bool,
 
+    /// Show all configured Claude Code hooks and their execution history.
+    #[arg(long = "hooks")]
+    hooks_flag: bool,
+
+    /// Show installed MCP servers and tool-call usage across sessions.
+    #[arg(long = "mcp")]
+    mcp_flag: bool,
+
+    /// Browse file-history checkpoints per session.
+    #[arg(long = "checkpoints")]
+    checkpoints_flag: bool,
+
+    /// Cost-optimization audit — flag sessions that could be cheaper.
+    #[arg(long = "audit")]
+    audit_flag: bool,
+
+    /// Batch-title unnamed sessions via Haiku 4.5 (prompts for confirmation).
+    #[arg(long = "ai-titles")]
+    ai_titles_flag: bool,
+
     /// Restrict the `--files` view to a single project (by basename).
     /// Example: `claude-picker --files --project architex`.
     #[arg(long, global = true, value_name = "NAME")]
@@ -137,6 +157,17 @@ enum Command {
     Pipe,
     /// File-centric pivot view — list every file, pivot to sessions.
     Files,
+    /// Show all configured Claude Code hooks + execution history.
+    Hooks,
+    /// Show installed MCP servers + tool-call usage.
+    Mcp,
+    /// Browse file-history checkpoints per session.
+    Checkpoints,
+    /// Cost-optimization audit across every session.
+    Audit,
+    /// Batch-title unnamed sessions via a Haiku summarizer.
+    #[command(name = "ai-titles")]
+    AiTitles,
 }
 
 fn main() -> anyhow::Result<()> {
@@ -215,6 +246,21 @@ fn main() -> anyhow::Result<()> {
     if cli.files_flag {
         return commands::files_cmd::run(cli.project.clone());
     }
+    if cli.hooks_flag {
+        return commands::hooks_cmd::run();
+    }
+    if cli.mcp_flag {
+        return commands::mcp_cmd::run();
+    }
+    if cli.checkpoints_flag {
+        return commands::checkpoints_cmd::run();
+    }
+    if cli.audit_flag {
+        return commands::audit_cmd::run();
+    }
+    if cli.ai_titles_flag {
+        return commands::ai_titles_cmd::run();
+    }
 
     match cli.command {
         None => {
@@ -233,6 +279,11 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Diff) => commands::diff_cmd::run(),
         Some(Command::Search) => commands::search_cmd::run(),
         Some(Command::Files) => commands::files_cmd::run(cli.project.clone()),
+        Some(Command::Hooks) => commands::hooks_cmd::run(),
+        Some(Command::Mcp) => commands::mcp_cmd::run(),
+        Some(Command::Checkpoints) => commands::checkpoints_cmd::run(),
+        Some(Command::Audit) => commands::audit_cmd::run(),
+        Some(Command::AiTitles) => commands::ai_titles_cmd::run(),
     }
 }
 
