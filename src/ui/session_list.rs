@@ -10,6 +10,13 @@
 //!
 //! The selected row is prefixed with `▸` and tinted via
 //! [`crate::theme::Theme::selected_row`], matching the mockup.
+//!
+//! **Density polish (E6/E7):** each row carries two 1-cell heat gauges —
+//! a cost-burn bar just before the cost column (green/amber/rose by spend
+//! bucket) and a context-usage gutter anchored at the right edge of the pane
+//! (green/amber/rose by `tokens.total()` against a 200k budget). Both
+//! degrade gracefully on narrow panes: gutter hides under 60 cols, cost-burn
+//! bar under 80 cols.
 
 use std::borrow::Cow;
 use std::time::Duration;
@@ -224,6 +231,15 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
 
+    // Gate the density decorations on available width. The gutter lives at
+    // the right edge; on very narrow panes it would collide with the scrollbar
+    // or force the name column to truncate below readability. Same story with
+    // the cost-burn chip just before the cost column — drop it first when
+    // width gets tight.
+    let cols = area.width as usize;
+    let show_gutter = cols >= 60;
+    let show_cost_bar = cols >= 80;
+
     let items: Vec<ListItem<'_>> = app
         .filtered_indices
         .iter()
@@ -244,6 +260,9 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
                 is_bookmarked,
                 is_multi,
                 is_glide,
+                cols,
+                show_gutter,
+                show_cost_bar,
             ))
         })
         .collect();
@@ -289,13 +308,23 @@ fn render_scrollbar(f: &mut Frame<'_>, area: Rect, total: usize, position: usize
 /// Render a single row as a styled [`Line`].
 ///
 /// Layout (at 55%-wide panels that gives us ~50 cols):
-/// `▸ session-name…………… [opus] $1.24 2h`
+/// `▸ session-name…………… [opus] ▍ $1.24 2h           ▕`
+///                                       ↑ cost-burn  ↑ ctx gutter
 ///
 /// **v2.2 polish layers:**
 /// - Cost column uses `theme::cost_color` (teal → green → yellow → peach).
 /// - Unselected rows fade toward `overlay0` based on the session's last
 ///   activity — older rows visibly dim so recency reads without dates.
 /// - Multi-selected / cursor rows keep full intensity for contrast.
+///
+/// **Density layers (E6/E7):**
+/// - 1-cell cost-burn bar (green/amber/rose) sits between the pill group and
+///   the cost number, giving a pre-attentive "how hot is this?" cue before
+///   the reader parses the dollar figure.
+/// - 1-cell context-usage gutter anchored 1 col inset from the right edge
+///   shows how full the 200k token window is (green/amber/rose by 40%/80%
+///   thresholds). Inset so the scrollbar thumb never paints over it.
+#[allow(clippy::too_many_arguments)]
 fn render_row<'a>(
     s: &'a Session,
     theme: &Theme,
@@ -303,6 +332,9 @@ fn render_row<'a>(
     bookmarked: bool,
     multi: bool,
     glide_trail: bool,
+    area_width: usize,
+    show_gutter: bool,
+    show_cost_bar: bool,
 ) -> Line<'a> {
     // Age in seconds since the last activity timestamp — drives the row-fade.
     // Missing timestamps fade fully (treat as "very old").
@@ -440,6 +472,20 @@ fn render_row<'a>(
         spans.push(m);
     }
     spans.push(Span::raw(" "));
+    // Cost-burn heat bar (E6 fallback: per-turn history isn't on `Session`,
+    // so tint a 1-cell bar by the session's running total). Drops out on
+    // panes narrower than 80 cols so the name column keeps its width.
+    if show_cost_bar {
+        let bar_fg = cost_burn_color(s.total_cost_usd, theme);
+        let mut bar_style = Style::default().fg(bar_fg).add_modifier(Modifier::BOLD);
+        if apply_fade {
+            bar_style = theme::age_fade_style(theme, bar_style, age);
+        }
+        // Left three-eighths block — reads as a vertical "heat rail" without
+        // using a full block that would visually merge into the pill/cost.
+        spans.push(Span::styled("\u{258D}", bar_style));
+        spans.push(Span::raw(" "));
+    }
     spans.push(cost_span);
     spans.push(age_span);
 
@@ -456,7 +502,82 @@ fn render_row<'a>(
         }
     }
 
+    // Context-usage gutter (E7): 1 cell anchored at `area_width - 2`. Inset
+    // by 1 so the scrollbar thumb on the last column never clobbers it. We
+    // pad with spaces (carrying the selected-row bg, if any) so the gutter
+    // aligns visually regardless of the row content width.
+    //
+    // Skip entirely if the row already overflows the target column — a
+    // visually misaligned gutter reads as a rendering bug, and the content
+    // will be clipped by Ratatui at `area_width` anyway.
+    if show_gutter && area_width >= 2 {
+        let content_w: usize = spans
+            .iter()
+            .map(|sp| display_width(sp.content.as_ref()))
+            .sum();
+        // Target column for the gutter cell — reserve 1 cell to the left of
+        // the rightmost column so a scrollbar thumb doesn't paint over the
+        // gauge.
+        let gutter_col = area_width.saturating_sub(2);
+        if content_w <= gutter_col {
+            let pad_n = gutter_col - content_w;
+            if pad_n > 0 {
+                let mut pad_style = Style::default();
+                if selected || glide_trail {
+                    pad_style = pad_style.bg(theme.surface0);
+                }
+                spans.push(Span::styled(" ".repeat(pad_n), pad_style));
+            }
+            let ctx_fg = ctx_gutter_color(s, theme);
+            let mut gutter_style = Style::default().fg(ctx_fg).add_modifier(Modifier::BOLD);
+            if selected || glide_trail {
+                gutter_style = gutter_style.bg(theme.surface0);
+            }
+            // Right-eighth block (U+2595) hugs the right edge without
+            // filling the full cell, so tall selection backgrounds still
+            // read cleanly.
+            spans.push(Span::styled("\u{2595}", gutter_style));
+        }
+    }
+
     Line::from(spans)
+}
+
+/// Colour for the cost-burn 1-cell bar (E6 fallback variant).
+///
+/// Buckets per the brief: ≤$1 → green (cool), $1–$10 → amber/yellow, $10+
+/// → rose/red. A separate ramp from [`theme::cost_color`] on purpose — this
+/// bar is a binary "pay attention" signal, not a fine-grained heat map, so
+/// we collapse to three tiers for instant legibility. Zero-cost rows render
+/// against the muted overlay so an empty session doesn't light up green.
+fn cost_burn_color(cost_usd: f64, theme: &Theme) -> ratatui::style::Color {
+    if cost_usd <= 0.0 {
+        theme.overlay0
+    } else if cost_usd < 1.0 {
+        theme.green
+    } else if cost_usd < 10.0 {
+        theme.yellow
+    } else {
+        theme.red
+    }
+}
+
+/// Colour for the context-window gutter (E7).
+///
+/// `ctx_pct = session_tokens.total() / 200_000`. We use `TokenCounts::total()`
+/// because the per-message `input_tokens` counter isn't preserved on the
+/// aggregated `Session` — `total()` is the closest proxy and it's what the
+/// project-totals bar already displays, so the thresholds read consistently
+/// across the UI.
+fn ctx_gutter_color(s: &Session, theme: &Theme) -> ratatui::style::Color {
+    let pct = (s.tokens.total() as f64) / 200_000.0;
+    if pct < 0.40 {
+        theme.green
+    } else if pct < 0.80 {
+        theme.yellow
+    } else {
+        theme.red
+    }
 }
 
 /// Age of the session since `last_timestamp`. Missing timestamps return a
@@ -643,5 +764,59 @@ mod tests {
         assert_eq!(relative_time(Some(two_hours)), "2h");
         let yesterday = now - chrono::Duration::hours(26);
         assert_eq!(relative_time(Some(yesterday)), "yd");
+    }
+
+    #[test]
+    fn cost_burn_buckets_ramp_green_to_red() {
+        let t = Theme::mocha();
+        assert_eq!(cost_burn_color(0.0, &t), t.overlay0);
+        assert_eq!(cost_burn_color(0.01, &t), t.green);
+        assert_eq!(cost_burn_color(0.99, &t), t.green);
+        assert_eq!(cost_burn_color(1.0, &t), t.yellow);
+        assert_eq!(cost_burn_color(9.99, &t), t.yellow);
+        assert_eq!(cost_burn_color(10.0, &t), t.red);
+        assert_eq!(cost_burn_color(99.0, &t), t.red);
+    }
+
+    #[test]
+    fn ctx_gutter_thresholds_match_200k_budget() {
+        // Build a bare Session stub — we only need `.tokens.total()` to vary.
+        use crate::data::pricing::TokenCounts;
+        use crate::data::SessionKind;
+        use std::path::PathBuf;
+
+        let mk = |total: u64| Session {
+            id: "x".into(),
+            project_dir: PathBuf::from("/tmp"),
+            name: None,
+            auto_name: None,
+            last_prompt: None,
+            message_count: 0,
+            tokens: TokenCounts {
+                input: total,
+                ..TokenCounts::default()
+            },
+            total_cost_usd: 0.0,
+            model_summary: String::new(),
+            first_timestamp: None,
+            last_timestamp: None,
+            is_fork: false,
+            forked_from: None,
+            entrypoint: SessionKind::Cli,
+            permission_mode: None,
+            subagent_count: 0,
+            turn_durations: Vec::new(),
+        };
+        let t = Theme::mocha();
+
+        // < 40% → green.
+        assert_eq!(ctx_gutter_color(&mk(0), &t), t.green);
+        assert_eq!(ctx_gutter_color(&mk(79_999), &t), t.green);
+        // 40–80% → yellow.
+        assert_eq!(ctx_gutter_color(&mk(80_000), &t), t.yellow);
+        assert_eq!(ctx_gutter_color(&mk(159_999), &t), t.yellow);
+        // ≥ 80% → red.
+        assert_eq!(ctx_gutter_color(&mk(160_000), &t), t.red);
+        assert_eq!(ctx_gutter_color(&mk(500_000), &t), t.red);
     }
 }
