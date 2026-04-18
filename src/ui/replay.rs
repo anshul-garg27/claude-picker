@@ -22,6 +22,7 @@
 //! Honours `CLAUDE_PICKER_NO_ANIM` by skipping the slide-in + typewriter
 //! effects — messages just appear instantly.
 
+use std::collections::VecDeque;
 use std::time::{Duration, Instant};
 
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
@@ -30,6 +31,8 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use tachyonfx::{fx, Effect, Interpolation, Shader};
+
 use crate::data::replay::{format_duration, ReplayTimeline, SpeedPreset};
 use crate::data::transcript::{
     jsonl_path_for_session, load_transcript, ContentItem, Role, TranscriptMessage,
@@ -37,6 +40,7 @@ use crate::data::transcript::{
 use crate::data::Session;
 use crate::events::Event;
 use crate::theme::{self, Theme};
+use crate::ui::fx as ui_fx;
 
 /// What the viewer wants the parent to do after handling an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -126,7 +130,42 @@ pub struct ReplayState {
     pub cached_index: Option<usize>,
     pub cached_show_tool_blocks: bool,
     pub cached_auto_scroll: bool,
+
+    /// F4 — comet-trail ring. Stores up to `SCRUB_TRAIL_CAPACITY`
+    /// recently-visited scrubber positions, newest at the front. Painted
+    /// over the progress bar with a stacked fade so each older position
+    /// shows at a weaker alpha. The actual fade is applied by stacking
+    /// tachyonfx `fade_to` effects in [`render_progress_bar`].
+    pub scrub_trail: VecDeque<ScrubPos>,
+    /// Frame-counter for the trail — used to push a new `ScrubPos` only
+    /// when the visible filled_col actually changes between frames, not
+    /// on every tick.
+    pub last_trail_col: Option<u16>,
+    /// Reduce-motion opt-out for the scrub trail. `true` collapses the
+    /// comet back to a single cursor cell.
+    pub reduce_motion: bool,
 }
+
+/// One recorded cursor position for the F4 comet trail.
+///
+/// `col` is the column (inside the progress bar's rect) the scrubber
+/// landed on; `seen_at` is when it was recorded. Older entries in
+/// [`ReplayState::scrub_trail`] render at lower alpha to give the "comet"
+/// look without us having to drive a manual tween.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ScrubPos {
+    pub col: u16,
+    pub seen_at: Instant,
+}
+
+/// Ring capacity — three history positions plus the current head gives a
+/// four-cell comet, as the brief calls for.
+pub const SCRUB_TRAIL_CAPACITY: usize = 4;
+
+/// Per-position alpha ramp for the comet trail. `idx 0` is the head
+/// (full brightness), trailing entries fade off. 4 entries, matching
+/// [`SCRUB_TRAIL_CAPACITY`].
+pub const SCRUB_TRAIL_ALPHAS: [f32; 4] = [1.0, 0.3, 0.1, 0.0];
 
 /// Duration of the "new message" slide-in animation. Long enough to feel
 /// alive, short enough that at 10x speed the effect doesn't fall behind.
@@ -189,6 +228,12 @@ impl ReplayState {
             cached_index: None,
             cached_show_tool_blocks: true,
             cached_auto_scroll: true,
+            scrub_trail: VecDeque::with_capacity(SCRUB_TRAIL_CAPACITY),
+            last_trail_col: None,
+            // The env/legacy flag doubles as reduce-motion today; when
+            // `App::config.ui.reduce_motion` wiring lands, replace this
+            // with the plumbed value (see integration spec).
+            reduce_motion: theme::animations_disabled(),
         };
 
         match jsonl_path_for_session(session_id) {
@@ -810,7 +855,7 @@ fn render_keybind_hint(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
 
 /// Bottom progress bar: two-layer bar (solid for played, medium-gray for
 /// "loaded but ahead of cursor") plus speed and percentage.
-fn render_progress_bar(f: &mut Frame<'_>, area: Rect, state: &ReplayState, theme: &Theme) {
+fn render_progress_bar(f: &mut Frame<'_>, area: Rect, state: &mut ReplayState, theme: &Theme) {
     let w = area.width.saturating_sub(4) as usize;
     if w == 0 {
         return;
@@ -877,6 +922,16 @@ fn render_progress_bar(f: &mut Frame<'_>, area: Rect, state: &ReplayState, theme
     ]);
     f.render_widget(Paragraph::new(bar_line), cols[1]);
 
+    // F4 — comet trail overlay. Record the new position only when the
+    // cursor cell actually moves (scrubbing, not autoplay ticks on a
+    // sub-cell granularity), then paint each trailing entry with a
+    // stacked fade whose alpha weakens with age.
+    let head_col_in_bar = filled_cols.saturating_sub(1) as u16;
+    // Align to the actual buffer column: cols[1].x is the start of the
+    // progress cell, `+1` accounts for the leading space `Span::raw(" ")`.
+    let head_col_abs = cols[1].x + 1 + head_col_in_bar;
+    render_scrub_trail(f, cols[1], head_col_abs, state, theme);
+
     let pct = (frac * 100.0).round() as u32;
     let pct_line = Line::from(vec![
         Span::styled(" progress: ", theme.muted()),
@@ -889,6 +944,96 @@ fn render_progress_bar(f: &mut Frame<'_>, area: Rect, state: &ReplayState, theme
         Span::raw(" "),
     ]);
     f.render_widget(Paragraph::new(pct_line), cols[2]);
+}
+
+/// Record the current scrub head and paint a fading comet trail of the
+/// last [`SCRUB_TRAIL_CAPACITY`] positions. In reduce-motion mode this
+/// degrades to "head cell only, nothing stacked" — the cursor still
+/// exists, just without the decay tail.
+///
+/// The tachyonfx stack does the actual alpha weakening: for each past
+/// position, we process a `fade_to` with a half-surface-colour target at
+/// the alpha value from [`SCRUB_TRAIL_ALPHAS`]. tachyonfx lerps the cell
+/// between its current paint (the `━` baseline) and the surface hue,
+/// giving a dimmed-ghost look without us having to lerp manually.
+fn render_scrub_trail(
+    f: &mut Frame<'_>,
+    bar_area: Rect,
+    head_col_abs: u16,
+    state: &mut ReplayState,
+    theme: &Theme,
+) {
+    // Record a new position only when the head cell actually moved.
+    // Autoplay ticks within the same column would otherwise spam the ring.
+    let new_head = ScrubPos {
+        col: head_col_abs,
+        seen_at: Instant::now(),
+    };
+    let moved = state.last_trail_col != Some(head_col_abs);
+    if moved {
+        state.scrub_trail.push_front(new_head);
+        while state.scrub_trail.len() > SCRUB_TRAIL_CAPACITY {
+            state.scrub_trail.pop_back();
+        }
+        state.last_trail_col = Some(head_col_abs);
+    }
+
+    // Reduce-motion: skip the trail entirely. The bar already paints the
+    // head `●` natively, so there's nothing else to do.
+    if state.reduce_motion {
+        return;
+    }
+
+    // Paint one fade_to effect per trailing position. We drive the effect
+    // once with a large `elapsed` so it settles to its target alpha in
+    // this frame — we're not animating the fade over time, we're using
+    // tachyonfx as a single-frame-sample alpha blender.
+    let buf = f.buffer_mut();
+    let row = bar_area.y;
+    for (idx, pos) in state.scrub_trail.iter().enumerate().skip(1) {
+        let alpha = SCRUB_TRAIL_ALPHAS.get(idx).copied().unwrap_or(0.0);
+        if alpha <= 0.0 {
+            continue;
+        }
+        // Constrain the effect to the single cell we care about.
+        let cell = Rect {
+            x: pos.col.min(bar_area.x + bar_area.width.saturating_sub(1)),
+            y: row,
+            width: 1,
+            height: 1,
+        };
+        // `fade_to` lerps toward the target colours; we pick a target
+        // between the played colour (mauve) and the bar's unplayed base
+        // (surface2) proportional to `1 - alpha` so the head at alpha=1
+        // keeps full colour and each trailing cell dims toward the
+        // background.
+        let target = blend_rgb(theme.mauve, theme.surface2, 1.0 - alpha);
+        let mut eff: Effect =
+            fx::fade_to(target, theme.base, (1, Interpolation::Linear));
+        // One tick is enough — the effect duration is 1 ms so any
+        // positive elapsed saturates it.
+        eff.process(
+            ui_fx::delta_from(std::time::Duration::from_millis(1)),
+            buf,
+            cell,
+        );
+    }
+}
+
+/// Linear RGB blend between two ratatui `Color`s. Non-RGB variants
+/// (indexed, named) fall back to `a` — we only ever blend mauve and
+/// surface2 which are both RGB in every theme.
+fn blend_rgb(a: Color, b: Color, t: f32) -> Color {
+    let t = t.clamp(0.0, 1.0);
+    match (a, b) {
+        (Color::Rgb(ar, ag, ab), Color::Rgb(br, bg, bb)) => {
+            let lerp = |x: u8, y: u8| -> u8 {
+                (x as f32 + (y as f32 - x as f32) * t).clamp(0.0, 255.0) as u8
+            };
+            Color::Rgb(lerp(ar, br), lerp(ag, bg), lerp(ab, bb))
+        }
+        _ => a,
+    }
 }
 
 fn render_too_narrow(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
@@ -1402,6 +1547,68 @@ mod tests {
     }
 
     #[test]
+    fn scrub_trail_ring_caps_at_capacity() {
+        let mut s = state_from_messages(vec![]);
+        // Push 10 distinct positions into the ring; only the newest
+        // SCRUB_TRAIL_CAPACITY should survive.
+        for col in 0..10u16 {
+            // Reuse the same invariant the renderer relies on: push-front
+            // + trim to cap. We test the trim separately from the render
+            // path so we don't need a frame buffer.
+            s.scrub_trail.push_front(ScrubPos {
+                col,
+                seen_at: Instant::now(),
+            });
+            while s.scrub_trail.len() > SCRUB_TRAIL_CAPACITY {
+                s.scrub_trail.pop_back();
+            }
+        }
+        assert_eq!(s.scrub_trail.len(), SCRUB_TRAIL_CAPACITY);
+        // Newest entry (col 9) should be at the front.
+        assert_eq!(s.scrub_trail.front().map(|p| p.col), Some(9));
+        // Oldest surviving entry should be col 9-3 = 6.
+        assert_eq!(s.scrub_trail.back().map(|p| p.col), Some(6));
+    }
+
+    #[test]
+    fn scrub_trail_alphas_decay_monotonically() {
+        // The brief calls for 1.0 → 0.3 → 0.1 → 0.0 — verify the decay
+        // is strictly decreasing.
+        let alphas = SCRUB_TRAIL_ALPHAS;
+        for w in alphas.windows(2) {
+            assert!(
+                w[0] > w[1],
+                "alpha ramp must decrease at every step: {:?}",
+                alphas
+            );
+        }
+        assert_eq!(alphas[0], 1.0, "head alpha must be full brightness");
+    }
+
+    #[test]
+    fn blend_rgb_midpoint_between_two_colors() {
+        let a = Color::Rgb(0, 0, 0);
+        let b = Color::Rgb(200, 200, 200);
+        let mid = blend_rgb(a, b, 0.5);
+        match mid {
+            Color::Rgb(r, g, b) => {
+                assert!((r as i32 - 100).abs() <= 1);
+                assert!((g as i32 - 100).abs() <= 1);
+                assert!((b as i32 - 100).abs() <= 1);
+            }
+            _ => panic!("expected Rgb output"),
+        }
+    }
+
+    #[test]
+    fn blend_rgb_preserves_endpoints() {
+        let a = Color::Rgb(10, 20, 30);
+        let b = Color::Rgb(200, 210, 220);
+        assert_eq!(blend_rgb(a, b, 0.0), a);
+        assert_eq!(blend_rgb(a, b, 1.0), b);
+    }
+
+    #[test]
     fn advance_at_one_x_walks_through_timeline() {
         let mut s = state_from_messages(vec![
             msg(Some(ts(0)), "first", Role::User),
@@ -1639,3 +1846,26 @@ mod tests {
         assert_eq!(s.current_index, Some(2));
     }
 }
+
+// ─── F4 integration spec ─────────────────────────────────────────────────
+//
+// The comet-trail reads `ReplayState::reduce_motion`, which is seeded from
+// `theme::animations_disabled()` on state construction. To respect the
+// config-file flag:
+//
+//   1. Accept a `reduce_motion: bool` argument on `ReplayState::open` /
+//      `ReplayState::open_with` (breaking the signature). Pass it through
+//      from the two call sites in `commands::pick` and `commands::tree_cmd`
+//      that construct a replay — they already have `app.config` (or will
+//      once the F3 wiring adds it) and can forward
+//      `config.ui.reduce_motion || theme::animations_disabled()`.
+//
+//   2. Remove the `theme::animations_disabled()` fallback from the struct
+//      init once the call-site plumbing is in place.
+//
+// Until then, `CLAUDE_PICKER_NO_ANIM=1` still disables the trail.
+//
+// The head `●` on the progress bar is unchanged — the comet is painted on
+// top of the existing bar so a reduce-motion session looks exactly like
+// today's replay UI.
+

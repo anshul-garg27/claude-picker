@@ -16,6 +16,8 @@
 //! toggles) so render can stay pure-data-in. Keybind handlers call the
 //! mutating methods on `ProjectList` from `app.rs`.
 
+use std::cell::RefCell;
+
 use chrono::{DateTime, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -31,6 +33,10 @@ use crate::data::pinned_projects::{PinnedProjects, ToggleResult};
 use crate::data::Project;
 use crate::theme::Theme;
 use crate::ui::text::{pad_to_width, truncate_to_width};
+use crate::ui::thumbnail::{
+    self, PinnedSlot, ThumbnailRenderer, MIN_STRIP_WIDTH as THUMB_MIN_STRIP_WIDTH,
+    TILE_ROWS as THUMB_TILE_ROWS,
+};
 
 /// Minimum terminal width at which we render the full pinned strip. Below
 /// this, only the active pin (if any) is shown so labels don't wrap.
@@ -45,6 +51,14 @@ const PINNED_STRIP_FULL_WIDTH: u16 = 60;
 /// store is safe on CI and headless hosts where `$HOME` isn't set.
 pub struct ProjectList {
     pinned: PinnedProjects,
+    /// F2/E17 thumbnail renderer. Wrapped in `RefCell` because `App` only
+    /// exposes `&ProjectList` and the renderer needs `&mut self` to bump
+    /// its LRU and build per-frame `StatefulProtocol`s. The borrow is held
+    /// for one render pass so there's no risk of overlap.
+    ///
+    /// Lazily initialised on first access to keep `ProjectList::load()`
+    /// cheap (the terminal stdio probe costs a round-trip).
+    thumbnails: RefCell<Option<ThumbnailRenderer>>,
 }
 
 impl ProjectList {
@@ -53,6 +67,16 @@ impl ProjectList {
     pub fn load() -> Self {
         Self {
             pinned: PinnedProjects::load(),
+            thumbnails: RefCell::new(None),
+        }
+    }
+
+    /// Drop cached identicon images. Called by the wiring layer on theme
+    /// switch so the next frame rebuilds tiles in the new palette. Safe
+    /// to call before the renderer is initialised (no-op).
+    pub fn invalidate_thumbnail_cache(&self) {
+        if let Some(r) = self.thumbnails.borrow_mut().as_mut() {
+            r.invalidate();
         }
     }
 
@@ -135,13 +159,26 @@ pub fn render(f: &mut Frame<'_>, area: Rect, app: &App) {
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // The pinned strip eats one row at the top. When the strip is empty (no
-    // pins yet) we still draw a "no pins — press u to pin" hint so the
-    // feature is discoverable.
+    // The pinned strip is taller when thumbnails are in play: each tile is
+    // a 2-row-tall identicon inside a 1-row border on each side, totalling
+    // 4 rows. When the strip is text-only (narrow terminal, no pins, or
+    // legacy degraded path) we stay at 1 row. We pick the taller layout
+    // whenever the terminal is wide enough AND there's at least one pin —
+    // a "no pins, press u" hint is still one row.
+    let wants_thumbnails = inner.width >= THUMB_MIN_STRIP_WIDTH
+        && (1u8..=9).any(|s| app.project_list().pinned().at_slot(s).is_some());
+    let strip_height = if wants_thumbnails {
+        // 2 rows for the identicon + 1 row each for top/bottom border of
+        // the surrounding block = 4. Matches the block drawn inside
+        // `thumbnail::render_pinned_strip_with_thumbnails`.
+        THUMB_TILE_ROWS + 2
+    } else {
+        1
+    };
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // pinned strip (1 row)
+            Constraint::Length(strip_height),
             Constraint::Length(3), // filter input
             Constraint::Min(1),    // list body
         ])
@@ -154,9 +191,14 @@ pub fn render(f: &mut Frame<'_>, area: Rect, app: &App) {
 
 /// Render the numbered pinned strip.
 ///
-/// - When ≥ `PINNED_STRIP_FULL_WIDTH` cols: show the full `[0:all] [1:name]
-///   [2:(empty)] …` row.
-/// - Below that: collapse to just the active slot's label to avoid wrapping.
+/// Layering:
+/// - `area.width >= THUMB_MIN_STRIP_WIDTH` **and** there's at least one pin:
+///   delegate to `thumbnail::render_pinned_strip_with_thumbnails`, which
+///   renders each slot as `[N: identicon basename]` using the image
+///   protocol or a halfblock fallback.
+/// - `PINNED_STRIP_FULL_WIDTH <= area.width < THUMB_MIN_STRIP_WIDTH`: the
+///   original text-only strip (`[0:all] [1:name] [2:(empty)] …`).
+/// - Below `PINNED_STRIP_FULL_WIDTH`: collapse to just the active slot.
 fn render_pinned_strip(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
@@ -168,6 +210,45 @@ fn render_pinned_strip(f: &mut Frame<'_>, area: Rect, app: &App) {
     let active_cwd = app
         .active_project()
         .map(|p| p.path.to_string_lossy().into_owned());
+
+    // Thumbnail path: wide enough terminal + at least one pin.
+    if area.width >= THUMB_MIN_STRIP_WIDTH {
+        if let Some(pinned) = maybe_pinned {
+            let any_pin = (1u8..=9).any(|s| pinned.at_slot(s).is_some());
+            if any_pin {
+                // Build the slot vec first so the `RefCell` borrow is scoped
+                // tightly around the render call.
+                let slots: Vec<(u8, String, bool)> = (1u8..=9)
+                    .filter_map(|slot| {
+                        let cwd = pinned.at_slot(slot)?;
+                        let basename = thumbnail::basename_for_cwd(cwd);
+                        let active = active_cwd.as_deref() == Some(cwd);
+                        Some((slot, basename, active))
+                    })
+                    .collect();
+
+                let pl = app.project_list();
+                let mut cell = pl.thumbnails.borrow_mut();
+                let renderer = cell.get_or_insert_with(ThumbnailRenderer::new);
+
+                let slot_refs: Vec<PinnedSlot<'_>> = slots
+                    .iter()
+                    .map(|(slot, basename, active)| PinnedSlot {
+                        slot: *slot,
+                        basename: basename.as_str(),
+                        is_active: *active,
+                    })
+                    .collect();
+
+                thumbnail::render_pinned_strip_with_thumbnails(
+                    f, area, &slot_refs, theme, renderer,
+                );
+                return;
+            }
+        }
+        // Fall through to the text strip when no pins yet — keeps the
+        // "press u to pin" hint visible and avoids a blank tall row.
+    }
 
     // Narrow mode: only show the "current" slot if any, else the ALL chip.
     if area.width < PINNED_STRIP_FULL_WIDTH {
@@ -502,4 +583,58 @@ pub fn render_pinned_strip_with(
         spans.push(tile_span(&slot.to_string(), &label, is_active, is_filled, theme));
     }
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Render the pinned strip using F2/E17 project thumbnails. This is the
+/// spec-named entry point — callers that want tiled identicons reach
+/// through here instead of [`render_pinned_strip_with`]. Behaviour:
+///
+/// - Wide terminal (≥ [`thumbnail::MIN_STRIP_WIDTH`]) with ≥1 pin:
+///   image-protocol tiles (kitty / iTerm2 / Sixel) when the probe
+///   succeeds; halfblocks otherwise.
+/// - Narrower or no-pin: delegates to [`render_pinned_strip_with`], so
+///   callers don't need to duplicate degradation logic.
+pub fn render_pinned_strip_with_thumbnails(
+    f: &mut Frame<'_>,
+    area: Rect,
+    app: &App,
+    pl: &ProjectList,
+    theme: &Theme,
+) {
+    if area.width < THUMB_MIN_STRIP_WIDTH {
+        render_pinned_strip_with(f, area, app, pl, theme);
+        return;
+    }
+    let any_pin = (1u8..=9).any(|s| pl.pinned.at_slot(s).is_some());
+    if !any_pin {
+        render_pinned_strip_with(f, area, app, pl, theme);
+        return;
+    }
+
+    let active_cwd = app
+        .active_project()
+        .map(|p| p.path.to_string_lossy().into_owned());
+
+    let slots: Vec<(u8, String, bool)> = (1u8..=9)
+        .filter_map(|slot| {
+            let cwd = pl.pinned.at_slot(slot)?;
+            let basename = thumbnail::basename_for_cwd(cwd);
+            let active = active_cwd.as_deref() == Some(cwd);
+            Some((slot, basename, active))
+        })
+        .collect();
+
+    let mut cell = pl.thumbnails.borrow_mut();
+    let renderer = cell.get_or_insert_with(ThumbnailRenderer::new);
+
+    let slot_refs: Vec<PinnedSlot<'_>> = slots
+        .iter()
+        .map(|(slot, basename, active)| PinnedSlot {
+            slot: *slot,
+            basename: basename.as_str(),
+            is_active: *active,
+        })
+        .collect();
+
+    thumbnail::render_pinned_strip_with_thumbnails(f, area, &slot_refs, theme, renderer);
 }
