@@ -11,6 +11,26 @@ homepage = "https://github.com/anshul-garg27/claude-picker"
 keywords = ["claude", "claude-code", "tui", "terminal", "cli"]
 categories = ["command-line-utilities", "development-tools"]
 readme = "README.md"
+# Published crate only needs source + tests + README + license. Marketing
+# assets, generated images, the website, and legacy Python scripts bloat
+# the tarball with 25+ MB of binary content that has no business being on
+# crates.io — exclude them.
+exclude = [
+    "assets/",
+    "website/",
+    "demo-kit/",
+    "docs/",
+    "launch-kit/",
+    ".github/",
+    "*.gif",
+    "*.png",
+    "*.jpg",
+    "*.mp4",
+    "scripts/",
+    "uninstall.sh",
+    "install.sh",
+    "warp/",
+]
 
 [[bin]]
 name = "claude-picker"
