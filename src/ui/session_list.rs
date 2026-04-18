@@ -24,12 +24,11 @@ use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Local, TimeZone, Utc};
 use ratatui::buffer::Buffer;
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Scrollbar,
-    ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Widget,
 };
 use ratatui::Frame;
 
@@ -42,16 +41,56 @@ use crate::ui::fx as ui_fx;
 use crate::ui::model_pill;
 use crate::ui::text::{display_width, truncate_to_width};
 
-/// Width of the name column within a row. The row renderer appends cost and
-/// age after this, so keep the header/list aligned by anchoring off of it.
-const NAME_COL_WIDTH: usize = 28;
+// ── Strict column budget ─────────────────────────────────────────────────
+//
+// The row layout is a hard-bounded `Layout::horizontal` split. Every column
+// has a budget it cannot exceed. The earlier implementation built one loose
+// `Line<Span>` and trusted content widths to line up — but CJK names, cost
+// chips with 5-digit dollar amounts, and long teaser strings all crushed
+// into each other. Now we `Layout::horizontal` the row into 10 fixed rects
+// and render each column into its own rect so overflow clips cleanly at the
+// column boundary.
+//
+//  Col 1  prefix `▸`     2 cols    always
+//  Col 2  name           24 cols   bold primary label, truncates with …
+//  Col 3  auto subtitle  16 cols   optional, collapses when empty
+//  Col 4  model pill     10 cols   `▌opus▐` / `▌sonnet▐` / `▌haiku▐`
+//  Col 5  perm badge     8 cols    `▌plan▐` etc — empty when default
+//  Col 6  subagent count 3 cols    `②` or blank when 0
+//  Col 7  teaser         flex      `"…"` italic, clips at column edge
+//  Col 8  cost chip      9 cols    `▌$12.40▐` right-aligned
+//  Col 9  timestamp      7 cols    `3m ago`
+//  Col 10 context gutter 1 col     gradient tint
+//
+// Breakpoints (see `ColumnPlan::for_width`):
+//   width < 100   drop auto subtitle + teaser
+//   width < 80    also drop permission badge
+//   width < 60    also drop model pill + subagent counter
+//   width < 40    name + cost + age only (drop gutter too)
 
-/// Max display cols for the last-prompt teaser appended after the pills when
-/// there's room. Sized against the brief's 120-col mockup: name (28) + pill
-/// pack (~18) + teaser + cost (8) + age (6) ≈ 120 leaves ~60 cols for the
-/// teaser at the widest useful pane. We cap at 52 so shorter panes don't push
-/// cost/age off-screen.
-const TEASER_MAX_COLS: usize = 52;
+/// Display width of the name column. Kept public-crate-only so tests and
+/// helpers can key off the same constant.
+const NAME_COL_WIDTH: usize = 24;
+/// Width of the auto-name subtitle column.
+const SUBTITLE_COL_WIDTH: usize = 16;
+/// Width of the model pill column.
+const MODEL_COL_WIDTH: usize = 10;
+/// Width of the permission badge column.
+const PERM_COL_WIDTH: usize = 8;
+/// Width of the subagent counter column (` N ` with a space margin).
+const SUBAGENT_COL_WIDTH: usize = 3;
+/// Width of the cost chip column — `▌$1234▐` fits in 7 display cells so 9
+/// leaves a two-cell breathing margin on either side.
+const COST_COL_WIDTH: usize = 9;
+/// Width of the age column — widest literal is `Apr 10` at 6 cells.
+const AGE_COL_WIDTH: usize = 7;
+/// Width of the context gutter sliver — a single cell at the right edge.
+const GUTTER_COL_WIDTH: usize = 1;
+/// Width of the leading pointer / prefix column (`▸` plus margin).
+const PREFIX_COL_WIDTH: usize = 2;
+/// Minimum flex budget given to the teaser column — below this we drop the
+/// teaser entirely so the cost/age columns can keep their allocation.
+const TEASER_MIN_FLEX: u16 = 8;
 
 /// Render the entire left pane into `area`.
 ///
@@ -234,8 +273,20 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
-/// Render the list of sessions. Builds `ListItem`s for the filtered slice
-/// only; Ratatui's `List` handles scrolling based on the cursor index.
+/// Render the list of sessions.
+///
+/// Replaces the previous `List<ListItem>` pipeline with a direct per-row
+/// render pass: each visible row gets its own horizontal `Layout` split into
+/// the ten strict columns described above. Rendering into per-column rects
+/// (rather than a single `Line<Span>`) makes overflow clip at the column
+/// edge instead of bleeding into the next column — the exact bug the v0.5.0
+/// visual overhaul introduced when it stacked rich pills beside a loose
+/// teaser.
+///
+/// Scrolling uses the same viewport logic ratatui's `List` applies (anchor
+/// the top when the cursor sits inside the first page, anchor the bottom
+/// otherwise). The external `Scrollbar` widget keys off `app.cursor` so the
+/// thumb stays in sync with the manual scroll.
 fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
@@ -251,55 +302,64 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
 
-    // Gate the density decorations on available width. The gutter lives at
-    // the right edge; on very narrow panes it would collide with the scrollbar
-    // or force the name column to truncate below readability. Same story with
-    // the cost-burn chip just before the cost column — drop it first when
-    // width gets tight.
-    let cols = area.width as usize;
-    let show_gutter = cols >= 60;
-    let show_cost_bar = cols >= 80;
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
 
-    let items: Vec<ListItem<'_>> = app
-        .filtered_indices
-        .iter()
-        .enumerate()
-        .map(|(display_idx, &sess_idx)| {
-            let s = &app.sessions[sess_idx];
-            let is_selected = Some(display_idx) == app.cursor_position();
-            let is_bookmarked = app.bookmarks.contains(&s.id);
-            let is_multi = app.is_multi_selected(sess_idx);
-            // Lingering cursor trail: the row we just left keeps a faint
-            // `surface0` wash for the glide window so the eye catches the
-            // direction of movement.
-            let is_glide = app.is_glide_trail(display_idx);
-            ListItem::new(render_row(
-                s,
-                theme,
-                is_selected,
-                is_bookmarked,
-                is_multi,
-                is_glide,
-                cols,
-                show_gutter,
-                show_cost_bar,
-            ))
-        })
-        .collect();
+    let plan = ColumnPlan::for_width(area.width);
+    let visible_rows = area.height as usize;
+    let total = app.filtered_indices.len();
+    let cursor = app.cursor.min(total.saturating_sub(1));
+    let start = scroll_start(cursor, visible_rows, total);
 
-    let list = List::new(items)
-        .highlight_style(Style::default()) // we paint our own selection
-        .highlight_symbol("");
-
-    let mut state = ListState::default();
-    state.select(app.cursor_position());
-    f.render_stateful_widget(list, area, &mut state);
+    // Render visible rows one-by-one into vertically sliced rects so each
+    // row can run its own column-layout pass. `f.buffer_mut()` is held only
+    // for the painting call — no overlapping mutable borrows.
+    let buf = f.buffer_mut();
+    for (offset, display_idx) in (start..total.min(start + visible_rows)).enumerate() {
+        let sess_idx = app.filtered_indices[display_idx];
+        let s = &app.sessions[sess_idx];
+        let is_selected = Some(display_idx) == app.cursor_position();
+        let is_bookmarked = app.bookmarks.contains(&s.id);
+        let is_multi = app.is_multi_selected(sess_idx);
+        let is_glide = app.is_glide_trail(display_idx);
+        let row_area = Rect {
+            x: area.x,
+            y: area.y + offset as u16,
+            width: area.width,
+            height: 1,
+        };
+        render_row_into(
+            buf,
+            row_area,
+            s,
+            theme,
+            is_selected,
+            is_bookmarked,
+            is_multi,
+            is_glide,
+            &plan,
+        );
+    }
 
     // Scrollbar on the right edge. Skip entirely when everything fits — a
     // thumb that covers the whole track is noisy.
-    let total = app.filtered_indices.len();
     if total > area.height as usize {
         render_scrollbar(f, area, total, app.cursor, theme);
+    }
+}
+
+/// Viewport anchor for the list — matches ratatui's built-in `List` scroll
+/// behaviour. Top-anchored while the selection sits on the first page,
+/// bottom-anchored afterwards so the cursor never scrolls off-screen.
+fn scroll_start(selected: usize, visible_rows: usize, total: usize) -> usize {
+    if visible_rows == 0 || total <= visible_rows {
+        return 0;
+    }
+    if selected < visible_rows {
+        0
+    } else {
+        selected + 1 - visible_rows
     }
 }
 
@@ -325,37 +385,103 @@ fn render_scrollbar(f: &mut Frame<'_>, area: Rect, total: usize, position: usize
     );
 }
 
-/// Render a single row as a styled [`Line`].
+/// Breakpoint plan for one row: which optional columns are in play, and the
+/// exact `Constraint` list the `Layout::horizontal` split uses.
 ///
-/// Layout (at 55%-wide panels that gives us ~50 cols):
-/// `▸ session-name…………… [opus] ▍ $1.24 2h           ▕`
-///                                       ↑ cost-burn  ↑ ctx gutter
+/// Computed once per frame and reused for every visible row so every row in
+/// the list lines up pixel-perfect regardless of content. When the pane
+/// shrinks below a threshold the matching column collapses to zero so later
+/// columns slide left — `Paragraph::render` on a zero-width rect is a safe
+/// no-op.
+#[derive(Debug, Clone, Copy)]
+struct ColumnPlan {
+    show_subtitle: bool,
+    show_model: bool,
+    show_perm: bool,
+    show_subagent: bool,
+    show_teaser: bool,
+    show_cost: bool,
+    show_age: bool,
+    show_gutter: bool,
+}
+
+impl ColumnPlan {
+    /// Pick which columns are rendered for a pane of `width` cells. The
+    /// thresholds mirror the spec: wider panes surface the auto-name +
+    /// teaser; 80–100 keeps the badges; 60–80 drops permission / teaser;
+    /// 40–60 becomes a bare-bones name/cost/age strip; below 40 we drop
+    /// the gutter too, leaving just prefix + name + cost + age.
+    fn for_width(width: u16) -> Self {
+        let w = width as usize;
+        Self {
+            show_subtitle: w >= 100,
+            show_model: w >= 60,
+            show_perm: w >= 80,
+            show_subagent: w >= 60,
+            show_teaser: w >= 100,
+            // `prefix (2) + name (24) + cost (9) + age (7) = 42` — cost/age
+            // only fit together with the name column once the pane is ≥ 42
+            // cells. Below that we drop them all so the name column has
+            // room to read on tiny panes (picker-in-a-corner use case).
+            // The gutter needs an extra cell (43) before it turns on.
+            show_cost: w >= 42,
+            show_age: w >= 42,
+            show_gutter: w >= 43,
+        }
+    }
+
+    /// Build the ratatui constraint list for this breakpoint plan. The
+    /// indices line up with the `RowColumns` match on the `areas` tuple —
+    /// every entry is always present, collapsed branches use `Length(0)`.
+    fn constraints(&self) -> [Constraint; 10] {
+        [
+            Constraint::Length(PREFIX_COL_WIDTH as u16),
+            Constraint::Length(NAME_COL_WIDTH as u16),
+            Constraint::Length(if self.show_subtitle { SUBTITLE_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(if self.show_model { MODEL_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(if self.show_perm { PERM_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(if self.show_subagent { SUBAGENT_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Min(if self.show_teaser { TEASER_MIN_FLEX } else { 0 }),
+            Constraint::Length(if self.show_cost { COST_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(if self.show_age { AGE_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(if self.show_gutter { GUTTER_COL_WIDTH as u16 } else { 0 }),
+        ]
+    }
+}
+
+/// Render a single row into `row_area` using the strict-column budget.
 ///
-/// **v2.2 polish layers:**
-/// - Cost column uses `theme::cost_color` (teal → green → yellow → peach).
+/// Every column paints into its own `Rect`, which means the ratatui buffer
+/// clips content at the column boundary — no `▌$12.40▐` can run over into
+/// the age column, and no long teaser can overrun the cost chip. The row
+/// background stripe (selected / glide-trail) paints first as a full-width
+/// `surface0` wash so the gutter and padding also carry the highlight.
+///
+/// **v2.2 polish layers still in play:**
+/// - Cost column uses `cost_severity_fg` (teal → green → yellow → peach).
 /// - Unselected rows fade toward `overlay0` based on the session's last
 ///   activity — older rows visibly dim so recency reads without dates.
 /// - Multi-selected / cursor rows keep full intensity for contrast.
 ///
 /// **Density layers (E6/E7):**
-/// - 1-cell cost-burn bar (green/amber/rose) sits between the pill group and
-///   the cost number, giving a pre-attentive "how hot is this?" cue before
-///   the reader parses the dollar figure.
-/// - 1-cell context-usage gutter anchored 1 col inset from the right edge
-///   shows how full the 200k token window is (green/amber/rose by 40%/80%
-///   thresholds). Inset so the scrollbar thumb never paints over it.
+/// - Permission badge / subagent counter / model pill each live in their
+///   own column so they can never step on the teaser or the cost chip.
+/// - The context-usage gutter is the final 1-cell column. Its colour maps
+///   the session's token total against the 200 k window (green/amber/rose
+///   by 40 %/80 % thresholds) so readers can spot "this one is close to
+///   the wall" without reading numbers.
 #[allow(clippy::too_many_arguments)]
-fn render_row<'a>(
-    s: &'a Session,
+fn render_row_into(
+    buf: &mut Buffer,
+    row_area: Rect,
+    s: &Session,
     theme: &Theme,
     selected: bool,
     bookmarked: bool,
     multi: bool,
     glide_trail: bool,
-    area_width: usize,
-    show_gutter: bool,
-    show_cost_bar: bool,
-) -> Line<'a> {
+    plan: &ColumnPlan,
+) {
     // Age in seconds since the last activity timestamp — drives the row-fade.
     // Missing timestamps fade fully (treat as "very old").
     let age = session_age(s);
@@ -365,6 +491,80 @@ fn render_row<'a>(
     // for contrast. Multi-select rows also stay full-bright.
     let apply_fade = !selected && !multi;
 
+    // Full-row background wash. Painted first so every column rect (including
+    // the gutter sliver and any padding inside `Paragraph::render`) carries
+    // the highlight. Non-selected / non-glide rows leave the wash empty so
+    // downstream styles keep their original `None` background.
+    if selected || glide_trail {
+        let wash_style = Style::default().bg(theme.surface0);
+        for x in row_area.x..row_area.x.saturating_add(row_area.width) {
+            for y in row_area.y..row_area.y.saturating_add(row_area.height) {
+                buf[(x, y)].set_style(wash_style);
+            }
+        }
+    }
+
+    // Split the row into per-column rects up front. `Layout::horizontal`
+    // clamps to the available width so even pathological narrow panes never
+    // panic; collapsed columns (Length(0)) simply yield a zero-width rect
+    // which `Paragraph::render` treats as a no-op.
+    let constraints = plan.constraints();
+    let rects = Layout::horizontal(constraints).split(row_area);
+    let prefix_rect = rects[0];
+    let name_rect = rects[1];
+    let subtitle_rect = rects[2];
+    let model_rect = rects[3];
+    let perm_rect = rects[4];
+    let subagent_rect = rects[5];
+    let teaser_rect = rects[6];
+    let cost_rect = rects[7];
+    let age_rect = rects[8];
+    let gutter_rect = rects[9];
+
+    let bg = if selected || glide_trail {
+        Some(theme.surface0)
+    } else {
+        None
+    };
+    let stamp_bg = |mut style: Style| -> Style {
+        if let Some(c) = bg {
+            style = style.bg(c);
+        }
+        style
+    };
+
+    // ── Col 1: prefix ────────────────────────────────────────────────────
+    // `✓` takes the pointer slot when the row is multi-selected (whether or
+    // not the cursor is on it). The cursor row without multi-selection keeps
+    // the `▸` pointer so the active row is still clear at a glance.
+    let pointer_style_base = if multi {
+        // Tick mark styled peach so it reads as "you picked me".
+        Style::default()
+            .fg(theme.peach)
+            .add_modifier(Modifier::BOLD)
+    } else if selected {
+        Style::default()
+            .fg(theme.mauve)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.surface2)
+    };
+    let pointer_style = stamp_bg(maybe_fade(pointer_style_base, theme, age, apply_fade));
+    let pointer = if multi {
+        "✓"
+    } else if selected {
+        "\u{25B8}"
+    } else {
+        " "
+    };
+    let prefix_line = Line::from(vec![
+        Span::styled(format!(" {pointer}"), pointer_style),
+    ]);
+    Paragraph::new(prefix_line)
+        .style(stamp_bg(Style::default()))
+        .render(prefix_rect, buf);
+
+    // ── Col 2: name ──────────────────────────────────────────────────────
     // Multi-select rows recolor the name in peach-bold regardless of cursor
     // state so the visual distinction reads at a glance. Selection still wins
     // for the cursor row's background stripe (applied below).
@@ -381,218 +581,248 @@ fn render_row<'a>(
             .fg(theme.subtext0)
             .add_modifier(Modifier::ITALIC)
     };
-    // Post-fade primary name style. Fed into `build_name_zone` so the
-    // primary label visually decays in sync with the rest of the row.
-    let name_style = maybe_fade(name_style_base, theme, age, apply_fade);
-    let _ = name_style_base; // base style is only referenced via `name_style`
-
-    let pointer_style_base = if multi {
-        // Tick mark styled peach so it reads as "you picked me".
-        Style::default()
-            .fg(theme.peach)
-            .add_modifier(Modifier::BOLD)
-    } else if selected {
-        Style::default()
-            .fg(theme.mauve)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.surface2)
-    };
-    let pointer_style = maybe_fade(pointer_style_base, theme, age, apply_fade);
-    // `✓` takes the pointer slot when the row is multi-selected (whether or
-    // not the cursor is on it). The cursor row without multi-selection keeps
-    // the `▸` pointer so the active row is still clear at a glance.
-    let pointer = if multi {
-        "✓"
-    } else if selected {
-        "▸"
-    } else {
-        " "
-    };
-
-    let pin = if bookmarked {
+    let name_style = stamp_bg(maybe_fade(name_style_base, theme, age, apply_fade));
+    // Bookmark / fork glyph sits in the first 2 cells of the name rect.
+    let lead_span = if bookmarked {
         Span::styled(
-            "■ ",
-            maybe_fade(Style::default().fg(theme.blue), theme, age, apply_fade),
+            "\u{25A0} ",
+            stamp_bg(maybe_fade(
+                Style::default().fg(theme.blue),
+                theme,
+                age,
+                apply_fade,
+            )),
         )
     } else if s.is_fork {
         Span::styled(
-            "↳ ",
-            maybe_fade(Style::default().fg(theme.peach), theme, age, apply_fade),
+            "\u{21B3} ",
+            stamp_bg(maybe_fade(
+                Style::default().fg(theme.peach),
+                theme,
+                age,
+                apply_fade,
+            )),
         )
     } else {
         Span::raw("  ")
     };
-
-    // display_width-aware: CJK / emoji session names used to overflow the
-    // column because .chars().count() undercounted them. Use the unicode
-    // helpers so the name always occupies exactly NAME_COL_WIDTH terminal
-    // cells, pad or truncate.
-    //
-    // Typographic hierarchy: the primary label (either the user-set `name`,
-    // the last-prompt, or the auto-name) gets full theme.text bold. If the
-    // session falls back to the dim "auto-name" we tint the whole block
-    // `subtext0 italic`. When BOTH a `name` and an `auto_name` are present
-    // and differ, a tail `· auto-name` suffix is appended in a dimmer
-    // subtext1 so the hierarchy reads at a glance.
-    let (name_spans, name_width) = build_name_zone(s, name_style, apply_fade, age, theme);
-    // Pad-to-width: the name block may be shorter than NAME_COL_WIDTH, in
-    // which case we append trailing spaces so the following pills line up.
-    let mut spans_name: Vec<Span<'a>> = name_spans;
-    if name_width < NAME_COL_WIDTH {
-        // Pad style picks up the row bg (selection stripe) below, if any.
-        spans_name.push(Span::raw(" ".repeat(NAME_COL_WIDTH - name_width)));
-    }
-
-    // Chip-style model pill. Fade fg only when unselected — we don't want a
-    // year-old session's pill to be indistinguishable from the border.
-    let mut pill = model_pill::pill(crate::data::pricing::family(&s.model_summary), theme);
-    if apply_fade {
-        if let Some(fg) = pill.style.fg {
-            pill.style.fg = Some(theme::age_fade(theme, fg, age));
-        }
-    }
-
-    // Optional permission-mode pill — only drawn for non-default modes.
-    // Upgraded to a reverse-video "danger badge": `▌PLAN▐` style, rails in
-    // the mode's accent colour with bold fg in white (crust → readable in
-    // both light and dark themes via theme.pill_text_color). For non-default
-    // modes this is the loudest element on the row on purpose — the user
-    // needs to see at a glance that plan/bypass/accept is active.
-    let perm_badge = s
-        .permission_mode
-        .and_then(|m| permission_badge(m, theme, apply_fade, age));
-
-    // Subagent counter as a circled-N glyph (U+2460..U+2468 → 1..9, 0 for
-    // more). Replaces the older `◈ N` pair; the circled glyph reads as a
-    // single self-contained signal without needing the diamond marker.
-    let subagent_marker = if s.subagent_count > 0 {
-        let base = if selected {
-            theme.selected_row()
-        } else {
-            Style::default().fg(theme.teal).add_modifier(Modifier::BOLD)
-        };
-        Some(Span::styled(
-            format!(" {} ", circled_digit(s.subagent_count)),
-            maybe_fade(base, theme, age, apply_fade),
-        ))
+    let name_budget = NAME_COL_WIDTH.saturating_sub(2); // lead_span eats 2 cells
+    let primary_raw = s.display_label();
+    let primary_text = if display_width(primary_raw) > name_budget {
+        truncate_to_width(primary_raw, name_budget)
     } else {
-        None
+        primary_raw.to_string()
     };
+    let name_line = Line::from(vec![lead_span, Span::styled(primary_text, name_style)]);
+    Paragraph::new(name_line)
+        .style(stamp_bg(Style::default()))
+        .render(name_rect, buf);
 
-    // Cost chip — tinted capsule `▌$12.40▐` using cost-severity tokens. The
-    // rails + interior bg come from a `surface0` bed so the chip visually
-    // floats; the fg uses theme.cost_* tokens when they exist, else falls
-    // through to the legacy cost_color ramp.
-    let cost_chip = cost_chip_span(s.total_cost_usd, theme, selected, apply_fade, age);
+    // ── Col 3: auto-name subtitle ────────────────────────────────────────
+    // Only drawn when the user explicitly set `name` AND we have a distinct
+    // `auto_name`. The `· ` separator is eaten by the column budget so the
+    // reader still sees the hierarchy.
+    if plan.show_subtitle {
+        if let (Some(name), Some(auto)) = (s.name.as_deref(), s.auto_name.as_deref()) {
+            if !name.is_empty() && !auto.is_empty() && name != auto {
+                let budget = SUBTITLE_COL_WIDTH.saturating_sub(2);
+                let suffix_text = truncate_to_width(auto, budget);
+                let suffix_style = stamp_bg(maybe_fade(
+                    Style::default().fg(theme.subtext1),
+                    theme,
+                    age,
+                    apply_fade,
+                ));
+                let subtitle_line = Line::from(vec![
+                    Span::styled("\u{00B7} ", stamp_bg(theme.dim())),
+                    Span::styled(suffix_text, suffix_style),
+                ]);
+                Paragraph::new(subtitle_line)
+                    .style(stamp_bg(Style::default()))
+                    .render(subtitle_rect, buf);
+            } else {
+                Paragraph::new(Line::from(""))
+                    .style(stamp_bg(Style::default()))
+                    .render(subtitle_rect, buf);
+            }
+        } else {
+            Paragraph::new(Line::from(""))
+                .style(stamp_bg(Style::default()))
+                .render(subtitle_rect, buf);
+        }
+    }
 
-    let age_label = relative_time(s.last_timestamp);
-    let age_span = Span::styled(
-        format!(" {age_label:>4}"),
-        if selected {
+    // ── Col 4: model pill ────────────────────────────────────────────────
+    if plan.show_model {
+        let mut pill = model_pill::pill(crate::data::pricing::family(&s.model_summary), theme);
+        if apply_fade {
+            if let Some(fg) = pill.style.fg {
+                pill.style.fg = Some(theme::age_fade(theme, fg, age));
+            }
+        }
+        if let Some(bgc) = bg {
+            // When the row is selected, the chip's `surface0` bed would be
+            // invisible against the row wash — bump it to `surface1` so the
+            // chip still reads as a floating slug over the stripe.
+            if pill.style.bg == Some(theme.surface0) {
+                pill.style.bg = Some(theme.surface1);
+            } else {
+                pill.style.bg = Some(bgc);
+            }
+        }
+        let line = Line::from(vec![pill]).alignment(Alignment::Left);
+        Paragraph::new(line)
+            .style(stamp_bg(Style::default()))
+            .render(model_rect, buf);
+    }
+
+    // ── Col 5: permission badge ──────────────────────────────────────────
+    if plan.show_perm {
+        if let Some(mut badge) = s
+            .permission_mode
+            .and_then(|m| permission_badge(m, theme, apply_fade, age))
+        {
+            // Keep the badge bg — it's the point of the "danger slug" effect
+            // — but preserve row wash outside the badge's own cells via the
+            // surrounding `stamp_bg`.
+            // Truncate the interior label when the budget is tight. Pill
+            // glyphs are the two half-blocks (U+258C, U+2590); cap the full
+            // content to PERM_COL_WIDTH.
+            if display_width(badge.content.as_ref()) > PERM_COL_WIDTH {
+                let trimmed = truncate_to_width(badge.content.as_ref(), PERM_COL_WIDTH);
+                badge.content = Cow::Owned(trimmed);
+            }
+            let line = Line::from(vec![Span::raw(" "), badge]);
+            Paragraph::new(line)
+                .style(stamp_bg(Style::default()))
+                .render(perm_rect, buf);
+        } else {
+            Paragraph::new(Line::from(""))
+                .style(stamp_bg(Style::default()))
+                .render(perm_rect, buf);
+        }
+    }
+
+    // ── Col 6: subagent counter ──────────────────────────────────────────
+    if plan.show_subagent {
+        if s.subagent_count > 0 {
+            let base = if selected {
+                theme.selected_row()
+            } else {
+                Style::default().fg(theme.teal).add_modifier(Modifier::BOLD)
+            };
+            let digit_style = stamp_bg(maybe_fade(base, theme, age, apply_fade));
+            let line = Line::from(vec![Span::styled(
+                format!(" {} ", circled_digit(s.subagent_count)),
+                digit_style,
+            )]);
+            Paragraph::new(line)
+                .style(stamp_bg(Style::default()))
+                .render(subagent_rect, buf);
+        } else {
+            Paragraph::new(Line::from(""))
+                .style(stamp_bg(Style::default()))
+                .render(subagent_rect, buf);
+        }
+    }
+
+    // ── Col 7: teaser ────────────────────────────────────────────────────
+    // The teaser consumes whatever flex is left. The `Paragraph` clips at
+    // the column edge so long prompts never leak into the cost chip.
+    if plan.show_teaser && teaser_rect.width >= TEASER_MIN_FLEX {
+        if let Some(t) = build_teaser_span(s, theme, selected, apply_fade, age, teaser_rect.width) {
+            let line = Line::from(vec![Span::raw(" "), t]);
+            Paragraph::new(line)
+                .style(stamp_bg(Style::default()))
+                .render(teaser_rect, buf);
+        }
+    }
+
+    // ── Col 8: cost chip ─────────────────────────────────────────────────
+    if plan.show_cost {
+        let mut chip = cost_chip_span(s.total_cost_usd, theme, selected, apply_fade, age);
+        // Fit the chip inside its column. `▌$1234.56▐` is 10 cells — drop
+        // to `▌$1234▐` so we never exceed the 9-col budget.
+        if display_width(chip.content.as_ref()) > COST_COL_WIDTH {
+            chip.content = Cow::Owned(truncate_cost_chip(chip.content.as_ref(), COST_COL_WIDTH));
+        }
+        // Chip bg over a highlighted row — swap `surface0` for `surface1` so
+        // the pill still floats visibly.
+        if let Some(bgc) = bg {
+            if chip.style.bg == Some(theme.surface0) {
+                chip.style.bg = Some(theme.surface1);
+            } else {
+                chip.style.bg = Some(bgc);
+            }
+        }
+        let line = Line::from(vec![chip]).alignment(Alignment::Right);
+        Paragraph::new(line)
+            .style(stamp_bg(Style::default()))
+            .render(cost_rect, buf);
+    }
+
+    // ── Col 9: age ───────────────────────────────────────────────────────
+    if plan.show_age {
+        let age_label = relative_time(s.last_timestamp);
+        let age_style_inner = if selected {
             theme.selected_row()
         } else {
-            // The age column is the rare thing we DO want to still look aged
-            // — even a "3d"/"Apr 10" string should colour-fade in sync with
-            // the rest of the row. Use the static age_style, then fade.
             maybe_fade(age_style(s.last_timestamp, theme), theme, age, apply_fade)
-        },
-    );
+        };
+        let line = Line::from(vec![Span::styled(
+            format!(" {age_label}"),
+            stamp_bg(age_style_inner),
+        )]);
+        Paragraph::new(line)
+            .style(stamp_bg(Style::default()))
+            .render(age_rect, buf);
+    }
 
-    let mut spans: Vec<Span<'a>> = Vec::with_capacity(16);
-    spans.push(Span::styled(format!(" {pointer} "), pointer_style));
-    spans.push(pin);
-    // Hierarchical name zone (title + optional auto-name suffix).
-    spans.extend(spans_name);
-    spans.push(Span::raw(" "));
-    spans.push(pill);
-    if let Some(p) = perm_badge {
-        spans.push(Span::raw(" "));
-        spans.push(p);
-    }
-    if let Some(m) = subagent_marker {
-        spans.push(m);
-    }
-    spans.push(Span::raw(" "));
-    // Cost-burn heat bar (E6 fallback: per-turn history isn't on `Session`,
-    // so tint a 1-cell bar by the session's running total). Drops out on
-    // panes narrower than 80 cols so the name column keeps its width.
-    if show_cost_bar {
-        let bar_fg = cost_burn_color(s.total_cost_usd, theme);
-        let mut bar_style = Style::default().fg(bar_fg).add_modifier(Modifier::BOLD);
-        if apply_fade {
-            bar_style = theme::age_fade_style(theme, bar_style, age);
+    // ── Col 10: context gutter ───────────────────────────────────────────
+    if plan.show_gutter && gutter_rect.width > 0 {
+        let ctx_fg = ctx_gutter_color(s, theme);
+        let mut gutter_style = Style::default().fg(ctx_fg).add_modifier(Modifier::BOLD);
+        if let Some(bgc) = bg {
+            gutter_style = gutter_style.bg(bgc);
         }
-        // Left three-eighths block — reads as a vertical "heat rail" without
-        // using a full block that would visually merge into the pill/cost.
-        spans.push(Span::styled("\u{258D}", bar_style));
-        spans.push(Span::raw(" "));
+        // Right-eighth block (U+2595) hugs the right edge without filling
+        // the full cell, so selection backgrounds still read cleanly.
+        let line = Line::from(vec![Span::styled("\u{2595}", gutter_style)]);
+        Paragraph::new(line)
+            .style(stamp_bg(Style::default()))
+            .render(gutter_rect, buf);
     }
+}
 
-    // Last-prompt teaser — italic subtext1 wedge between the pill pack / bar
-    // and the cost chip. Tells the user what this session was *doing* at a
-    // glance without opening the preview. Dropped when there's no distinct
-    // `last_prompt` or the pane is too narrow to leave room for cost/age.
-    if let Some(t) = build_teaser_span(s, theme, selected, apply_fade, age, area_width) {
-        spans.push(t);
-        spans.push(Span::raw("  "));
+/// Shrink a cost chip's label so the total display width fits `budget`.
+///
+/// The chip shape is `▌<label>▐` (U+258C … U+2590) — the two half-block
+/// glyphs flanking a dollar string. When the full chip exceeds the column
+/// budget we drop the fractional part (`$1234.56` → `$1234`) before
+/// ellipsising, because users prefer reading "$1,234" to "$1.2…".
+fn truncate_cost_chip(chip: &str, budget: usize) -> String {
+    let total_w = display_width(chip);
+    if total_w <= budget || budget < 3 {
+        return chip.to_string();
     }
-
-    spans.push(cost_chip);
-    spans.push(age_span);
-
-    // If selected, stripe the row background by injecting a surface0 span
-    // of leading whitespace. We already styled pieces, so just ensure the
-    // name/cost/age segments carry the bg.
-    //
-    // The glide trail uses the same surface0 wash but only during the
-    // 150 ms ghost window — so a just-moved-from row fades back into the
-    // list in the next few frames.
-    if selected || glide_trail {
-        for span in &mut spans {
-            span.style.bg = Some(theme.surface0);
-        }
-    }
-
-    // Context-usage gutter (E7): 1 cell anchored at `area_width - 2`. Inset
-    // by 1 so the scrollbar thumb on the last column never clobbers it. We
-    // pad with spaces (carrying the selected-row bg, if any) so the gutter
-    // aligns visually regardless of the row content width.
-    //
-    // Skip entirely if the row already overflows the target column — a
-    // visually misaligned gutter reads as a rendering bug, and the content
-    // will be clipped by Ratatui at `area_width` anyway.
-    if show_gutter && area_width >= 2 {
-        let content_w: usize = spans
-            .iter()
-            .map(|sp| display_width(sp.content.as_ref()))
-            .sum();
-        // Target column for the gutter cell — reserve 1 cell to the left of
-        // the rightmost column so a scrollbar thumb doesn't paint over the
-        // gauge.
-        let gutter_col = area_width.saturating_sub(2);
-        if content_w <= gutter_col {
-            let pad_n = gutter_col - content_w;
-            if pad_n > 0 {
-                let mut pad_style = Style::default();
-                if selected || glide_trail {
-                    pad_style = pad_style.bg(theme.surface0);
-                }
-                spans.push(Span::styled(" ".repeat(pad_n), pad_style));
-            }
-            let ctx_fg = ctx_gutter_color(s, theme);
-            let mut gutter_style = Style::default().fg(ctx_fg).add_modifier(Modifier::BOLD);
-            if selected || glide_trail {
-                gutter_style = gutter_style.bg(theme.surface0);
-            }
-            // Right-eighth block (U+2595) hugs the right edge without
-            // filling the full cell, so tall selection backgrounds still
-            // read cleanly.
-            spans.push(Span::styled("\u{2595}", gutter_style));
-        }
-    }
-
-    Line::from(spans)
+    // Pull the interior between the rails, if any.
+    let interior = chip
+        .strip_prefix('\u{258C}')
+        .and_then(|rest| rest.strip_suffix('\u{2590}'))
+        .unwrap_or(chip);
+    // Try dropping cents first — "$1234.56" → "$1234".
+    let without_cents = match interior.rsplit_once('.') {
+        Some((head, tail)) if tail.chars().all(|c| c.is_ascii_digit()) => head.to_string(),
+        _ => interior.to_string(),
+    };
+    let rails = 2; // one cell per half-block
+    let interior_budget = budget.saturating_sub(rails);
+    let fitted = if display_width(&without_cents) <= interior_budget {
+        without_cents
+    } else {
+        truncate_to_width(&without_cents, interior_budget)
+    };
+    format!("\u{258C}{fitted}\u{2590}")
 }
 
 /// Build the "name zone" for a row: primary label in `primary_style`, an
@@ -600,12 +830,11 @@ fn render_row<'a>(
 /// total display width used so the caller can pad to [`NAME_COL_WIDTH`] for
 /// column-true pill alignment.
 ///
-/// Typographic hierarchy goals:
-///   1. Primary title reads loudest (caller-chosen style — text bold for
-///      named sessions, subtext0 italic for fallback auto-names).
-///   2. If we have BOTH a user-set name and a distinct auto-name, append
-///      the auto-name in subtext1 (one step dimmer than the primary). This
-///      gives the row a miniature "title · subtitle" hierarchy.
+/// Retained from the pre-column-layout implementation for any external
+/// callers that still want a composite title+subtitle zone (the live row
+/// renderer now paints the title into its own rect and the subtitle into a
+/// second rect for hard column clipping).
+#[allow(dead_code)]
 fn build_name_zone<'a>(
     s: &'a Session,
     primary_style: Style,
@@ -766,15 +995,21 @@ fn cost_chip_span<'a>(
 /// Italic last-prompt teaser wedged between the pill pack and the cost chip
 /// on wide panes. Returns `None` on narrow panes, empty prompts, or when the
 /// teaser would simply echo the primary label.
+///
+/// `col_width` is the budget of the teaser column (from
+/// `Layout::horizontal`), not the whole pane — the caller has already
+/// reserved cells for the cost / age / gutter. The quotation marks and a
+/// leading space eat 3 cols of that budget.
 fn build_teaser_span<'a>(
     s: &'a Session,
     theme: &Theme,
     selected: bool,
     apply_fade: bool,
     age: Duration,
-    area_width: usize,
+    col_width: u16,
 ) -> Option<Span<'a>> {
-    if area_width < 90 {
+    let budget = col_width as usize;
+    if budget < 10 {
         return None;
     }
     let prompt = s.last_prompt.as_deref()?;
@@ -783,12 +1018,10 @@ fn build_teaser_span<'a>(
     if s.name.is_none() && prompt == s.display_label() {
         return None;
     }
-    // Reserve ~30 cols for the cost chip, age, and gutter slack on the
-    // right. Cap the teaser at TEASER_MAX_COLS so wide panes don't drown
-    // out the name/pill zones.
-    let reserved: usize = 32;
-    let available = area_width.saturating_sub(reserved).min(TEASER_MAX_COLS);
-    if available < 10 {
+    // Leave room for leading space + two quote glyphs.
+    let reserved_glyphs: usize = 3;
+    let available = budget.saturating_sub(reserved_glyphs);
+    if available < 4 {
         return None;
     }
     let flat: String = prompt
@@ -821,6 +1054,12 @@ fn build_teaser_span<'a>(
 /// bar is a binary "pay attention" signal, not a fine-grained heat map, so
 /// we collapse to three tiers for instant legibility. Zero-cost rows render
 /// against the muted overlay so an empty session doesn't light up green.
+///
+/// Retained after the column-layout refactor (v0.5.1) even though the live
+/// row renderer no longer paints a dedicated burn-bar cell — the cost chip
+/// fg already carries severity. Downstream widgets / tests still reach for
+/// this helper via `cost_burn_color`, so we keep it.
+#[allow(dead_code)]
 fn cost_burn_color(cost_usd: f64, theme: &Theme) -> ratatui::style::Color {
     if cost_usd <= 0.0 {
         theme.overlay0
@@ -1686,6 +1925,121 @@ mod tests {
         // ≥ 80% → red.
         assert_eq!(ctx_gutter_color(&mk(160_000), &t), t.red);
         assert_eq!(ctx_gutter_color(&mk(500_000), &t), t.red);
+    }
+
+    #[test]
+    fn column_plan_wide_pane_shows_everything() {
+        let plan = ColumnPlan::for_width(120);
+        assert!(plan.show_subtitle, "120 cols keeps the auto-name subtitle");
+        assert!(plan.show_teaser, "120 cols renders the italic teaser");
+        assert!(plan.show_perm);
+        assert!(plan.show_model);
+        assert!(plan.show_subagent);
+        assert!(plan.show_cost);
+        assert!(plan.show_age);
+        assert!(plan.show_gutter);
+    }
+
+    #[test]
+    fn column_plan_drops_subtitle_and_teaser_under_100() {
+        let plan = ColumnPlan::for_width(99);
+        assert!(!plan.show_subtitle, "99 cols drops the subtitle");
+        assert!(!plan.show_teaser, "99 cols drops the teaser");
+        assert!(plan.show_perm, "permission badge still visible at 99");
+        assert!(plan.show_model);
+    }
+
+    #[test]
+    fn column_plan_drops_perm_under_80() {
+        let plan = ColumnPlan::for_width(79);
+        assert!(!plan.show_perm, "79 cols drops the permission badge");
+        assert!(plan.show_model, "model pill still visible at 79");
+        assert!(plan.show_subagent);
+    }
+
+    #[test]
+    fn column_plan_drops_model_and_subagent_under_60() {
+        let plan = ColumnPlan::for_width(59);
+        assert!(!plan.show_model, "59 cols drops the model pill");
+        assert!(!plan.show_subagent, "59 cols drops the subagent counter");
+        assert!(plan.show_cost, "cost chip still visible at 59");
+        assert!(plan.show_age);
+    }
+
+    #[test]
+    fn column_plan_keeps_name_cost_age_at_42() {
+        let plan = ColumnPlan::for_width(42);
+        assert!(plan.show_cost);
+        assert!(plan.show_age);
+        assert!(!plan.show_gutter, "gutter drops below the 43-col guard");
+        assert!(!plan.show_model);
+        assert!(!plan.show_subagent);
+        assert!(!plan.show_perm);
+    }
+
+    #[test]
+    fn column_plan_drops_cost_age_below_42() {
+        // Below the 42-col guard the fixed-column sum would exceed the
+        // pane width, so we drop cost + age together.
+        let plan = ColumnPlan::for_width(41);
+        assert!(!plan.show_cost);
+        assert!(!plan.show_age);
+        assert!(!plan.show_gutter);
+    }
+
+    #[test]
+    fn column_plan_constraints_sum_never_exceeds_width_for_fixed_cols() {
+        // At every breakpoint, the sum of fixed-length constraints must be
+        // ≤ the pane width — otherwise `Layout::horizontal` clips our
+        // explicit columns and the flex teaser column collapses.
+        let fixed_total = |p: &ColumnPlan| -> u16 {
+            let c = p.constraints();
+            c.iter()
+                .filter_map(|cn| match cn {
+                    Constraint::Length(n) => Some(*n),
+                    _ => None,
+                })
+                .sum()
+        };
+        // Pane widths below 26 cells fall under the always-on `prefix (2)
+        // + name (24)` floor. Ratatui clips fixed columns gracefully when
+        // the rect is smaller than the constraints' sum, but the
+        // breakpoints above that floor are our contract.
+        for w in [41u16, 42, 43, 59, 60, 79, 80, 99, 100, 120, 160] {
+            let plan = ColumnPlan::for_width(w);
+            let total = fixed_total(&plan);
+            assert!(
+                total <= w,
+                "width={w} fixed-column total={total} exceeds pane width",
+            );
+        }
+    }
+
+    #[test]
+    fn cost_chip_truncation_drops_cents_first() {
+        // `▌$1234.56▐` is 10 cells; trim to the 9-cell budget by dropping
+        // the fractional part so the reader still sees the full dollars.
+        let trimmed = truncate_cost_chip("\u{258C}$1234.56\u{2590}", 9);
+        assert_eq!(trimmed, "\u{258C}$1234\u{2590}");
+        assert!(display_width(&trimmed) <= 9);
+    }
+
+    #[test]
+    fn cost_chip_truncation_leaves_fits_untouched() {
+        let src = "\u{258C}$12.40\u{2590}";
+        assert_eq!(truncate_cost_chip(src, 9), src);
+    }
+
+    #[test]
+    fn scroll_start_anchors_to_top_when_inside_first_page() {
+        assert_eq!(scroll_start(0, 10, 50), 0);
+        assert_eq!(scroll_start(5, 10, 50), 0);
+        assert_eq!(scroll_start(9, 10, 50), 0);
+        // Past the first page, anchor the bottom so the cursor stays in view.
+        assert_eq!(scroll_start(10, 10, 50), 1);
+        assert_eq!(scroll_start(49, 10, 50), 40);
+        // Small lists — never scroll at all.
+        assert_eq!(scroll_start(3, 10, 4), 0);
     }
 }
 

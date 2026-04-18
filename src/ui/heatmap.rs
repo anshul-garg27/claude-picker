@@ -162,15 +162,90 @@ pub fn hourly_extrema(buckets: &[u32; 24]) -> (Option<u8>, Option<u8>) {
 /// empty" from "faintly present").
 const SHADE_GLYPHS: [char; 5] = ['·', '░', '▒', '▓', '█'];
 
-/// Map a raw count to a 5-step shade bucket (0..=4). Used for the
-/// GitHub-style daily grid where cells are laid out as a 7×N matrix rather
-/// than a single ramp.
+/// Quantile thresholds for shading non-zero activity cells. Each entry is
+/// the *upper bound* for the matching bucket index (1..=4). Computed from
+/// the set of non-zero counts so that the distribution spreads across the
+/// four non-empty buckets even when most days cluster near the low end.
+///
+/// When there are fewer than 4 non-zero samples, we collapse every non-zero
+/// cell into the peak bucket — a single day of activity should *pop* on an
+/// otherwise empty grid, not render as a faint `░`.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct ShadeThresholds {
+    pub p25: u32,
+    pub p50: u32,
+    pub p75: u32,
+    pub p90: u32,
+    /// When true, any non-zero count promotes straight to bucket 4.
+    pub collapse_to_peak: bool,
+}
+
+impl ShadeThresholds {
+    /// Build quantile-based thresholds from a set of counts. Zero counts
+    /// are stripped before computing quantiles — empty cells are handled
+    /// separately and would otherwise drag every threshold down to zero.
+    pub fn from_counts(counts: &[u32]) -> Self {
+        let mut non_zero: Vec<u32> = counts.iter().copied().filter(|c| *c > 0).collect();
+        non_zero.sort_unstable();
+        // With so few non-zero days, quantiles aren't meaningful — promote
+        // every present day to the brightest shade so the heatmap reads.
+        if non_zero.len() < 4 {
+            return Self {
+                p25: 0,
+                p50: 0,
+                p75: 0,
+                p90: 0,
+                collapse_to_peak: true,
+            };
+        }
+        let pick = |q: f64| -> u32 {
+            let idx = ((non_zero.len() as f64 - 1.0) * q).round() as usize;
+            non_zero[idx.min(non_zero.len() - 1)]
+        };
+        Self {
+            p25: pick(0.25),
+            p50: pick(0.50),
+            p75: pick(0.75),
+            p90: pick(0.90),
+            collapse_to_peak: false,
+        }
+    }
+}
+
+/// Map a raw count to a 5-step shade bucket (0..=4) using percentile
+/// thresholds. Zero counts render as bucket 0 (empty dot). Non-zero counts
+/// when we have too few samples collapse straight to the brightest shade.
+pub fn shade_bucket_p(count: u32, t: ShadeThresholds) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    if t.collapse_to_peak {
+        return 4;
+    }
+    if count <= t.p25 {
+        1
+    } else if count <= t.p50 {
+        2
+    } else if count <= t.p75 {
+        3
+    } else {
+        // Anything at/above p75 is a "busy day" — including the single
+        // peak at p90.
+        let _ = t.p90;
+        4
+    }
+}
+
+/// Legacy max-normalised shade bucket. Still used by the weekly/monthly
+/// heatmaps which feed a single max rather than a full count distribution.
+///
+/// Retained for backwards compatibility with existing tests.
 pub fn shade_bucket(count: u32, max: u32) -> usize {
     if count == 0 {
         return 0;
     }
     if max <= 1 {
-        return 2;
+        return 4;
     }
     let norm = count as f64 / max as f64;
     if norm < 0.25 {
@@ -234,7 +309,12 @@ pub fn render_weekday_grid(
     // 7 rows, one per weekday (Mon = 0 .. Sun = 6).
     let row_labels: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
 
-    let max = cells.iter().map(|c| c.count).max().unwrap_or(1).max(1);
+    // Quantile-based shading. Using p25/p50/p75 against the non-zero cells
+    // means the heatmap spreads evenly across the four non-empty buckets
+    // instead of collapsing the whole month to a faint `░` when most days
+    // have low counts. A lone active day automatically promotes to `█`.
+    let counts: Vec<u32> = cells.iter().map(|c| c.count).collect();
+    let thresholds = ShadeThresholds::from_counts(&counts);
 
     // Column index for the first cell (based on its weekday, Mon = 0).
     let first_col_offset = cells
@@ -258,9 +338,19 @@ pub fn render_weekday_grid(
 
     // Header line — weekly date anchors above every ~4th column.
     let row_label_w = 4usize; // "  M "
-    let cell_w = 2usize; // glyph + space
+    // Cell width: 1 col for the glyph + a padding gap. We widen the gap on
+    // larger terminals so the grid actually spreads across the available
+    // real estate. Floor the total rendered width at ~60 cols for the 30-
+    // day window so a narrow 6-week-column grid (which otherwise reads as
+    // noise) expands to a readable scale.
+    let target_body_cols = (area.width as usize)
+        .saturating_sub(row_label_w + 2)
+        .max(56); // 60-col floor minus margins
+    let cell_w: usize = (target_body_cols / col_count.max(1)).clamp(2, 4);
+    // Track the raw body width so header anchors align with their cells.
+    let body_cols = col_count * cell_w;
     let mut header_cells: Vec<char> =
-        vec![' '; row_label_w + col_count * cell_w];
+        vec![' '; row_label_w + body_cols];
     for col in (0..col_count).step_by(2) {
         // Find the earliest non-None cell in this column to pick a date for
         // the anchor.
@@ -277,7 +367,9 @@ pub fn render_weekday_grid(
     let header_text: String = header_cells.into_iter().collect();
     let header_line = Line::from(vec![Span::styled(header_text, theme.dim())]);
 
-    // Body rows — one line per weekday.
+    // Body rows — one line per weekday. Each cell renders as a block char
+    // followed by `cell_w - 1` spaces, giving a proper heatmap spread.
+    let pad: String = " ".repeat(cell_w.saturating_sub(1));
     let mut body: Vec<Line<'_>> = Vec::with_capacity(9);
     body.push(header_line);
     for (r, label) in row_labels.iter().enumerate() {
@@ -289,10 +381,10 @@ pub fn render_weekday_grid(
         for slot in grid[r].iter().take(col_count) {
             match slot {
                 None => {
-                    spans.push(Span::raw("  "));
+                    spans.push(Span::raw(" ".repeat(cell_w)));
                 }
                 Some(cell) => {
-                    let bucket = shade_bucket(cell.count, max);
+                    let bucket = shade_bucket_p(cell.count, thresholds);
                     let glyph = SHADE_GLYPHS[bucket];
                     let color = shade_color(bucket, theme);
                     // Today glows — bold + peach accent no matter the
@@ -314,7 +406,7 @@ pub fn render_weekday_grid(
                         glyph.to_string()
                     };
                     spans.push(Span::styled(glyph_str, style));
-                    spans.push(Span::raw(" "));
+                    spans.push(Span::raw(pad.clone()));
                 }
             }
         }
@@ -823,8 +915,32 @@ mod tests {
 
     #[test]
     fn shade_bucket_handles_max_of_one() {
-        // Any non-zero count when max==1 collapses to mid bucket.
-        assert_eq!(shade_bucket(1, 1), 2);
+        // When the max is 1, a lone non-zero cell should *pop* at full
+        // saturation — otherwise the grid reads as uniformly faint.
+        assert_eq!(shade_bucket(1, 1), 4);
+    }
+
+    #[test]
+    fn shade_thresholds_collapse_to_peak_with_few_samples() {
+        // Three or fewer non-zero counts → collapse_to_peak, so every
+        // present day reads as the brightest shade.
+        let t = ShadeThresholds::from_counts(&[0, 0, 5, 0, 0]);
+        assert!(t.collapse_to_peak);
+        assert_eq!(shade_bucket_p(5, t), 4);
+        assert_eq!(shade_bucket_p(0, t), 0);
+    }
+
+    #[test]
+    fn shade_thresholds_spread_over_quantiles() {
+        let counts: Vec<u32> = (1..=20).collect();
+        let t = ShadeThresholds::from_counts(&counts);
+        assert!(!t.collapse_to_peak);
+        // Low count → bucket 1.
+        assert!(shade_bucket_p(1, t) <= 1);
+        // Peak count → bucket 4.
+        assert_eq!(shade_bucket_p(20, t), 4);
+        // Zero is always bucket 0.
+        assert_eq!(shade_bucket_p(0, t), 0);
     }
 
     #[test]

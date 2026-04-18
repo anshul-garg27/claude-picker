@@ -5,6 +5,17 @@ All notable changes to `claude-picker` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.1] - 2026-04-18
+
+### Fixed
+
+- **Session list columns overlapped** — row content (name, auto-name, model pill, permission badge, subagent counter, teaser, cost chip, timestamp, gutter) had no hard column boundaries, so pills crushed into each other at common widths. Rewrote `render_row` to use `Layout::horizontal` with 10 fixed-width + flex columns. Each column's `Paragraph` clips at its boundary so nothing can bleed. Responsive breakpoints at widths <100 (drop auto-name + teaser), <80 (drop perm badge), <60 (drop model pill + subagent), <40 (name + cost + age only).
+- **Project list same treatment** — 7 strict columns (pin prefix, name, branch, session-count pill, flex spacer, cost, last-activity) with breakpoints.
+- **Activity (30d) heatmap was almost invisible** — 3 dots across 7 rows because shade thresholds were tuned for large ranges. Re-normalized to quantile-based buckets (p25/p50/p75/p90 over non-zero counts); single-busy-day collapses to peak shade so it actually pops. Cell width now dynamic (2-4 cols) based on pane width with 56-col grid floor.
+- **KPI cards leaked debug text** — `-- no baseline` displayed when prior window was empty. Now shows `▲ new · first 30 days` mauve badge instead.
+- **Budget "by model" was plain text** — restored as coloured-dot pill rows per family (Opus=mauve, Sonnet=sapphire/sky, Haiku=green). 
+- **Histogram empty buckets vanished** — now render a 1-cell `▏` tick in surface2 so every row stays visible.
+
 ## [0.5.0] - 2026-04-18
 
 The "visual overhaul" release. Rich, punchy, typographically refined UI across every section. Stats page went from spartan-grey to a real dashboard.

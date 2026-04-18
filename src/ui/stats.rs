@@ -236,25 +236,13 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     // Cap width + center.
     let inner = center_capped(area, MAX_W);
 
-    // Optional bands, sized based on state. The richer budget band wants
-    // room for the rule + MTD bar + forecast bar + model breakdown (up to 3
-    // rows). When no budget is configured AND forecast is hidden we collapse
-    // to zero so the rest of the dashboard reclaims the space.
-    let budget_model_rows = view
-        .data
-        .by_model
-        .iter()
-        .filter(|(_, cost)| {
-            // Only show per-model rows when there's an actual monthly spend.
-            let mtd = view.data.month_to_date_cost;
-            mtd > 0.0 && *cost > 0.0
-        })
-        .count()
-        .min(3) as u16;
+    // Optional bands, sized based on state. The budget band renders the
+    // rule + MTD progress + forecast; the per-model pill rows now live in
+    // their own `by-model` band (see `render_by_model`) so we no longer
+    // double-render them inside the budget block.
     let budget_h: u16 = if view.show_forecast || view.monthly_limit_usd > 0.0 {
-        // 1 rule + 1 blank + 1 MTD progress + 1 forecast + blank +
-        // budget_model_rows + 1 trailing blank.
-        5 + budget_model_rows
+        // 1 rule + 1 blank + 1 MTD progress + 1 forecast + trailing blank.
+        5
     } else {
         0
     };
@@ -263,19 +251,34 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     } else {
         0
     };
+    // Per-model pill rows: up to 3, one per model family with non-zero
+    // spend. When there are fewer than 2 models, nothing renders and the
+    // band collapses.
+    let by_model_rows: u16 = view
+        .data
+        .by_model
+        .iter()
+        .filter(|(_, cost)| *cost > 0.0)
+        .count()
+        .min(3) as u16;
+    let by_model_h: u16 = if view.data.by_model.len() >= 2 && by_model_rows > 0 {
+        by_model_rows + 1 // rows + 1 blank spacer above
+    } else {
+        0
+    };
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),        // title
-            Constraint::Length(1),        // blank
-            Constraint::Length(8),        // kpi cards (rich)
-            Constraint::Length(1),        // blank
-            Constraint::Min(8),           // per-project + activity flex
-            Constraint::Length(hist_h),   // turn-duration histogram
-            Constraint::Length(budget_h), // budget band
-            Constraint::Length(1),        // by-model
-            Constraint::Length(1),        // footer
+            Constraint::Length(1),          // title
+            Constraint::Length(1),          // blank
+            Constraint::Length(8),          // kpi cards (rich)
+            Constraint::Length(1),          // blank
+            Constraint::Min(8),             // per-project + activity flex
+            Constraint::Length(hist_h),     // turn-duration histogram
+            Constraint::Length(budget_h),   // budget band
+            Constraint::Length(by_model_h), // by-model pills
+            Constraint::Length(1),          // footer
         ])
         .split(inner);
 
@@ -288,7 +291,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     if budget_h > 0 {
         render_budget_band(frame, rows[6], view, theme);
     }
-    render_by_model(frame, rows[7], view, theme);
+    if by_model_h > 0 {
+        render_by_model(frame, rows[7], view, theme);
+    }
     render_footer(frame, rows[8], theme);
 
     if let Some(msg) = view.toast {
@@ -366,11 +371,27 @@ fn half_over_half_delta(series: &[f64]) -> Option<f64> {
 /// Render a small colored delta chip (▲12% / ▼5% / ─). "Up = good" for
 /// tokens/sessions but "up = bad" for cost — the callsite owns the polarity
 /// flag via `up_is_good`.
+///
+/// When `delta` is `None` we have no prior-window baseline — render a
+/// "new this month" badge in mauve instead of debug text. The badge tells
+/// the reader "there's no comparison yet, but you are actively generating
+/// activity" without leaking implementation details into the UI.
 fn delta_chip<'a>(delta: Option<f64>, theme: &Theme, up_is_good: bool) -> Vec<Span<'a>> {
     match delta {
         None => vec![
-            Span::styled("─ ", theme.dim()),
-            Span::styled("no baseline", theme.dim()),
+            Span::styled(
+                "▲ ",
+                Style::default()
+                    .fg(theme.mauve)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                "new",
+                Style::default()
+                    .fg(theme.mauve)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" first 30 days", theme.dim()),
         ],
         Some(d) => {
             let (arrow, color) = if d.abs() < 0.5 {
@@ -808,6 +829,11 @@ fn render_projects(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
         // Multi-segment bar. The raw ratio drives total length; inside the
         // filled portion we taper heavy → medium → light so the bar reads
         // as "dominant family + tail" instead of a flat block.
+        //
+        // Every segment length is clamped so the sum `heavy + medium +
+        // light + empty` is always exactly `bar_w`. The extra clamp on
+        // `heavy_len` catches the edge case where `ceil(bar_len * 0.60)`
+        // overshoots `bar_len` on very small bars (e.g. `bar_len == 1`).
         let bar_len = if max_cost > 0.0 && project.cost_usd > 0.0 {
             ((project.cost_usd / max_cost) * bar_w as f64).round() as usize
         } else {
@@ -816,13 +842,18 @@ fn render_projects(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
         .max(1)
         .min(bar_w);
 
-        let heavy_len = (bar_len as f64 * 0.60).ceil() as usize;
+        let heavy_len = ((bar_len as f64 * 0.60).ceil() as usize).min(bar_len);
         let medium_len = ((bar_len as f64 * 0.25).round() as usize)
             .min(bar_len.saturating_sub(heavy_len));
         let light_len = bar_len
             .saturating_sub(heavy_len)
             .saturating_sub(medium_len);
         let empty_len = bar_w.saturating_sub(bar_len);
+        debug_assert_eq!(
+            heavy_len + medium_len + light_len + empty_len,
+            bar_w,
+            "per-project bar segments must sum to bar_w",
+        );
 
         // Pair a "secondary" color with each family so the tapered
         // segments read as a stack rather than a single hue with alpha.
@@ -1110,32 +1141,86 @@ fn day_bar_char(count: u32, max: u32) -> char {
     RAMP[idx]
 }
 
-// ── By-model footer line ─────────────────────────────────────────────────
+// ── By-model pill rows ───────────────────────────────────────────────────
 
+/// Pill color for the by-model breakdown. Follows the v0.5.0 spec:
+/// Opus = mauve, Sonnet = sapphire/sky, Haiku = green, Unknown = subtext0.
+/// Kept separate from [`family_color`] (used by per-project bars) so the
+/// two widgets can diverge without breaking each other's palette.
+fn budget_pill_color(family: Family, theme: &Theme) -> Color {
+    match family {
+        Family::Opus => theme.mauve,
+        // No native "sapphire" slot — `sky` is the coolest blue on every
+        // shipped palette and reads as the canonical Sonnet hue.
+        Family::Sonnet => theme.sky,
+        Family::Haiku => theme.green,
+        Family::Unknown => theme.subtext0,
+    }
+}
+
+/// Render the by-model band — one pill row per model family with
+/// non-zero spend. Replaces the single plain-text "by model: …" line
+/// with the per-row pill format specced by v0.5.0.
+///
+/// Layout:
+/// ```text
+///   ● opus-4-7   $942.61  (97%)
+///   ● opus-4-6   $19.23   (2%)
+///   ● haiku-4-5  $0.26    (0%)
+/// ```
 fn render_by_model(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
-    if view.data.by_model.len() < 2 {
+    if view.data.by_model.len() < 2 || area.height == 0 {
         return;
     }
 
-    let mut spans: Vec<Span> = Vec::with_capacity(view.data.by_model.len() * 4 + 2);
-    spans.push(Span::raw("  "));
-    spans.push(Span::styled("by model:", theme.muted()));
-    spans.push(Span::raw("  "));
-
-    for (i, (model, cost)) in view.data.by_model.iter().enumerate() {
-        if i > 0 {
-            spans.push(Span::styled(" · ", theme.dim()));
-        }
-        let short = short_model(model);
-        let name_color = if i % 2 == 0 { theme.mauve } else { theme.blue };
-        spans.push(Span::styled(short, Style::default().fg(name_color)));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled(
-            format_cost(*cost),
-            Style::default().fg(theme.green),
-        ));
+    let total: f64 = view
+        .data
+        .by_model
+        .iter()
+        .map(|(_, c)| *c)
+        .filter(|c| *c > 0.0)
+        .sum();
+    if total <= 0.0 {
+        return;
     }
-    frame.render_widget(Paragraph::new(Line::from(spans)), area);
+
+    // Leading blank spacer so pill rows don't kiss the preceding band.
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(4);
+    lines.push(Line::raw(""));
+
+    for (model, cost) in view.data.by_model.iter().filter(|(_, c)| *c > 0.0).take(3) {
+        let short = short_model(model);
+        let pct = (cost / total * 100.0).round() as i64;
+        let pill_color = budget_pill_color(crate::data::pricing::family(model), theme);
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(
+                "● ",
+                Style::default()
+                    .fg(pill_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                pad_to_width(&short, 14),
+                Style::default()
+                    .fg(pill_color)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::raw(" "),
+            Span::styled(
+                pad_to_width(&format_cost(*cost), 9),
+                Style::default()
+                    .fg(theme.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(
+                format!(" ({pct}%)"),
+                theme.muted(),
+            ),
+        ]));
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
 // ── Footer ───────────────────────────────────────────────────────────────
@@ -1445,19 +1530,21 @@ fn render_turn_duration_hist(
         let count = stats.counts[i];
         let norm = count as f64 / max as f64;
         let bar_len = ((norm * bar_w as f64).round() as usize).min(bar_w);
-        let (bar_color, bar_mod) = speed_color(i, theme);
-        let bar = if count == 0 {
-            "·".to_string()
+        let (speed_color_fg, speed_mod) = speed_color(i, theme);
+        // Zero-count rows still draw a 1-cell tick (dim `▏`) so the row
+        // reads as "this bucket exists but is empty" rather than vanishing
+        // behind a tiny dot that blends with the label gutter. Empty rows
+        // render in `surface2` without bold so the speed color is reserved
+        // for actual activity.
+        let (bar, bar_color, bar_mod) = if count == 0 {
+            ("▏".to_string(), theme.surface2, Modifier::empty())
         } else if bar_len == 0 {
-            "▏".to_string()
+            ("▏".to_string(), speed_color_fg, speed_mod)
         } else {
-            "█".repeat(bar_len)
+            ("█".repeat(bar_len), speed_color_fg, speed_mod)
         };
-        let pad = if count > 0 {
-            " ".repeat(bar_w.saturating_sub(bar_len))
-        } else {
-            " ".repeat(bar_w.saturating_sub(1))
-        };
+        let bar_cells = 1.max(bar_len);
+        let pad = " ".repeat(bar_w.saturating_sub(bar_cells));
         let count_str = format_u64_compact(count);
 
         // Percentile badges — right-aligned, after the bar.
@@ -1586,18 +1673,15 @@ fn render_budget_band(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, t
     // Row 2: forecast badge. When a limit exists, compare forecast vs cap.
     let forecast_line = build_forecast_badge_line(forecast, view.monthly_limit_usd, theme);
 
-    // Rows 3..: per-model breakdown pills, up to 3 rows.
-    let model_lines = build_budget_model_lines(view, mtd, theme);
-
-    let mut lines: Vec<Line<'_>> = Vec::with_capacity(6 + model_lines.len());
-    lines.push(rule);
-    lines.push(Line::raw(""));
-    lines.push(mtd_line);
-    lines.push(forecast_line);
-    if !model_lines.is_empty() {
-        lines.push(Line::raw(""));
-        lines.extend(model_lines);
-    }
+    // Per-model pills now live in the `by-model` band — this keeps the
+    // budget block focused on "are we over/under cap?" and lets the
+    // per-model breakdown render even when no budget is configured.
+    let lines: Vec<Line<'_>> = vec![
+        rule,
+        Line::raw(""),
+        mtd_line,
+        forecast_line,
+    ];
 
     frame.render_widget(Paragraph::new(lines), area);
 }
@@ -1761,63 +1845,6 @@ fn build_forecast_badge_line<'a>(
         ),
     ])
 }
-
-/// Per-model spend pills — up to 3 lines, one per model family.
-fn build_budget_model_lines<'a>(
-    view: &StatsView<'a>,
-    mtd: f64,
-    theme: &'a Theme,
-) -> Vec<Line<'a>> {
-    if mtd <= 0.0 {
-        return Vec::new();
-    }
-    let total: f64 = view.data.by_model.iter().map(|(_, c)| *c).sum();
-    let denom = if total > 0.0 { total } else { mtd };
-    view.data
-        .by_model
-        .iter()
-        .filter(|(_, c)| *c > 0.0)
-        .take(3)
-        .enumerate()
-        .map(|(i, (model, cost))| {
-            let short = short_model(model);
-            let pct = (cost / denom * 100.0).round() as i64;
-            let label = if i == 0 { "by model      " } else { "              " };
-            let pill_color = family_color(
-                crate::data::pricing::family(model),
-                theme,
-            );
-            Line::from(vec![
-                Span::raw("  "),
-                Span::styled(label, theme.muted()),
-                Span::styled(
-                    "● ",
-                    Style::default()
-                        .fg(pill_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    pad_to_width(&short, 14),
-                    Style::default()
-                        .fg(pill_color)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::raw(" "),
-                Span::styled(
-                    format_cost(*cost),
-                    Style::default()
-                        .fg(theme.text)
-                        .add_modifier(Modifier::BOLD),
-                ),
-                Span::styled(
-                    format!("   ({pct}%)"),
-                    theme.muted(),
-                ),
-            ])
-        })
-        .collect()
-}
-
 
 /// Color the forecast number by magnitude.
 pub fn forecast_color(forecast: f64, theme: &Theme) -> Color {
@@ -2402,5 +2429,51 @@ mod tests {
         assert_eq!(family_color(Family::Sonnet, &t), t.teal);
         assert_eq!(family_color(Family::Haiku, &t), t.blue);
         assert_eq!(family_color(Family::Unknown, &t), t.subtext0);
+    }
+
+    #[test]
+    fn budget_pill_color_follows_spec_palette() {
+        // v0.5.0 budget spec: Opus = mauve, Sonnet = sapphire (sky on our
+        // palette), Haiku = green. The pill palette is deliberately
+        // different from `family_color` (peach/teal/blue) — keep the two
+        // in step but independent.
+        let t = Theme::mocha();
+        assert_eq!(budget_pill_color(Family::Opus, &t), t.mauve);
+        assert_eq!(budget_pill_color(Family::Sonnet, &t), t.sky);
+        assert_eq!(budget_pill_color(Family::Haiku, &t), t.green);
+        assert_eq!(budget_pill_color(Family::Unknown, &t), t.subtext0);
+    }
+
+    // ── Delta chip fallback ──────────────────────────────────────────────
+
+    #[test]
+    fn delta_chip_none_renders_new_badge_not_debug_text() {
+        // "no baseline" used to leak into the KPI cards when the prior
+        // 15-day window was empty. The fix renders a "new · first 30 days"
+        // badge in mauve. Assert the debug text is gone and the mauve
+        // badge is present.
+        let t = Theme::mocha();
+        let spans = delta_chip(None, &t, true);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>().join("");
+        assert!(
+            !joined.contains("no baseline"),
+            "delta_chip(None) must not leak `no baseline` text; got: {joined:?}",
+        );
+        assert!(
+            joined.contains("new") && joined.contains("first 30 days"),
+            "delta_chip(None) should render the `new · first 30 days` badge; got: {joined:?}",
+        );
+        // The arrow must be in mauve so the reader reads it as "first
+        // window" rather than a green "improvement" signal.
+        assert!(spans.iter().any(|s| s.style.fg == Some(t.mauve)));
+    }
+
+    #[test]
+    fn delta_chip_some_still_renders_pct_vs_prior() {
+        let t = Theme::mocha();
+        let spans = delta_chip(Some(12.0), &t, true);
+        let joined: String = spans.iter().map(|s| s.content.as_ref()).collect::<Vec<_>>().join("");
+        assert!(joined.contains("12%"));
+        assert!(joined.contains("vs prior"));
     }
 }

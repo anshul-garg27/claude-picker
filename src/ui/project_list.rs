@@ -19,12 +19,12 @@
 use std::cell::RefCell;
 
 use chrono::{DateTime, Utc};
-use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
+use ratatui::buffer::Buffer;
+use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{
-    Block, BorderType, Borders, List, ListItem, ListState, Paragraph, Scrollbar,
-    ScrollbarOrientation, ScrollbarState,
+    Block, BorderType, Borders, Paragraph, Scrollbar, ScrollbarOrientation, ScrollbarState, Widget,
 };
 use ratatui::Frame;
 
@@ -32,7 +32,7 @@ use crate::app::App;
 use crate::data::pinned_projects::{PinnedProjects, ToggleResult};
 use crate::data::Project;
 use crate::theme::Theme;
-use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
+use crate::ui::text::{display_width, truncate_to_width};
 use crate::ui::thumbnail::{
     self, PinnedSlot, ThumbnailRenderer, MIN_STRIP_WIDTH as THUMB_MIN_STRIP_WIDTH,
     TILE_ROWS as THUMB_TILE_ROWS,
@@ -396,6 +396,73 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
     f.render_widget(Paragraph::new(text).block(block), area);
 }
 
+// ── Strict column budget (project row) ────────────────────────────────────
+//
+// Same treatment as the session list: every column is a fixed rect that
+// ratatui clips at the boundary. The old implementation concatenated spans
+// in one loose `Line`, so CJK names or four-digit session counts crushed
+// into whatever came next (the "weird heatmap-like block" the user saw was
+// the session-pill's `▐` half-block butting up against the `▐` of a nearby
+// run of cells — no column boundary enforcing breathing room).
+//
+//  Col 1  pin prefix `1:`   3 cols    peach-bold, blank otherwise
+//  Col 2  name              28 cols   bold, truncated with `…`
+//  Col 3  git branch        14 cols   `⌥ main`, empty otherwise
+//  Col 4  session-count     14 cols   `▌16 sessions▐`
+//  Col 5  flex spacer       flex      empty — pushes age to the right
+//  Col 6  cost chip         10 cols   `▌$910▐`, blank when unavailable
+//  Col 7  last-activity     8 cols    `14m ago`
+//
+// Breakpoints: width < 90 drops the branch column; width < 70 drops the
+// cost chip entirely. Width < 40 keeps only name + activity.
+
+const PIN_COL_WIDTH: usize = 3;
+const NAME_COL_WIDTH: usize = 28;
+const BRANCH_COL_WIDTH: usize = 14;
+const SESSIONS_COL_WIDTH: usize = 14;
+const COST_COL_WIDTH: usize = 10;
+const ACTIVITY_COL_WIDTH: usize = 8;
+
+/// Breakpoint plan for a single project row. Drives which columns collapse
+/// to zero in the `Layout::horizontal` split.
+#[derive(Debug, Clone, Copy)]
+struct ProjectColumnPlan {
+    show_pin: bool,
+    show_branch: bool,
+    show_sessions: bool,
+    show_cost: bool,
+    show_activity: bool,
+}
+
+impl ProjectColumnPlan {
+    fn for_width(width: u16) -> Self {
+        let w = width as usize;
+        // Fixed-column budgets for the non-flex columns:
+        //   pin (3) + name (28) + branch (14) + sessions (14) + cost (10) + activity (8) = 77
+        // Each breakpoint keeps the budget ≤ w so the flex spacer never
+        // collapses to a negative width (which would panic `Layout::split`).
+        Self {
+            show_pin: w >= 40,
+            show_branch: w >= 90,     // +14 keeps the pin+name+sessions+activity visible
+            show_sessions: w >= 54,   // 3+28+14+8 = 53, so ≥ 54 leaves flex room
+            show_cost: w >= 70,       // +10 adds the cost chip when space allows
+            show_activity: w >= 40,
+        }
+    }
+
+    fn constraints(&self) -> [Constraint; 7] {
+        [
+            Constraint::Length(if self.show_pin { PIN_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(NAME_COL_WIDTH as u16),
+            Constraint::Length(if self.show_branch { BRANCH_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(if self.show_sessions { SESSIONS_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Min(0),
+            Constraint::Length(if self.show_cost { COST_COL_WIDTH as u16 } else { 0 }),
+            Constraint::Length(if self.show_activity { ACTIVITY_COL_WIDTH as u16 } else { 0 }),
+        ]
+    }
+}
+
 fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
@@ -428,6 +495,10 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
         return;
     }
 
+    if area.height == 0 || area.width == 0 {
+        return;
+    }
+
     // Pre-compute pin-slot lookup so rows can prefix a `N:` badge in peach
     // bold when the project is pinned. The pinned store is a small map
     // (max 9 entries) so scanning it inside the row renderer would also be
@@ -437,27 +508,30 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
         .filter_map(|slot| pinned.at_slot(slot).map(|cwd| (cwd.to_string(), slot)))
         .collect();
 
-    let items: Vec<ListItem<'_>> = app
-        .filtered_indices
-        .iter()
-        .enumerate()
-        .map(|(display_idx, &idx)| {
-            let p = &app.projects[idx];
-            let is_sel = Some(display_idx) == app.cursor_position();
-            let slot = slot_by_cwd
-                .get(&p.path.to_string_lossy().into_owned())
-                .copied();
-            ListItem::new(render_row(p, theme, is_sel, slot))
-        })
-        .collect();
+    let plan = ProjectColumnPlan::for_width(area.width);
+    let visible_rows = area.height as usize;
+    let total = app.filtered_indices.len();
+    let cursor = app.cursor.min(total.saturating_sub(1));
+    let start = scroll_start(cursor, visible_rows, total);
 
-    let mut state = ListState::default();
-    state.select(app.cursor_position());
-    let list = List::new(items).highlight_symbol("");
-    f.render_stateful_widget(list, area, &mut state);
+    let buf = f.buffer_mut();
+    for (offset, display_idx) in (start..total.min(start + visible_rows)).enumerate() {
+        let idx = app.filtered_indices[display_idx];
+        let p = &app.projects[idx];
+        let is_sel = Some(display_idx) == app.cursor_position();
+        let slot = slot_by_cwd
+            .get(&p.path.to_string_lossy().into_owned())
+            .copied();
+        let row_area = Rect {
+            x: area.x,
+            y: area.y + offset as u16,
+            width: area.width,
+            height: 1,
+        };
+        render_row_into(buf, row_area, p, theme, is_sel, slot, &plan);
+    }
 
     // Scrollbar on the right edge, only when the list overflows.
-    let total = app.filtered_indices.len();
     if total > area.height as usize {
         let scrollbar = Scrollbar::new(ScrollbarOrientation::VerticalRight)
             .begin_symbol(None)
@@ -478,102 +552,182 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-fn render_row<'a>(
-    p: &'a Project,
+/// Viewport start index — same formula as `ratatui::widgets::List` so the
+/// cursor never scrolls off-screen.
+fn scroll_start(selected: usize, visible_rows: usize, total: usize) -> usize {
+    if visible_rows == 0 || total <= visible_rows {
+        return 0;
+    }
+    if selected < visible_rows {
+        0
+    } else {
+        selected + 1 - visible_rows
+    }
+}
+
+/// Paint a single project row into `row_area` using the strict column plan.
+///
+/// Each column paints into its own rect; the full-row surface0 wash under a
+/// selected row is painted first so the highlight covers every column
+/// (including the pin-prefix gutter and any flex spacer between the session
+/// pill and the cost chip).
+fn render_row_into(
+    buf: &mut Buffer,
+    row_area: Rect,
+    p: &Project,
     theme: &Theme,
     selected: bool,
     pin_slot: Option<u8>,
-) -> Line<'a> {
-    // Name style — theme.text bold for the primary label, selection stripe
-    // wins when the row is under the cursor.
-    let name_style = if selected {
-        theme.selected_row()
-    } else {
-        Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
-    };
-
-    let pointer = if selected { "\u{25B8}" } else { " " };
-    let pointer_style = if selected {
-        Style::default()
-            .fg(theme.mauve)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default().fg(theme.surface2)
-    };
-
-    // Pin-slot prefix: `N:` in peach bold when the project is pinned into
-    // one of the k9s-style slots. Non-pinned rows get a 2-space gutter so
-    // names stay column-aligned across pinned / unpinned neighbours.
-    let pin_prefix = match pin_slot {
-        Some(n) => Span::styled(
-            format!("{n}:"),
-            Style::default()
-                .fg(theme.peach)
-                .add_modifier(Modifier::BOLD),
-        ),
-        None => Span::raw("  "),
-    };
-
-    // Pad the name to 28 display cols so the following pills line up.
-    let name_col_width: usize = 28;
-    let name = if display_width(&p.name) > name_col_width {
-        truncate_to_width(&p.name, name_col_width)
-    } else {
-        pad_to_width(&p.name, name_col_width)
-    };
-
-    // Optional git-branch inline — dimmer than the name, kept short. Uses
-    // `⌥` as a decorator so the branch reads as a subtitle, not a pill.
-    let branch_span = p
-        .git_branch
-        .as_deref()
-        .map(|b| {
-            let trimmed = truncate_to_width(b, 16);
-            Span::styled(
-                format!(" \u{2325} {trimmed}"),
-                Style::default().fg(theme.green),
-            )
-        })
-        .unwrap_or_else(|| Span::raw(""));
-
-    // Sessions counter as a subtle pill: `▌12 sessions▐` in subtext1 over
-    // surface0 (floating chip look). The pluralisation stays textual so the
-    // pill reads the same on tiny and huge projects.
-    let session_label = if p.session_count == 1 {
-        " 1 session ".to_string()
-    } else {
-        format!(" {} sessions ", p.session_count)
-    };
-    let session_pill = Span::styled(
-        format!("\u{258C}{session_label}\u{2590}"),
-        Style::default()
-            .fg(theme.subtext1)
-            .bg(theme.surface0)
-            .add_modifier(Modifier::BOLD),
-    );
-
-    // Last activity — right-side, theme.dim, small. The helper collapses to
-    // `—` when we have no timestamp so the column stays anchored.
-    let age = project_age(p.last_activity);
-    let age_span = Span::styled(format!(" {age:>6}"), theme.dim());
-
-    let mut spans: Vec<Span<'a>> = Vec::with_capacity(10);
-    spans.push(Span::styled(format!(" {pointer} "), pointer_style));
-    spans.push(pin_prefix);
-    spans.push(Span::styled(name, name_style));
-    spans.push(branch_span);
-    spans.push(Span::raw(" "));
-    spans.push(session_pill);
-    spans.push(Span::raw("  "));
-    spans.push(age_span);
-
+    plan: &ProjectColumnPlan,
+) {
+    // Full-row selection stripe. Matches the session-list treatment so the
+    // highlight reads consistently across both screens.
     if selected {
-        for span in &mut spans {
-            span.style.bg = Some(theme.surface0);
+        let wash_style = Style::default().bg(theme.surface0);
+        for x in row_area.x..row_area.x.saturating_add(row_area.width) {
+            for y in row_area.y..row_area.y.saturating_add(row_area.height) {
+                buf[(x, y)].set_style(wash_style);
+            }
         }
     }
 
-    Line::from(spans)
+    let bg = if selected { Some(theme.surface0) } else { None };
+    let stamp_bg = |mut style: Style| -> Style {
+        if let Some(c) = bg {
+            style = style.bg(c);
+        }
+        style
+    };
+
+    let rects = Layout::horizontal(plan.constraints()).split(row_area);
+    let pin_rect = rects[0];
+    let name_rect = rects[1];
+    let branch_rect = rects[2];
+    let sessions_rect = rects[3];
+    // rects[4] is the flex spacer — nothing to paint; the row-wash already
+    // carries the selection colour there.
+    let cost_rect = rects[5];
+    let activity_rect = rects[6];
+
+    // ── Col 1: pin prefix / pointer ──────────────────────────────────────
+    if plan.show_pin {
+        let pointer = if selected { "\u{25B8}" } else { " " };
+        let pointer_style = stamp_bg(if selected {
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD)
+        } else {
+            Style::default().fg(theme.surface2)
+        });
+        let pin_span = match pin_slot {
+            Some(n) => Span::styled(
+                format!("{n}:"),
+                stamp_bg(
+                    Style::default()
+                        .fg(theme.peach)
+                        .add_modifier(Modifier::BOLD),
+                ),
+            ),
+            None => Span::styled("  ", stamp_bg(Style::default())),
+        };
+        let line = Line::from(vec![
+            Span::styled(pointer, pointer_style),
+            pin_span,
+        ]);
+        Paragraph::new(line)
+            .style(stamp_bg(Style::default()))
+            .render(pin_rect, buf);
+    }
+
+    // ── Col 2: name ──────────────────────────────────────────────────────
+    let name_style = stamp_bg(if selected {
+        theme.selected_row()
+    } else {
+        Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
+    });
+    let name_text = if display_width(&p.name) > NAME_COL_WIDTH {
+        truncate_to_width(&p.name, NAME_COL_WIDTH)
+    } else {
+        p.name.clone()
+    };
+    let name_line = Line::from(vec![Span::styled(name_text, name_style)]);
+    Paragraph::new(name_line)
+        .style(stamp_bg(Style::default()))
+        .render(name_rect, buf);
+
+    // ── Col 3: git branch ────────────────────────────────────────────────
+    if plan.show_branch {
+        if let Some(branch) = p.git_branch.as_deref() {
+            // Leave 3 cells for the leading space + decorator glyph.
+            let budget = BRANCH_COL_WIDTH.saturating_sub(3);
+            let trimmed = truncate_to_width(branch, budget);
+            let branch_line = Line::from(vec![Span::styled(
+                format!(" \u{2325} {trimmed}"),
+                stamp_bg(Style::default().fg(theme.green)),
+            )]);
+            Paragraph::new(branch_line)
+                .style(stamp_bg(Style::default()))
+                .render(branch_rect, buf);
+        }
+    }
+
+    // ── Col 4: session-count pill ────────────────────────────────────────
+    if plan.show_sessions {
+        // Fit the pill inside its column — `▌16 sessions▐` is 14 cells
+        // exactly; 3-digit counts ("▌127 sessions▐") are 15 cells, so we
+        // fall back to the short form when the long label overflows.
+        let long_label = if p.session_count == 1 {
+            " 1 session ".to_string()
+        } else {
+            format!(" {} sessions ", p.session_count)
+        };
+        let long_chip = format!("\u{258C}{long_label}\u{2590}");
+        let chip_text = if display_width(&long_chip) <= SESSIONS_COL_WIDTH {
+            long_chip
+        } else {
+            // Short form: `▌123 ⌁▐` is cramped but always ≤ 14 cells.
+            let short = format!(" {} ", p.session_count);
+            let short_chip = format!("\u{258C}{short}\u{2590}");
+            if display_width(&short_chip) <= SESSIONS_COL_WIDTH {
+                short_chip
+            } else {
+                truncate_to_width(&short_chip, SESSIONS_COL_WIDTH)
+            }
+        };
+        let mut chip_style = Style::default()
+            .fg(theme.subtext1)
+            .add_modifier(Modifier::BOLD);
+        // Use surface1 for the chip bed on a selected row so it still reads
+        // as a floating slug over the highlight stripe.
+        chip_style = chip_style.bg(if selected { theme.surface1 } else { theme.surface0 });
+        let line = Line::from(vec![Span::raw(" "), Span::styled(chip_text, chip_style)]);
+        Paragraph::new(line)
+            .style(stamp_bg(Style::default()))
+            .render(sessions_rect, buf);
+    }
+
+    // ── Col 6: cost chip ─────────────────────────────────────────────────
+    // Project aggregates don't currently carry a cost field — see
+    // `data::Project`. The column is reserved in the layout so the right-
+    // hand side stays stable; when a future patch adds per-project cost
+    // totals, plug the chip in here (and flip `show_cost` on zero-cost
+    // rows to keep the gutter empty). Today we paint a blank rect so the
+    // row-wash still covers the column when a row is selected.
+    if plan.show_cost {
+        Paragraph::new(Line::from(""))
+            .style(stamp_bg(Style::default()))
+            .render(cost_rect, buf);
+    }
+
+    // ── Col 7: last-activity ─────────────────────────────────────────────
+    if plan.show_activity {
+        let age = project_age(p.last_activity);
+        let line = Line::from(vec![Span::styled(format!(" {age}"), stamp_bg(theme.dim()))])
+            .alignment(Alignment::Left);
+        Paragraph::new(line)
+            .style(stamp_bg(Style::default()))
+            .render(activity_rect, buf);
+    }
 }
 
 fn project_age(ts: Option<DateTime<Utc>>) -> String {
@@ -713,4 +867,69 @@ pub fn render_pinned_strip_with_thumbnails(
         .collect();
 
     thumbnail::render_pinned_strip_with_thumbnails(f, area, &slot_refs, theme, renderer);
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn project_plan_wide_pane_shows_everything() {
+        let p = ProjectColumnPlan::for_width(120);
+        assert!(p.show_pin);
+        assert!(p.show_branch);
+        assert!(p.show_sessions);
+        assert!(p.show_cost);
+        assert!(p.show_activity);
+    }
+
+    #[test]
+    fn project_plan_drops_branch_under_90() {
+        let p = ProjectColumnPlan::for_width(89);
+        assert!(!p.show_branch, "branch drops at 89 cols");
+        assert!(p.show_sessions);
+        assert!(p.show_cost);
+    }
+
+    #[test]
+    fn project_plan_drops_cost_under_70() {
+        let p = ProjectColumnPlan::for_width(69);
+        assert!(!p.show_cost);
+        assert!(p.show_sessions);
+    }
+
+    #[test]
+    fn project_plan_fixed_columns_never_exceed_width() {
+        // Same guardrail as the session list — the sum of explicit Length
+        // constraints must fit inside the pane width at every breakpoint
+        // so `Layout::horizontal` never has to clip fixed columns.
+        let fixed_total = |p: &ProjectColumnPlan| -> u16 {
+            p.constraints()
+                .iter()
+                .filter_map(|c| match c {
+                    Constraint::Length(n) => Some(*n),
+                    _ => None,
+                })
+                .sum()
+        };
+        for w in [40u16, 53, 54, 69, 70, 89, 90, 100, 120, 160] {
+            let plan = ProjectColumnPlan::for_width(w);
+            let total = fixed_total(&plan);
+            assert!(
+                total <= w,
+                "width={w} fixed-column total={total} exceeds pane width",
+            );
+        }
+    }
+
+    #[test]
+    fn project_scroll_start_matches_list_semantics() {
+        assert_eq!(scroll_start(0, 10, 50), 0);
+        assert_eq!(scroll_start(5, 10, 50), 0);
+        assert_eq!(scroll_start(9, 10, 50), 0);
+        assert_eq!(scroll_start(10, 10, 50), 1);
+        assert_eq!(scroll_start(49, 10, 50), 40);
+        // Short list — never scrolls.
+        assert_eq!(scroll_start(2, 10, 3), 0);
+    }
 }
