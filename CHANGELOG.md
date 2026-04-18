@@ -5,6 +5,24 @@ All notable changes to `claude-picker` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.0] - 2026-04-18
+
+The "wow factor" release. Horizon 3 from the v4.0 UI research — animations, project-identicon thumbnails, and a session-pulse HUD. Every effect respects the new `ui.reduce_motion` config flag for users who prefer static output or use screen readers.
+
+### Added
+
+- **Animated fork-tree reveal** (F1) — a 350ms gradient wave animates edges when entering the tree view or expanding with `e`. Powered by tachyonfx 0.7.
+- **Session pulse HUD** (F3) — bottom-right 3-line overlay showing today's $, rate, end-of-day projection, and an 8-bucket sparkline. The `●` indicator pulses on a 2s loop. Border flashes at >95% of daily budget.
+- **Replay comet trail** (F4) — 4-position ghost-trail fades behind the scrubber cursor during replay scrubbing.
+- **Peek mode** (F5) — press-and-hold Space over a session row → floating 60×20 preview fades in with the last 20 turns. Release → fades out.
+- **Project identicon thumbnails** (F2/E17) — per-project 4×4 symmetric halfblock identicons in the pinned-slot strip. Works in every terminal (kitty, iTerm2, tmux, CI, VHS). Deterministic per-project (spatial memory).
+- **`ui.reduce_motion` config flag** — disables all animations; all Horizon-3 features fall back to static rendering.
+
+### Technical
+- Added `tachyonfx = "0.7"` (pinned — 0.11+ requires ratatui 0.29).
+- Added `image = "0.25"` (pure Rust, no C deps).
+- `ratatui-image` was considered but dropped — its chafa C dependency broke CI and source installs; halfblocks rendering gives the same visual intent universally.
+
 ## [0.3.0] - 2026-04-18
 
 The "UI ultra-mode" release. 19+ UI features from the v4.0 research — keyboard discoverability, project pinning, filter ribbon, task drawer, fork summaries, heatmap gutter, chunk jump, scrollback-to-editor, plus 4 new themes.
