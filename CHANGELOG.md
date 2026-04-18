@@ -5,6 +5,31 @@ All notable changes to `claude-picker` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.5.0] - 2026-04-18
+
+The "visual overhaul" release. Rich, punchy, typographically refined UI across every section. Stats page went from spartan-grey to a real dashboard.
+
+### Added
+
+#### Stats page — deep redesign
+- **KPI hero cards** — cost gets a thick mauve border, others rounded. Each card now shows: big bold number, delta chip (▲/▼/─) vs prior 30d, inline 6-cell braille sparkline, top-right icon (◈ $ ◉).
+- **Per-project table** — rank badges ① ② ③ on top-3, multi-segment stacked bars with family-colored fill (Opus=peach, Sonnet=teal, Haiku=blue), right-aligned stats separated by │.
+- **Activity 30d** — GitHub-style 7×N grid with 5-step shade ramp (·░▒▓█), weekly date anchors, today marked ◉ peach, full legend `Less ·░▒▓█ More  ◉ today`.
+- **Turn-duration histogram** — speed-colored bars (green→red by bucket), p50/p95/p99 badges, summary line with median/mean/N turns.
+- **Budget section** — traffic-light 30-cell progress bar, forecast badge (on-track/close-call/over-track), per-model pill rows with family colors.
+
+#### Themes — vibrancy pass + 12 new semantic tokens
+- Brightened mocha/latte/gruvbox/nord-aurora for punchier readability (WCAG AA kept on every theme).
+- New semantic tokens on every theme: `cost_green/yellow/amber/red/critical`, `speed_fast/medium/slow/glacial`, `model_opus/sonnet/haiku`.
+- Colorblind-safe theme maps cost_green=blue, cost_red=orange — never red-green pairs.
+
+#### Typography + section polish across all screens
+- **Session list:** name + auto-name hierarchy, permission-mode pills (▌danger▐), circled subagent counts (②③④), italic teaser previews, cost chips ▌$X▐ with severity colors.
+- **Project list:** pin-slot prefix `1:` peach-bold, session-count capsule, last-activity dim.
+- **Picker header:** breadcrumb arrows ›, scope chip `[REPO*]`, filter expression yellow-bold when active.
+- **Footer:** key pills ▌j/k▐ with mauve bg, thick-dot ● separators, peach-bold action hints.
+- **Preview:** section dividers `─── label ───`, key/value aligned meta, ◯ empty states.
+
 ## [0.4.1] - 2026-04-18
 
 ### Fixed
