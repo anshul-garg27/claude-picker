@@ -5,6 +5,13 @@ All notable changes to `claude-picker` are documented here.
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-04-18
+
+### Fixed
+
+- **REPO filter scope showed empty lists after navigating between projects.** The filter ribbon's `current_repo` was set once at startup (to the cwd the user launched from) and never repointed, so drilling into another project left the REPO predicate stuck on the original path and hid every session (0/N).
+- **REPO filter hid sessions when Claude Code's encoded path differed from the real filesystem path.** Claude Code encodes `/` and `_` identically as `-`, so decoded project paths can drift from the actual cwd. Added a safety valve in `apply_filter`: if the ribbon hides every session in a non-empty list, show them unfiltered.
+
 ## [0.4.0] - 2026-04-18
 
 The "wow factor" release. Horizon 3 from the v4.0 UI research — animations, project-identicon thumbnails, and a session-pulse HUD. Every effect respects the new `ui.reduce_motion` config flag for users who prefer static output or use screen readers.
