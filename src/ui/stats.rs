@@ -34,7 +34,7 @@ use chrono::{Datelike, Duration as ChronoDuration, NaiveDate};
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph, Sparkline};
+use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::data::pricing::{Family, TokenCounts};
@@ -220,7 +220,7 @@ const MAX_W: u16 = 120;
 /// Minimum width where the layout still renders sensibly. Below this we
 /// show a "resize please" placeholder.
 const MIN_W: u16 = 80;
-const MIN_H: u16 = 22;
+const MIN_H: u16 = 24;
 
 /// Render the full dashboard into `area`.
 ///
@@ -236,14 +236,30 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     // Cap width + center.
     let inner = center_capped(area, MAX_W);
 
-    // Optional bands, sized based on state.
+    // Optional bands, sized based on state. The richer budget band wants
+    // room for the rule + MTD bar + forecast bar + model breakdown (up to 3
+    // rows). When no budget is configured AND forecast is hidden we collapse
+    // to zero so the rest of the dashboard reclaims the space.
+    let budget_model_rows = view
+        .data
+        .by_model
+        .iter()
+        .filter(|(_, cost)| {
+            // Only show per-model rows when there's an actual monthly spend.
+            let mtd = view.data.month_to_date_cost;
+            mtd > 0.0 && *cost > 0.0
+        })
+        .count()
+        .min(3) as u16;
     let budget_h: u16 = if view.show_forecast || view.monthly_limit_usd > 0.0 {
-        3
+        // 1 rule + 1 blank + 1 MTD progress + 1 forecast + blank +
+        // budget_model_rows + 1 trailing blank.
+        5 + budget_model_rows
     } else {
         0
     };
     let hist_h: u16 = if view.data.turn_durations.total_turns > 0 {
-        10
+        12
     } else {
         0
     };
@@ -253,7 +269,7 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
         .constraints([
             Constraint::Length(1),        // title
             Constraint::Length(1),        // blank
-            Constraint::Length(6),        // kpi cards
+            Constraint::Length(8),        // kpi cards (rich)
             Constraint::Length(1),        // blank
             Constraint::Min(8),           // per-project + activity flex
             Constraint::Length(hist_h),   // turn-duration histogram
@@ -327,8 +343,87 @@ fn render_title(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: 
 
 // ── KPI row ──────────────────────────────────────────────────────────────
 
+/// Compute a percent-delta (-100..) between the **current-half** and
+/// **prior-half** of a daily series. Returns `None` if the prior window is
+/// empty (no baseline to compare against) — the callsite then renders a
+/// neutral dash instead of a colored triangle.
+///
+/// For a 30-day `daily` vec this gives us "last 15 days vs previous 15
+/// days", which is the window the KPI delta chip advertises.
+fn half_over_half_delta(series: &[f64]) -> Option<f64> {
+    if series.len() < 4 {
+        return None;
+    }
+    let mid = series.len() / 2;
+    let prior: f64 = series[..mid].iter().sum();
+    let current: f64 = series[mid..].iter().sum();
+    if prior <= f64::EPSILON {
+        return None;
+    }
+    Some(((current - prior) / prior) * 100.0)
+}
+
+/// Render a small colored delta chip (▲12% / ▼5% / ─). "Up = good" for
+/// tokens/sessions but "up = bad" for cost — the callsite owns the polarity
+/// flag via `up_is_good`.
+fn delta_chip<'a>(delta: Option<f64>, theme: &Theme, up_is_good: bool) -> Vec<Span<'a>> {
+    match delta {
+        None => vec![
+            Span::styled("─ ", theme.dim()),
+            Span::styled("no baseline", theme.dim()),
+        ],
+        Some(d) => {
+            let (arrow, color) = if d.abs() < 0.5 {
+                ("─", theme.subtext0)
+            } else if d > 0.0 {
+                ("▲", if up_is_good { theme.green } else { theme.red })
+            } else {
+                ("▼", if up_is_good { theme.red } else { theme.green })
+            };
+            let pct = format!("{:>3.0}%", d.abs());
+            vec![
+                Span::styled(
+                    format!("{arrow} "),
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    pct,
+                    Style::default().fg(color).add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(" vs prior", theme.dim()),
+            ]
+        }
+    }
+}
+
+/// 6-step braille sparkline glyph picker — maps a normalised value [0, 1]
+/// to one of `▁▂▃▄▅▆▇█`. Used inside the KPI cards where Ratatui's built-in
+/// `Sparkline` is a little too heavy (it steals a whole row and doesn't
+/// compose well inside a one-line value row).
+fn mini_sparkline(series: &[u64]) -> String {
+    if series.is_empty() {
+        return String::new();
+    }
+    const RAMP: &[char] = &['▁', '▂', '▃', '▄', '▅', '▆', '▇', '█'];
+    let max = series.iter().copied().max().unwrap_or(1).max(1);
+    series
+        .iter()
+        .map(|&v| {
+            if v == 0 {
+                ' '
+            } else {
+                let norm = v as f64 / max as f64;
+                let idx = ((norm * (RAMP.len() - 1) as f64).round() as usize)
+                    .min(RAMP.len() - 1);
+                RAMP[idx]
+            }
+        })
+        .collect()
+}
+
 fn render_kpi_row(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
-    // 3 cards, side by side, with a 1-col gutter.
+    // 3 cards, side by side. Ratio-thirds so every card is the same width
+    // even when the dashboard is narrower than MAX_W.
     let cols = Layout::default()
         .direction(Direction::Horizontal)
         .constraints([
@@ -345,88 +440,134 @@ fn render_kpi_row(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme
         .daily
         .iter()
         // Sparkline takes u64, cost is a float — round to cents so the shape
-        // of the trend survives the cast. Multiply first so $0.01 still
-        // shows up as a bar.
+        // of the trend survives the cast.
         .map(|d| (d.cost_usd * 100.0).round() as u64)
         .collect();
-    let sessions_spark: Vec<u64> = view.data.daily.iter().map(|d| d.sessions as u64).collect();
+    let sessions_spark: Vec<u64> =
+        view.data.daily.iter().map(|d| d.sessions as u64).collect();
 
-    // Card 1 — tokens
+    // Half-over-half deltas (last 15d vs prior 15d).
+    let tokens_series: Vec<f64> = view.data.daily.iter().map(|d| d.tokens as f64).collect();
+    let cost_series: Vec<f64> = view.data.daily.iter().map(|d| d.cost_usd).collect();
+    let sessions_series: Vec<f64> =
+        view.data.daily.iter().map(|d| d.sessions as f64).collect();
+
+    let tokens_delta = half_over_half_delta(&tokens_series);
+    let cost_delta = half_over_half_delta(&cost_series);
+    let sessions_delta = half_over_half_delta(&sessions_series);
+
+    // Narrow mode: below ~96 cols the sparklines inside the cards eat the
+    // value text. Switch to a compact card that drops the sparkline row.
+    let compact = area.width < 96;
+
+    // Card 1 — tokens. Teal accent, big number + chip + sparkline.
     render_kpi_card(
         frame,
         cols[0],
         theme,
-        " tokens ",
-        &format_tokens(t.total_tokens.total()),
-        theme.text,
-        &tokens_spark,
-        theme.teal,
-        &format!(
-            "{} in · {} out",
-            format_tokens(
-                t.total_tokens
-                    .input
-                    .saturating_add(t.total_tokens.cache_read)
-                    .saturating_add(t.total_tokens.cache_write_5m)
-                    .saturating_add(t.total_tokens.cache_write_1h)
+        KpiCard {
+            title: "tokens",
+            icon: "◈",
+            big_value: &format_tokens(t.total_tokens.total()),
+            big_color: theme.peach,
+            spark_data: &tokens_spark,
+            spark_color: theme.teal,
+            delta: tokens_delta,
+            up_is_good: true,
+            subtitle: &format!(
+                "{} in · {} out",
+                format_tokens(
+                    t.total_tokens
+                        .input
+                        .saturating_add(t.total_tokens.cache_read)
+                        .saturating_add(t.total_tokens.cache_write_5m)
+                        .saturating_add(t.total_tokens.cache_write_1h)
+                ),
+                format_tokens(t.total_tokens.output),
             ),
-            format_tokens(t.total_tokens.output),
-        ),
+            is_hero: false,
+            compact,
+        },
     );
 
-    // Card 2 — cost
+    // Card 2 — cost (the hero). Mauve thick border, big green number.
     render_kpi_card(
         frame,
         cols[1],
         theme,
-        " cost ",
-        &format_cost(t.total_cost_usd),
-        theme.green,
-        &cost_spark,
-        theme.green,
-        &format!("avg {} / day", format_cost(t.avg_cost_per_day)),
+        KpiCard {
+            title: "cost",
+            icon: "$",
+            big_value: &format_cost(t.total_cost_usd),
+            big_color: theme.green,
+            spark_data: &cost_spark,
+            spark_color: theme.peach,
+            delta: cost_delta,
+            up_is_good: false, // rising cost = bad
+            subtitle: &format!("avg {} / day", format_cost(t.avg_cost_per_day)),
+            is_hero: true,
+            compact,
+        },
     );
 
-    // Card 3 — sessions
+    // Card 3 — sessions. Yellow accent.
     render_kpi_card(
         frame,
         cols[2],
         theme,
-        " sessions ",
-        &t.total_sessions.to_string(),
-        theme.yellow,
-        &sessions_spark,
-        theme.yellow,
-        &format!(
-            "{} named · {} unnamed",
-            view.data.named_count, view.data.unnamed_count
-        ),
+        KpiCard {
+            title: "sessions",
+            icon: "◉",
+            big_value: &t.total_sessions.to_string(),
+            big_color: theme.yellow,
+            spark_data: &sessions_spark,
+            spark_color: theme.yellow,
+            delta: sessions_delta,
+            up_is_good: true,
+            subtitle: &format!(
+                "{} named · {} unnamed",
+                view.data.named_count, view.data.unnamed_count
+            ),
+            is_hero: false,
+            compact,
+        },
     );
+}
+
+/// Props bag for [`render_kpi_card`]. Reduces the argument list from nine
+/// positional parameters to a single struct — also lets clippy stop
+/// complaining about `too_many_arguments`.
+struct KpiCard<'a> {
+    title: &'a str,
+    icon: &'a str,
+    big_value: &'a str,
+    big_color: Color,
+    spark_data: &'a [u64],
+    spark_color: Color,
+    delta: Option<f64>,
+    up_is_good: bool,
+    subtitle: &'a str,
+    /// When true, the card gets a thick mauve border (the "hero" card of the
+    /// row). Currently reserved for the cost card.
+    is_hero: bool,
+    /// Narrow-mode rendering: when true, we hide the inline sparkline row
+    /// and drop the underline to keep the card usable under ~96 cols.
+    compact: bool,
 }
 
 /// Render a single KPI card inside `area`.
 ///
-/// Card anatomy (6 rows):
+/// Anatomy:
 /// ```text
-/// ╭─ label ─────╮
-///               │
-///   109.0M  ▂█… │
-///   107.7M in…  │
-///               │
-/// ╰─────────────╯
+/// ┏━ cost ━━━━━━━━━━━ $ ┓
+/// ┃                      ┃
+/// ┃  $925.66             ┃
+/// ┃  ━━━━━━━━━━━━        ┃
+/// ┃  ▲ 8%  ▁▃▅▆▇█        ┃
+/// ┃  avg $30.85 / day    ┃
+/// ┗━━━━━━━━━━━━━━━━━━━━━━┛
 /// ```
-#[allow(clippy::too_many_arguments)]
-fn render_kpi_card(
-    frame: &mut Frame<'_>,
-    area: Rect,
-    theme: &Theme,
-    title: &str,
-    big_value: &str,
-    big_color: Color,
-    spark_data: &[u64],
-    spark_color: Color,
-    subtitle: &str,
-) {
+fn render_kpi_card(frame: &mut Frame<'_>, area: Rect, theme: &Theme, c: KpiCard) {
     // Give each card a small horizontal margin so the three cards don't kiss.
     let card_area = Rect {
         x: area.x.saturating_add(1),
@@ -435,84 +576,142 @@ fn render_kpi_card(
         height: area.height,
     };
 
+    // Title + trailing icon. We render the icon via the Block's second title
+    // on the right (ratatui supports multiple titles when positioned with
+    // alignment).
+    let title_span = Span::styled(
+        format!(" {} ", c.title),
+        Style::default()
+            .fg(theme.subtext0)
+            .add_modifier(Modifier::BOLD),
+    );
+    let icon_span = Span::styled(
+        format!(" {} ", c.icon),
+        Style::default()
+            .fg(if c.is_hero { theme.peach } else { theme.overlay1 })
+            .add_modifier(Modifier::BOLD),
+    );
+
+    let border_style = if c.is_hero {
+        Style::default()
+            .fg(theme.mauve)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().fg(theme.surface2)
+    };
+    let border_type = if c.is_hero {
+        BorderType::Thick
+    } else {
+        BorderType::Rounded
+    };
+
     let block = Block::default()
         .borders(Borders::ALL)
-        .border_type(BorderType::Rounded)
-        .border_style(Style::default().fg(theme.surface1))
-        .title(Span::styled(
-            title,
-            Style::default()
-                .fg(theme.subtext0)
-                .add_modifier(Modifier::DIM),
-        ));
+        .border_type(border_type)
+        .border_style(border_style)
+        .title(Line::from(vec![title_span]))
+        .title(Line::from(vec![icon_span]).alignment(Alignment::Right));
     let inner = block.inner(card_area);
     frame.render_widget(block, card_area);
 
-    // Inner layout: 1 row blank padding, value+spark row, subtitle row,
-    // 1 row blank padding.
+    // Inner layout:
+    //   row 0: padding
+    //   row 1: big value
+    //   row 2: underline rule
+    //   row 3: delta chip + mini-sparkline
+    //   row 4: subtitle
+    //   rows 5+: padding
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
             Constraint::Length(1), // padding
-            Constraint::Length(1), // big value + spark
+            Constraint::Length(1), // big value
+            Constraint::Length(1), // underline rule
+            Constraint::Length(1), // delta + spark
             Constraint::Length(1), // subtitle
             Constraint::Min(0),    // trailing padding
         ])
         .split(inner);
 
-    // big value + sparkline row. The sparkline steals whatever width is left
-    // after the value plus a small gap. Column-aware so a formatted token
-    // count with a wide glyph (unlikely today, but safe) still lays out.
-    let value_width = display_width(big_value) as u16 + 3; // "  {value} "
-    let spark_width = rows[1].width.saturating_sub(value_width).saturating_sub(2);
-    let value_cols = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([
-            Constraint::Length(value_width),
-            Constraint::Length(spark_width),
-            Constraint::Min(0),
-        ])
-        .split(rows[1]);
-
+    // Big value — bold, colored, 2 cols of left pad.
     let value_line = Line::from(vec![
         Span::raw("  "),
         Span::styled(
-            big_value.to_string(),
-            Style::default().fg(big_color).add_modifier(Modifier::BOLD),
+            c.big_value.to_string(),
+            Style::default()
+                .fg(c.big_color)
+                .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" "),
     ]);
-    frame.render_widget(Paragraph::new(value_line), value_cols[0]);
+    frame.render_widget(Paragraph::new(value_line), rows[1]);
 
-    if spark_width >= 4 && spark_data.iter().any(|&v| v > 0) {
-        let sparkline = Sparkline::default()
-            .data(spark_data)
-            .style(Style::default().fg(spark_color))
-            .max(spark_data.iter().copied().max().unwrap_or(1));
-        frame.render_widget(sparkline, value_cols[1]);
-    } else {
-        // Empty sparkline — draw dots so the card doesn't look broken.
-        let dots: String = "·".repeat(spark_width as usize);
-        let p = Paragraph::new(Line::from(Span::styled(
-            dots,
-            Style::default().fg(theme.surface1),
-        )));
-        frame.render_widget(p, value_cols[1]);
+    // Underline rule — scaled to the width of the value plus a little, so
+    // the eye anchors on the number. In hero mode we use the thick
+    // horizontal; in non-hero we use a lighter em dash-ish row.
+    let rule_w = (display_width(c.big_value) + 4).min(inner.width as usize);
+    let rule_char = if c.is_hero { '━' } else { '─' };
+    let rule_line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            rule_char.to_string().repeat(rule_w.saturating_sub(2)),
+            Style::default().fg(if c.is_hero {
+                theme.mauve
+            } else {
+                theme.surface2
+            }),
+        ),
+    ]);
+    if !c.compact {
+        frame.render_widget(Paragraph::new(rule_line), rows[2]);
     }
 
+    // Delta chip + inline mini-sparkline.
+    let chip_spans = delta_chip(c.delta, theme, c.up_is_good);
+    let mut row3: Vec<Span<'_>> = Vec::with_capacity(chip_spans.len() + 4);
+    row3.push(Span::raw("  "));
+    row3.extend(chip_spans);
+    if !c.compact {
+        // Pack the sparkline into the remaining width after the chip.
+        let used: usize = row3.iter().map(|s| display_width(&s.content)).sum();
+        let remaining = (inner.width as usize).saturating_sub(used + 3);
+        if remaining >= 6 {
+            // Take the last `remaining` cells from the series so we show
+            // the most recent trend.
+            let slice = if c.spark_data.len() > remaining {
+                &c.spark_data[c.spark_data.len() - remaining..]
+            } else {
+                c.spark_data
+            };
+            let spark = mini_sparkline(slice);
+            row3.push(Span::raw("  "));
+            row3.push(Span::styled(
+                spark,
+                Style::default()
+                    .fg(c.spark_color)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(row3)), rows[3]);
+
+    // Subtitle — the secondary line ("555.6M in · 4M out" etc).
     let subtitle_line = Line::from(vec![
         Span::raw("  "),
-        Span::styled(subtitle.to_string(), theme.muted()),
+        Span::styled(c.subtitle.to_string(), theme.muted()),
     ]);
-    frame.render_widget(Paragraph::new(subtitle_line), rows[2]);
+    frame.render_widget(Paragraph::new(subtitle_line), rows[4]);
 }
 
 // ── Body: per-project + activity timeline ────────────────────────────────
 
 fn render_body(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
-    let projects_needed = view.data.by_project.len().min(8) as u16 + 3;
+    // Projects now reserve rows for the rule, a blank, 8 data rows max, a
+    // blank + legend row. Add +5 over the raw row count.
+    let projects_needed = view.data.by_project.len().min(8) as u16 + 5;
     let activity_height: u16 = match view.mode {
-        TimelineMode::Days30 | TimelineMode::Weeks12 => 5,
+        // GitHub grid wants: 1 rule + 1 blank + 1 header + 7 weekday rows +
+        // 1 legend = 11. Clamp to 11 so the rest of the layout still fits.
+        TimelineMode::Days30 | TimelineMode::Weeks12 => 11,
         TimelineMode::Hours24 => 6,
         TimelineMode::Month => 9,
     };
@@ -536,18 +735,31 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &
 }
 
 fn render_projects(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
-    // Section rule.
+    // Section rule — thick header for the primary data block.
+    let title_text = "per project (sorted by cost) ";
     let rule = Line::from(vec![
         Span::raw("  "),
-        Span::styled("── ", theme.dim()),
-        Span::styled("per project ", theme.subtle()),
         Span::styled(
-            "─".repeat(area.width.saturating_sub(17) as usize),
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title_text,
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(
+                area.width
+                    .saturating_sub(5 + display_width(title_text) as u16)
+                    as usize,
+            ),
             theme.dim(),
         ),
     ]);
 
-    let mut lines = Vec::with_capacity(view.data.by_project.len() + 2);
+    let mut lines = Vec::with_capacity(view.data.by_project.len() + 4);
     lines.push(rule);
     lines.push(Line::raw(""));
 
@@ -560,17 +772,42 @@ fn render_projects(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
         .max(f64::EPSILON);
 
     // Width budgeting for the per-project row:
-    //   "  " + name(18) + "  " + bar(flex) + "  " + right(~32) + margin
+    //   "  " + rank(2) + " " + name(18) + "  " + bar(flex) + "  " + right(~34) + margin
+    let rank_w: usize = 2;
     let name_w: usize = 18;
-    let right_w: usize = 32;
+    let right_w: usize = 34;
     let bar_w = (area.width as usize)
-        .saturating_sub(2 + name_w + 2 + 2 + right_w)
+        .saturating_sub(2 + rank_w + 1 + name_w + 2 + 2 + right_w)
         .max(10);
 
     for (i, project) in view.data.by_project.iter().take(8).enumerate() {
-        let color = project_color(i, project.color_family, theme);
+        let family_color = family_color(project.color_family, theme);
         let name = truncate_str(&project.name, name_w);
 
+        // Rank badge for the top 3.
+        let rank_span = match i {
+            0 => Span::styled(
+                "① ",
+                Style::default().fg(theme.peach).add_modifier(Modifier::BOLD),
+            ),
+            1 => Span::styled(
+                "② ",
+                Style::default()
+                    .fg(theme.yellow)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            2 => Span::styled(
+                "③ ",
+                Style::default()
+                    .fg(theme.green)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            _ => Span::styled("  ", theme.dim()),
+        };
+
+        // Multi-segment bar. The raw ratio drives total length; inside the
+        // filled portion we taper heavy → medium → light so the bar reads
+        // as "dominant family + tail" instead of a flat block.
         let bar_len = if max_cost > 0.0 && project.cost_usd > 0.0 {
             ((project.cost_usd / max_cost) * bar_w as f64).round() as usize
         } else {
@@ -579,24 +816,52 @@ fn render_projects(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
         .max(1)
         .min(bar_w);
 
-        let filled: String = "█".repeat(bar_len);
-        let empty: String = "░".repeat(bar_w.saturating_sub(bar_len));
+        let heavy_len = (bar_len as f64 * 0.60).ceil() as usize;
+        let medium_len = ((bar_len as f64 * 0.25).round() as usize)
+            .min(bar_len.saturating_sub(heavy_len));
+        let light_len = bar_len
+            .saturating_sub(heavy_len)
+            .saturating_sub(medium_len);
+        let empty_len = bar_w.saturating_sub(bar_len);
+
+        // Pair a "secondary" color with each family so the tapered
+        // segments read as a stack rather than a single hue with alpha.
+        let secondary = match project.color_family {
+            Family::Opus => theme.mauve, // rose → mauve tail
+            Family::Sonnet => theme.blue,
+            Family::Haiku => theme.green,
+            Family::Unknown => theme.overlay1,
+        };
+
+        let heavy: String = "█".repeat(heavy_len);
+        let medium: String = "▓".repeat(medium_len);
+        let light: String = "▒".repeat(light_len);
+        let empty: String = "░".repeat(empty_len);
 
         let right_text = format!(
-            "{:>7}  ·  {:>6} tok  ·  {:>3} ses",
+            "{:>8} \u{2502} {:>6} tok \u{2502} {:>3} sess",
             format_cost(project.cost_usd),
             format_tokens(project.total_tokens),
             project.session_count,
         );
 
+        // Name gets BOLD + family-tinted; rank 0 gets text color so the
+        // leader reads as "the hero" without the family color stealing it.
+        let name_color = if i == 0 { theme.text } else { family_color };
+
         let line = Line::from(vec![
             Span::raw("  "),
+            rank_span,
             Span::styled(
                 pad_right(&name, name_w),
-                Style::default().fg(color).add_modifier(Modifier::BOLD),
+                Style::default()
+                    .fg(name_color)
+                    .add_modifier(Modifier::BOLD),
             ),
             Span::raw("  "),
-            Span::styled(filled, Style::default().fg(color)),
+            Span::styled(heavy, Style::default().fg(family_color)),
+            Span::styled(medium, Style::default().fg(secondary)),
+            Span::styled(light, Style::default().fg(secondary)),
             Span::styled(empty, Style::default().fg(theme.surface1)),
             Span::raw("  "),
             Span::styled(right_text, theme.muted()),
@@ -609,6 +874,32 @@ fn render_projects(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
             Span::raw("  "),
             Span::styled("no sessions yet.", theme.muted()),
         ]));
+    } else {
+        // Legend: explain the bar segments' meaning.
+        lines.push(Line::raw(""));
+        lines.push(Line::from(vec![
+            Span::raw("    "),
+            Span::styled(
+                "█",
+                Style::default().fg(theme.peach).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Opus    ", theme.muted()),
+            Span::styled(
+                "▓",
+                Style::default().fg(theme.teal).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Sonnet  ", theme.muted()),
+            Span::styled(
+                "▒",
+                Style::default().fg(theme.blue).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(" Haiku   ", theme.muted()),
+            Span::styled(
+                "░",
+                Style::default().fg(theme.surface1),
+            ),
+            Span::styled(" remaining budget headroom", theme.dim()),
+        ]));
     }
 
     frame.render_widget(Paragraph::new(lines), area);
@@ -620,43 +911,92 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
         .constraints([
             Constraint::Length(1), // rule
             Constraint::Length(1), // blank
-            Constraint::Length(1), // bars
-            Constraint::Length(1), // labels
-            Constraint::Length(1), // today marker
+            Constraint::Min(9),    // grid body (header + 7 weekday rows + legend)
         ])
         .split(area);
 
-    // Rule.
+    // Section rule — thick + bold to match the other hero sections.
     let title = match view.mode {
         TimelineMode::Days30 => "activity (30d) ",
         TimelineMode::Weeks12 => "activity (12w) ",
-        // Heatmap modes route to their own renderers and never reach here;
-        // exhaustiveness lint is the only reason this arm exists.
+        // Heatmap modes route to their own renderers and never reach here.
         TimelineMode::Hours24 | TimelineMode::Month => "activity ",
     };
     let rule = Line::from(vec![
         Span::raw("  "),
-        Span::styled("── ", theme.dim()),
-        Span::styled(title, theme.subtle()),
         Span::styled(
-            "─".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
             theme.dim(),
         ),
     ]);
     frame.render_widget(Paragraph::new(rule), rows[0]);
 
-    // Bars — one per bucket in view.data.daily.
     let buckets = &view.data.daily;
     if buckets.is_empty() {
+        let p = Paragraph::new(Line::from(vec![
+            Span::raw("  "),
+            Span::styled("no activity yet.", theme.muted()),
+        ]));
+        frame.render_widget(p, rows[2]);
         return;
     }
 
-    let max_sessions = buckets.iter().map(|d| d.sessions).max().unwrap_or(1).max(1);
+    match view.mode {
+        TimelineMode::Days30 => {
+            // Re-use the shared weekday-grid helper from heatmap.rs.
+            let today = view.data.today;
+            let cells: Vec<heatmap::WeekdayCell> = buckets
+                .iter()
+                .map(|d| heatmap::WeekdayCell {
+                    date: d.date,
+                    count: d.sessions,
+                    is_today: d.date == today,
+                })
+                .collect();
+            heatmap::render_weekday_grid(frame, rows[2], &cells, theme);
+        }
+        TimelineMode::Weeks12 => {
+            // Fall back to the legacy bar strip for the 12-week mode — the
+            // weekday grid only makes sense for day-resolution data.
+            render_weekly_strip(frame, rows[2], view, theme);
+        }
+        _ => {}
+    }
+}
 
-    // Lay out exactly N bars across the available width. Reserve a couple of
-    // chars of padding on each side so the content doesn't hug the border.
+/// 12-week bar strip used by `TimelineMode::Weeks12`. Each bucket's `date`
+/// is the Monday of that ISO week, `sessions` is the weekly total.
+fn render_weekly_strip(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
+    let buckets = &view.data.daily;
+    let rows = Layout::default()
+        .direction(Direction::Vertical)
+        .constraints([
+            Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(2),
+            Constraint::Length(1),
+            Constraint::Min(0),
+        ])
+        .split(area);
+
+    let max_sessions = buckets
+        .iter()
+        .map(|d| d.sessions)
+        .max()
+        .unwrap_or(1)
+        .max(1);
     let n = buckets.len();
-    let slot = (area.width.saturating_sub(6) as usize / n).max(1);
+    let slot = (area.width.saturating_sub(6) as usize / n.max(1)).max(1);
     let bar_area_width = slot * n;
     let left_pad = (area.width as usize).saturating_sub(bar_area_width) / 2;
 
@@ -667,37 +1007,34 @@ fn render_activity(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, them
         let ch = day_bar_char(d.sessions, max_sessions);
         let style = if i == today_idx && d.sessions > 0 {
             Style::default()
-                .fg(theme.green)
+                .fg(theme.peach)
                 .add_modifier(Modifier::BOLD)
         } else if d.sessions == 0 {
             Style::default().fg(theme.surface1)
         } else {
-            Style::default().fg(theme.mauve)
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD)
         };
         bar_spans.push(Span::styled(ch.to_string(), style));
-        // Right-pad each bar to the slot width.
         if slot > 1 {
             bar_spans.push(Span::raw(" ".repeat(slot - 1)));
         }
     }
-    frame.render_widget(Paragraph::new(Line::from(bar_spans)), rows[2]);
+    frame.render_widget(Paragraph::new(Line::from(bar_spans)), rows[1]);
 
-    // Labels — 5 anchor positions spaced across the window.
     let label_line = build_label_line(view, slot, left_pad, theme);
-    frame.render_widget(Paragraph::new(label_line), rows[3]);
+    frame.render_widget(Paragraph::new(label_line), rows[2]);
 
-    // Today marker.
     if today_idx > 0 && buckets.last().map(|d| d.sessions > 0).unwrap_or(false) {
         let arrow = "↑ today";
         let today_col = left_pad + today_idx * slot;
-        // `↑` is 1 col; `display_width` makes the offset correct even if the
-        // literal is ever swapped for a wide glyph.
         let marker_start = today_col.saturating_sub(display_width(arrow) - 1);
         let ann = Line::from(vec![
             Span::raw(" ".repeat(marker_start)),
-            Span::styled(arrow, Style::default().fg(theme.green)),
+            Span::styled(arrow, Style::default().fg(theme.peach)),
         ]);
-        frame.render_widget(Paragraph::new(ann), rows[4]);
+        frame.render_widget(Paragraph::new(ann), rows[3]);
     }
 }
 
@@ -905,10 +1242,18 @@ fn render_activity_hourly(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_
     let title = "activity by hour (7d) ";
     let rule = Line::from(vec![
         Span::raw("  "),
-        Span::styled("── ", theme.dim()),
-        Span::styled(title, theme.subtle()),
         Span::styled(
-            "─".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
             theme.dim(),
         ),
     ]);
@@ -945,10 +1290,18 @@ fn render_activity_monthly(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'
     let title = "month at a glance ";
     let rule = Line::from(vec![
         Span::raw("  "),
-        Span::styled("── ", theme.dim()),
-        Span::styled(title, theme.subtle()),
         Span::styled(
-            "─".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
             theme.dim(),
         ),
     ]);
@@ -983,44 +1336,116 @@ fn render_activity_monthly(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'
     );
 }
 
+/// Speed palette used by the turn-duration histogram. Index matches the
+/// bucket index from [`DURATION_BUCKETS`]: 0 = fastest, 5 = slowest.
+///
+/// Ramp reads cool → hot so eye finds "slow" without any label reading:
+///   0-10s    green   (fast!)
+///   10-30s   yellow  (ok)
+///   30-60s   yellow  (still ok)
+///   1-3min   peach   (slow)
+///   3-10min  red     (painful)
+///   10min+   red+bold (glacial)
+fn speed_color(bucket_index: usize, theme: &Theme) -> (Color, Modifier) {
+    match bucket_index {
+        0 => (theme.green, Modifier::BOLD),
+        1 => (theme.yellow, Modifier::empty()),
+        2 => (theme.yellow, Modifier::BOLD),
+        3 => (theme.peach, Modifier::BOLD),
+        4 => (theme.red, Modifier::BOLD),
+        _ => (theme.red, Modifier::BOLD | Modifier::REVERSED),
+    }
+}
+
+/// Locate the bucket where the cumulative distribution crosses `percentile`
+/// (0.0..=1.0). Used to annotate p50 / p95 / p99 onto the histogram.
+fn percentile_bucket(counts: &[u64; 6], total: u64, percentile: f64) -> usize {
+    if total == 0 {
+        return 0;
+    }
+    let target = (total as f64 * percentile).ceil() as u64;
+    let mut acc: u64 = 0;
+    for (i, c) in counts.iter().enumerate() {
+        acc = acc.saturating_add(*c);
+        if acc >= target {
+            return i;
+        }
+    }
+    counts.len().saturating_sub(1)
+}
+
 fn render_turn_duration_hist(
     frame: &mut Frame<'_>,
     area: Rect,
     view: &StatsView<'_>,
     theme: &Theme,
 ) {
-    let title = "how long does Claude take? ";
+    let title = "how long does Claude think? ";
     let rule = Line::from(vec![
         Span::raw("  "),
-        Span::styled("── ", theme.dim()),
-        Span::styled(title, theme.subtle()),
         Span::styled(
-            "─".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
             theme.dim(),
         ),
     ]);
 
     let stats = &view.data.turn_durations;
     let max = stats.max_count().max(1);
+    let total = stats.total_turns;
+
+    // Find the bucket holding the median (p50) and the tail markers.
+    let p50 = percentile_bucket(&stats.counts, total, 0.50);
+    let p95 = percentile_bucket(&stats.counts, total, 0.95);
+    let p99 = percentile_bucket(&stats.counts, total, 0.99);
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(10);
     lines.push(rule);
     lines.push(Line::raw(""));
+
+    // Summary line: mean duration, median bucket, total turns.
+    let mean_str = if total > 0 {
+        let secs = stats.total_wall_time.as_secs_f64() / total as f64;
+        format_duration_short(Duration::from_secs_f64(secs))
+    } else {
+        "—".to_string()
+    };
+    let median_label = DURATION_BUCKETS.get(p50).map(|(l, _)| *l).unwrap_or("—");
     lines.push(Line::from(vec![
         Span::raw("    "),
-        Span::styled("histogram of turn durations (last 30d):", theme.muted()),
+        Span::styled("median ", theme.muted()),
+        Span::styled(
+            median_label,
+            Style::default().fg(speed_color(p50, theme).0).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" \u{2219} mean {mean_str} \u{2219} {total} turns over 30d"),
+            theme.muted(),
+        ),
     ]));
+    lines.push(Line::raw(""));
 
-    let label_col = 10usize;
+    let label_col = 9usize;
     let count_col = 7usize;
+    let tail_col = 10usize;
     let bar_w = (area.width as usize)
-        .saturating_sub(4 + label_col + count_col + 2)
+        .saturating_sub(4 + label_col + 1 + count_col + 1 + tail_col + 2)
         .max(8);
 
     for (i, (label, _upper)) in DURATION_BUCKETS.iter().enumerate() {
         let count = stats.counts[i];
         let norm = count as f64 / max as f64;
         let bar_len = ((norm * bar_w as f64).round() as usize).min(bar_w);
+        let (bar_color, bar_mod) = speed_color(i, theme);
         let bar = if count == 0 {
             "·".to_string()
         } else if bar_len == 0 {
@@ -1028,31 +1453,95 @@ fn render_turn_duration_hist(
         } else {
             "█".repeat(bar_len)
         };
+        let pad = if count > 0 {
+            " ".repeat(bar_w.saturating_sub(bar_len))
+        } else {
+            " ".repeat(bar_w.saturating_sub(1))
+        };
         let count_str = format_u64_compact(count);
-        lines.push(Line::from(vec![
+
+        // Percentile badges — right-aligned, after the bar.
+        let mut tail_spans: Vec<Span<'_>> = Vec::with_capacity(4);
+        if i == p50 && total > 0 {
+            tail_spans.push(Span::styled(
+                " p50",
+                Style::default()
+                    .fg(theme.green)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if i == p95 && i != p50 && total > 0 {
+            tail_spans.push(Span::styled(
+                " p95",
+                Style::default()
+                    .fg(theme.yellow)
+                    .add_modifier(Modifier::BOLD),
+            ));
+        }
+        if i == p99 && i != p95 && i != p50 && total > 0 {
+            tail_spans.push(Span::styled(
+                " p99",
+                Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
+            ));
+        }
+
+        let mut row: Vec<Span<'_>> = vec![
             Span::raw("    "),
             Span::styled(
                 pad_to_width(label, label_col),
-                Style::default().fg(theme.overlay0),
-            ),
-            Span::styled(
-                bar,
                 Style::default()
-                    .fg(theme.mauve)
+                    .fg(theme.subtext0)
                     .add_modifier(Modifier::BOLD),
             ),
             Span::raw(" "),
-            Span::styled(count_str, theme.muted()),
-        ]));
+            Span::styled(bar, Style::default().fg(bar_color).add_modifier(bar_mod)),
+            Span::raw(pad),
+            Span::raw(" "),
+            Span::styled(
+                pad_to_width(&count_str, count_col - 1),
+                theme.muted(),
+            ),
+        ];
+        row.extend(tail_spans);
+        lines.push(Line::from(row));
     }
 
+    // Legend — explain the color coding.
+    lines.push(Line::raw(""));
+    lines.push(Line::from(vec![
+        Span::raw("    "),
+        Span::styled(
+            "█",
+            Style::default().fg(theme.green).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" fast  ", theme.muted()),
+        Span::styled(
+            "█",
+            Style::default()
+                .fg(theme.yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" ok    ", theme.muted()),
+        Span::styled(
+            "█",
+            Style::default().fg(theme.peach).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" slow  ", theme.muted()),
+        Span::styled(
+            "█",
+            Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" glacial", theme.muted()),
+    ]));
+
+    let height = lines.len() as u16;
     frame.render_widget(
         Paragraph::new(lines),
         Rect {
             x: area.x,
             y: area.y,
             width: area.width,
-            height: 3 + DURATION_BUCKETS.len() as u16,
+            height: height.min(area.height),
         },
     );
 }
@@ -1062,10 +1551,18 @@ fn render_budget_band(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, t
     let title = format!("budget ({} {}) ", month_name_str, view.data.today.year());
     let rule = Line::from(vec![
         Span::raw("  "),
-        Span::styled("── ", theme.dim()),
-        Span::styled(title.clone(), theme.subtle()),
         Span::styled(
-            "─".repeat(area.width.saturating_sub(5 + display_width(&title) as u16) as usize),
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title.clone(),
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(area.width.saturating_sub(5 + display_width(&title) as u16) as usize),
             theme.dim(),
         ),
     ]);
@@ -1082,137 +1579,245 @@ fn render_budget_band(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, t
 
     let month_pct = (day_of_month as f64 / days_in_month as f64).clamp(0.0, 1.0);
 
-    let forecast_color = forecast_color(forecast, theme);
-    let forecast_glyph = if forecast >= 500.0 { "⚠ " } else { "" };
-    let numbers = Line::from(vec![
-        Span::raw("  "),
-        Span::styled("month-to-date  ", theme.muted()),
-        Span::styled(
-            format_cost(mtd),
-            Style::default()
-                .fg(theme.green)
-                .add_modifier(Modifier::BOLD),
-        ),
-        Span::raw("   "),
-        Span::styled("forecast  ", theme.muted()),
-        Span::styled(
-            format!("{forecast_glyph}{}", format_cost(forecast)),
-            Style::default()
-                .fg(forecast_color)
-                .add_modifier(Modifier::BOLD),
-        ),
-    ]);
+    // Row 1: month-to-date progress bar. Fill color ramps green → yellow →
+    // red based on % of budget consumed (or % of month when no cap set).
+    let mtd_line = build_mtd_progress_line(mtd, view.monthly_limit_usd, month_pct, theme);
 
-    let progress_line = if view.monthly_limit_usd > 0.0 {
-        build_budget_progress_toward_limit(mtd, forecast, view.monthly_limit_usd, month_pct, theme)
-    } else if view.show_forecast {
-        build_budget_progress_forecast(mtd, forecast, month_pct, theme)
-    } else {
-        Line::from(vec![
-            Span::raw("  "),
-            Span::styled("forecast hidden — press f to show", theme.dim()),
-        ])
-    };
+    // Row 2: forecast badge. When a limit exists, compare forecast vs cap.
+    let forecast_line = build_forecast_badge_line(forecast, view.monthly_limit_usd, theme);
 
-    frame.render_widget(Paragraph::new(vec![rule, numbers, progress_line]), area);
+    // Rows 3..: per-model breakdown pills, up to 3 rows.
+    let model_lines = build_budget_model_lines(view, mtd, theme);
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(6 + model_lines.len());
+    lines.push(rule);
+    lines.push(Line::raw(""));
+    lines.push(mtd_line);
+    lines.push(forecast_line);
+    if !model_lines.is_empty() {
+        lines.push(Line::raw(""));
+        lines.extend(model_lines);
+    }
+
+    frame.render_widget(Paragraph::new(lines), area);
 }
 
-fn build_budget_progress_forecast<'a>(
+/// Build the month-to-date progress bar line.
+fn build_mtd_progress_line<'a>(
     mtd: f64,
-    forecast: f64,
-    month_pct: f64,
-    theme: &Theme,
-) -> Line<'a> {
-    let projected_pct = if forecast > 0.0 {
-        (mtd / forecast).clamp(0.0, 1.0)
-    } else {
-        0.0
-    };
-    let bar_w: usize = 24;
-    let month_filled = (month_pct * bar_w as f64).round() as usize;
-    let filled: String = "▓".repeat(month_filled.min(bar_w));
-    let empty: String = "░".repeat(bar_w.saturating_sub(month_filled));
-    Line::from(vec![
-        Span::raw("  "),
-        Span::styled(filled, Style::default().fg(theme.mauve)),
-        Span::styled(empty, Style::default().fg(theme.surface1)),
-        Span::raw(" "),
-        Span::styled(
-            format!(
-                "{:.0}% of month, {:.0}% of projected",
-                month_pct * 100.0,
-                projected_pct * 100.0
-            ),
-            theme.muted(),
-        ),
-    ])
-}
-
-fn build_budget_progress_toward_limit<'a>(
-    mtd: f64,
-    forecast: f64,
     limit: f64,
-    _month_pct: f64,
-    theme: &Theme,
+    month_pct: f64,
+    theme: &'a Theme,
 ) -> Line<'a> {
-    let used_pct = (mtd / limit).clamp(0.0, 1.5);
-    let bar_w: usize = 24;
-    let filled_cells = ((used_pct.min(1.0)) * bar_w as f64).round() as usize;
-    let over_cells = if used_pct > 1.0 {
-        (((used_pct - 1.0).min(0.5)) * bar_w as f64).round() as usize
+    let bar_w: usize = 30;
+    let (filled_cells, base_color, over_cells, cap_label) = if limit > 0.0 {
+        let used_pct = (mtd / limit).clamp(0.0, 1.5);
+        let filled = ((used_pct.min(1.0)) * bar_w as f64).round() as usize;
+        let over = if used_pct > 1.0 {
+            (((used_pct - 1.0).min(0.5)) * bar_w as f64).round() as usize
+        } else {
+            0
+        };
+        // Traffic light by % of budget consumed.
+        let color = if used_pct < 0.60 {
+            theme.green
+        } else if used_pct < 0.80 {
+            theme.yellow
+        } else if used_pct < 1.00 {
+            theme.peach
+        } else {
+            theme.red
+        };
+        (
+            filled,
+            color,
+            over,
+            format!("{} / {}", format_cost(mtd), format_cost(limit)),
+        )
     } else {
-        0
+        // No cap — the bar tracks "% of month" as a neutral pacing signal.
+        let filled = (month_pct * bar_w as f64).round() as usize;
+        (
+            filled.min(bar_w),
+            theme.mauve,
+            0,
+            format!("{} (no cap set)", format_cost(mtd)),
+        )
     };
-    let base_color = if used_pct < 0.5 {
-        theme.green
-    } else if used_pct < 0.85 {
-        theme.yellow
-    } else if used_pct < 1.0 {
-        theme.peach
-    } else {
-        theme.red
-    };
-    let filled = "▓".repeat(filled_cells);
-    let over = "▓".repeat(over_cells);
+
+    let filled = "█".repeat(filled_cells.min(bar_w));
+    let over = "█".repeat(over_cells);
     let empty = "░".repeat(
         bar_w
-            .saturating_sub(filled_cells)
+            .saturating_sub(filled_cells.min(bar_w))
             .saturating_sub(over_cells),
     );
-    let tail = if forecast > limit {
-        let overshoot_pct = ((forecast - limit) / limit * 100.0).round() as i64;
-        format!(
-            "projected {} — ⚠ {}% over budget",
-            format_cost(forecast),
-            overshoot_pct
+
+    // Trailing pct-of-month chip.
+    let month_chip = if limit > 0.0 {
+        let used = (mtd / limit * 100.0).round() as i64;
+        let over_budget = mtd > limit;
+        let (warn, color) = if over_budget {
+            ("⚠ ", theme.red)
+        } else if used >= 80 {
+            ("⚠ ", theme.peach)
+        } else {
+            ("", theme.subtext0)
+        };
+        Span::styled(
+            format!("   {warn}{used}% of budget"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
         )
     } else {
-        format!(
-            "projected {} — on pace for ${:.0}/mo",
-            format_cost(forecast),
-            forecast
+        Span::styled(
+            format!("   {:.0}% of month", month_pct * 100.0),
+            theme.muted(),
         )
     };
-    let tail_color = if forecast > limit {
-        theme.red
-    } else {
-        theme.overlay0
-    };
-    let tail_mod = if forecast > limit {
-        Modifier::BOLD
-    } else {
-        Modifier::empty()
-    };
+
     Line::from(vec![
         Span::raw("  "),
-        Span::styled(format!("budget {}  ", format_cost(limit)), theme.muted()),
-        Span::styled(filled, Style::default().fg(base_color)),
-        Span::styled(over, Style::default().fg(theme.red)),
+        Span::styled("month-to-date ", theme.muted()),
+        Span::styled(
+            filled,
+            Style::default().fg(base_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            over,
+            Style::default()
+                .fg(theme.red)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        ),
         Span::styled(empty, Style::default().fg(theme.surface1)),
         Span::raw("  "),
-        Span::styled(tail, Style::default().fg(tail_color).add_modifier(tail_mod)),
+        Span::styled(
+            cap_label,
+            Style::default()
+                .fg(theme.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+        month_chip,
     ])
 }
+
+/// Build the "forecast → $N" row with a colored badge.
+fn build_forecast_badge_line<'a>(
+    forecast: f64,
+    limit: f64,
+    theme: &'a Theme,
+) -> Line<'a> {
+    let (badge, badge_color) = if limit > 0.0 {
+        if forecast > limit {
+            let overshoot = ((forecast - limit) / limit * 100.0).round() as i64;
+            (
+                format!("⚠ over-track — {overshoot}% over cap"),
+                theme.red,
+            )
+        } else if forecast > limit * 0.90 {
+            (
+                format!(
+                    "~ close call — {:.0}% of cap",
+                    forecast / limit * 100.0
+                ),
+                theme.peach,
+            )
+        } else {
+            (
+                format!(
+                    "✓ on-track — {:.0}% of cap",
+                    forecast / limit * 100.0
+                ),
+                theme.green,
+            )
+        }
+    } else {
+        (
+            "(set a budget with 'b' to enable tracking)".to_string(),
+            theme.surface2,
+        )
+    };
+
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled("forecast      ", theme.muted()),
+        Span::styled(
+            "▲ ",
+            Style::default()
+                .fg(forecast_color(forecast, theme))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format_cost(forecast),
+            Style::default()
+                .fg(forecast_color(forecast, theme))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" at current burn   ", theme.muted()),
+        Span::styled(
+            badge,
+            Style::default()
+                .fg(badge_color)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// Per-model spend pills — up to 3 lines, one per model family.
+fn build_budget_model_lines<'a>(
+    view: &StatsView<'a>,
+    mtd: f64,
+    theme: &'a Theme,
+) -> Vec<Line<'a>> {
+    if mtd <= 0.0 {
+        return Vec::new();
+    }
+    let total: f64 = view.data.by_model.iter().map(|(_, c)| *c).sum();
+    let denom = if total > 0.0 { total } else { mtd };
+    view.data
+        .by_model
+        .iter()
+        .filter(|(_, c)| *c > 0.0)
+        .take(3)
+        .enumerate()
+        .map(|(i, (model, cost))| {
+            let short = short_model(model);
+            let pct = (cost / denom * 100.0).round() as i64;
+            let label = if i == 0 { "by model      " } else { "              " };
+            let pill_color = family_color(
+                crate::data::pricing::family(model),
+                theme,
+            );
+            Line::from(vec![
+                Span::raw("  "),
+                Span::styled(label, theme.muted()),
+                Span::styled(
+                    "● ",
+                    Style::default()
+                        .fg(pill_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    pad_to_width(&short, 14),
+                    Style::default()
+                        .fg(pill_color)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::raw(" "),
+                Span::styled(
+                    format_cost(*cost),
+                    Style::default()
+                        .fg(theme.text)
+                        .add_modifier(Modifier::BOLD),
+                ),
+                Span::styled(
+                    format!("   ({pct}%)"),
+                    theme.muted(),
+                ),
+            ])
+        })
+        .collect()
+}
+
 
 /// Color the forecast number by magnitude.
 pub fn forecast_color(forecast: f64, theme: &Theme) -> Color {
@@ -1400,8 +2005,25 @@ fn short_model(model: &str) -> String {
     parts[..end].join("-")
 }
 
+/// Primary color for a model family — the hue used for the heaviest portion
+/// of the per-project stacked bar. Kept as a thin wrapper so the mapping
+/// lives in one place (other widgets may later consume it too).
+///
+/// Opus (expensive) renders as peach; Sonnet (mid) as teal; Haiku (cheap) as
+/// blue; Unknown falls back to the muted subtext tone so it doesn't compete
+/// with the named families.
+fn family_color(family: Family, theme: &Theme) -> Color {
+    match family {
+        Family::Opus => theme.peach,
+        Family::Sonnet => theme.teal,
+        Family::Haiku => theme.blue,
+        Family::Unknown => theme.subtext0,
+    }
+}
+
 /// Per-row color for the per-project block: blend family + rank so top
 /// rows stand out but family stays identifiable.
+#[allow(dead_code)]
 fn project_color(index: usize, family: Family, theme: &Theme) -> Color {
     // Family is the primary signal.
     let family_color = match family {
@@ -1679,5 +2301,106 @@ mod tests {
         assert_eq!(series.len(), 12);
         assert_eq!(series.last().unwrap().sessions, 3);
         assert!((series.last().unwrap().cost_usd - 1.5).abs() < 1e-9);
+    }
+
+    // ── KPI delta + sparkline ────────────────────────────────────────────
+
+    #[test]
+    fn half_over_half_delta_none_for_short_series() {
+        assert!(half_over_half_delta(&[1.0, 2.0]).is_none());
+        assert!(half_over_half_delta(&[]).is_none());
+    }
+
+    #[test]
+    fn half_over_half_delta_none_for_zero_baseline() {
+        // All-zero prior half → no baseline to compare against.
+        let s = vec![0.0, 0.0, 0.0, 0.0, 5.0, 5.0, 5.0, 5.0];
+        assert!(half_over_half_delta(&s).is_none());
+    }
+
+    #[test]
+    fn half_over_half_delta_positive_when_trending_up() {
+        let s = vec![10.0, 10.0, 10.0, 10.0, 20.0, 20.0, 20.0, 20.0];
+        let d = half_over_half_delta(&s).expect("some");
+        assert!((d - 100.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn half_over_half_delta_negative_when_trending_down() {
+        let s = vec![20.0, 20.0, 20.0, 20.0, 10.0, 10.0, 10.0, 10.0];
+        let d = half_over_half_delta(&s).expect("some");
+        assert!((d + 50.0).abs() < 1e-6);
+    }
+
+    #[test]
+    fn mini_sparkline_maps_zero_to_space() {
+        let s = mini_sparkline(&[0, 0, 0]);
+        assert_eq!(s, "   ");
+    }
+
+    #[test]
+    fn mini_sparkline_renders_peak_as_full_block() {
+        let s = mini_sparkline(&[1, 2, 10]);
+        // Last entry = max → full block.
+        assert_eq!(s.chars().last(), Some('█'));
+    }
+
+    #[test]
+    fn mini_sparkline_length_matches_input() {
+        let s = mini_sparkline(&[1, 2, 3, 4, 5, 6]);
+        assert_eq!(s.chars().count(), 6);
+    }
+
+    // ── Histogram percentile / speed ─────────────────────────────────────
+
+    #[test]
+    fn percentile_bucket_zero_total_returns_zero() {
+        let counts = [0u64; 6];
+        assert_eq!(percentile_bucket(&counts, 0, 0.50), 0);
+    }
+
+    #[test]
+    fn percentile_bucket_median_splits_even_distribution() {
+        // 10 turns, all in bucket 2.
+        let mut counts = [0u64; 6];
+        counts[2] = 10;
+        assert_eq!(percentile_bucket(&counts, 10, 0.50), 2);
+        assert_eq!(percentile_bucket(&counts, 10, 0.95), 2);
+    }
+
+    #[test]
+    fn percentile_bucket_finds_tail() {
+        // 100 fast + 5 slow turns: median is bucket 0, p95 slides into
+        // the tail bucket.
+        let mut counts = [0u64; 6];
+        counts[0] = 100;
+        counts[5] = 5;
+        let total = 105;
+        assert_eq!(percentile_bucket(&counts, total, 0.50), 0);
+        // p95 = ceil(105 * 0.95) = 100; cumulative hits exactly at bucket 0.
+        // Any higher percentile must push into the tail.
+        assert!(percentile_bucket(&counts, total, 0.99) >= 5);
+    }
+
+    #[test]
+    fn speed_color_ramps_fast_to_slow() {
+        let t = Theme::mocha();
+        assert_eq!(speed_color(0, &t).0, t.green);
+        assert_eq!(speed_color(1, &t).0, t.yellow);
+        assert_eq!(speed_color(2, &t).0, t.yellow);
+        assert_eq!(speed_color(3, &t).0, t.peach);
+        assert_eq!(speed_color(4, &t).0, t.red);
+        assert_eq!(speed_color(5, &t).0, t.red);
+    }
+
+    // ── Model / family palette ───────────────────────────────────────────
+
+    #[test]
+    fn family_color_maps_each_variant_to_a_different_token() {
+        let t = Theme::mocha();
+        assert_eq!(family_color(Family::Opus, &t), t.peach);
+        assert_eq!(family_color(Family::Sonnet, &t), t.teal);
+        assert_eq!(family_color(Family::Haiku, &t), t.blue);
+        assert_eq!(family_color(Family::Unknown, &t), t.subtext0);
     }
 }

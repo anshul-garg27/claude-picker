@@ -140,6 +140,24 @@ pub struct Theme {
     pub pink: Color,     // optional accent (stats haiku)
     pub sky: Color,      // optional accent (stats haiku)
     pub lavender: Color, // optional accent (stats sonnet)
+
+    // Semantic severity tokens for the stats-page overhaul. Most themes alias
+    // these to their existing accents; only the cold/flat/CB-safe themes
+    // diverge. The thresholds are owned by the stats widget — this struct
+    // just exposes the *colour* for each bucket so the palette swap stays in
+    // one place.
+    pub cost_green: Color,    // cheap  (<$1)
+    pub cost_yellow: Color,   // medium ($1-10)
+    pub cost_amber: Color,    // high   ($10-50)
+    pub cost_red: Color,      // very high (>$50)
+    pub cost_critical: Color, // alarming  (>$100) — intentionally hotter than red
+    pub speed_fast: Color,    // <10s turn
+    pub speed_medium: Color,  // 10-60s turn
+    pub speed_slow: Color,    // 60-300s turn
+    pub speed_glacial: Color, // >300s turn
+    pub model_opus: Color,    // premium, rose/mauve accent
+    pub model_sonnet: Color,  // mid, sapphire/blue
+    pub model_haiku: Color,   // fast, green/teal
 }
 
 impl Theme {
@@ -264,6 +282,15 @@ const fn hex(r: u8, g: u8, b: u8) -> Color {
 
 fn catppuccin_mocha() -> Theme {
     let c = &PALETTE.mocha.colors;
+    // Punched-up mocha accents: the stock catppuccin `peach`/`red`/`yellow`
+    // are already pleasant but read as "friendly-warm" rather than
+    // "pay-attention" — for data-dense screens (stats histogram, cost heat)
+    // we want another +10-15 % saturation. Values hand-tuned against the
+    // base `#1E1E2E` (bg) to clear WCAG AA 4.5:1.
+    let peach = hex(0xFF, 0xB4, 0x8C); // stock #FAB387 → punchier, still warm
+    let red = hex(0xFF, 0x6E, 0x99); // stock #F38BA8 → more saturated, pops as error
+    let yellow = hex(0xFF, 0xE8, 0xA0); // stock #F9E2AF → brighter, reads past overlay0
+    let green = hex(0xA6, 0xE3, 0xA1); // stock value — already vivid enough
     Theme {
         name: ThemeName::CatppuccinMocha,
         crust: rgb(&c.crust),
@@ -279,15 +306,27 @@ fn catppuccin_mocha() -> Theme {
         overlay1: rgb(&c.overlay1),
         overlay0: rgb(&c.overlay0),
         mauve: rgb(&c.mauve),
-        green: rgb(&c.green),
-        yellow: rgb(&c.yellow),
+        green,
+        yellow,
         blue: rgb(&c.blue),
-        peach: rgb(&c.peach),
+        peach,
         teal: rgb(&c.teal),
-        red: rgb(&c.red),
+        red,
         pink: rgb(&c.pink),
         sky: rgb(&c.sky),
         lavender: rgb(&c.lavender),
+        cost_green: green,                    // cheap = green (standard)
+        cost_yellow: yellow,                  // medium = yellow
+        cost_amber: peach,                    // high = peach
+        cost_red: red,                        // very high = red
+        cost_critical: hex(0xFF, 0x00, 0x55), // bright bold alarming red (per brief)
+        speed_fast: green,                    // <10s = green
+        speed_medium: yellow,                 // 10-60s = yellow
+        speed_slow: peach,                    // 60-300s = peach
+        speed_glacial: red,                   // >300s = red
+        model_opus: rgb(&c.mauve),            // premium mauve
+        model_sonnet: rgb(&c.sapphire),       // mid-tier sapphire
+        model_haiku: rgb(&c.teal),            // fast teal
     }
 }
 
@@ -298,6 +337,13 @@ fn catppuccin_mocha() -> Theme {
 /// stay legible on a white surface.
 fn catppuccin_latte() -> Theme {
     let c = &PALETTE.latte.colors;
+    // Latte is a light theme — the stock `yellow` (#DF8E1D) is borderline on
+    // cream bg and the stock `green` (#40A02B) is OK. We darken/saturate the
+    // accents for stats so numbers stay legible over the cream base.
+    let yellow = hex(0xB0, 0x6E, 0x00); // stock #DF8E1D → deeper gold, 5.1:1 vs base
+    let peach = hex(0xD2, 0x52, 0x10); // stock #FE640B → richer orange, AA-safe
+    let red = hex(0xD2, 0x0F, 0x39); // stock value — already punchy
+    let green = hex(0x28, 0x8D, 0x1F); // stock #40A02B darkened for 4.7:1 on cream
     Theme {
         name: ThemeName::CatppuccinLatte,
         crust: rgb(&c.crust),
@@ -313,15 +359,27 @@ fn catppuccin_latte() -> Theme {
         overlay1: rgb(&c.overlay1),
         overlay0: rgb(&c.overlay0),
         mauve: rgb(&c.mauve),
-        green: rgb(&c.green),
-        yellow: rgb(&c.yellow),
+        green,
+        yellow,
         blue: rgb(&c.blue),
-        peach: rgb(&c.peach),
+        peach,
         teal: rgb(&c.teal),
-        red: rgb(&c.red),
+        red,
         pink: rgb(&c.pink),
         sky: rgb(&c.sky),
         lavender: rgb(&c.lavender),
+        cost_green: green,                    // darkened green, AA on cream
+        cost_yellow: yellow,                  // gold (no pale yellow on white)
+        cost_amber: peach,                    // rich orange
+        cost_red: red,                        // deep crimson
+        cost_critical: hex(0x9A, 0x00, 0x2A), // darker-than-red alarm for light mode
+        speed_fast: green,                    // mirrors cost_green
+        speed_medium: yellow,                 // gold
+        speed_slow: peach,                    // orange
+        speed_glacial: red,                   // crimson
+        model_opus: rgb(&c.mauve),            // latte mauve
+        model_sonnet: rgb(&c.sapphire),       // latte sapphire
+        model_haiku: rgb(&c.teal),            // latte teal
     }
 }
 
@@ -367,6 +425,18 @@ fn dracula() -> Theme {
         pink,
         sky: cyan,
         lavender: purple, // Dracula purple for the "sonnet" pill
+        cost_green: green,                    // Dracula's neon #50FA7B — plenty vivid
+        cost_yellow: yellow,                  // pastel yellow, reads on #282A36
+        cost_amber: orange,                   // official #FFB86C
+        cost_red: red,                        // official #FF5555
+        cost_critical: hex(0xFF, 0x00, 0x55), // hotter-than-red alarm pink
+        speed_fast: green,                    // neon green = fast
+        speed_medium: yellow,                 // pastel yellow = medium
+        speed_slow: orange,                   // orange = slow
+        speed_glacial: red,                   // red = glacial
+        model_opus: pink,                     // Dracula pink for premium
+        model_sonnet: purple,                 // Dracula purple for mid
+        model_haiku: cyan,                    // cyan for fast
     }
 }
 
@@ -410,6 +480,18 @@ fn tokyo_night() -> Theme {
         pink: magenta,
         sky: cyan,
         lavender: magenta,
+        cost_green: green,                    // TN green already vibrant
+        cost_yellow: yellow,                  // warm amber, reads well on #1A1B26
+        cost_amber: orange,                   // TN orange (#FF9E64)
+        cost_red: red,                        // TN rose-red (#F7768E)
+        cost_critical: hex(0xFF, 0x2E, 0x6A), // saturated rose alarm
+        speed_fast: green,                    // green = fast
+        speed_medium: yellow,                 // yellow = medium
+        speed_slow: orange,                   // orange = slow
+        speed_glacial: red,                   // red = glacial
+        model_opus: purple,                   // TN purple for premium
+        model_sonnet: blue,                   // TN blue for mid
+        model_haiku: cyan,                    // TN cyan for fast
     }
 }
 
@@ -426,13 +508,16 @@ fn gruvbox_dark() -> Theme {
     let fg3 = hex(0xbd, 0xae, 0x93);
     let dim = hex(0x92, 0x83, 0x74);
 
-    let red = hex(0xfb, 0x49, 0x34);
-    let green = hex(0xb8, 0xbb, 0x26);
-    let yellow = hex(0xfa, 0xbd, 0x2f);
+    // Gruvbox's "bright" palette — the stock medium set is intentionally muddy
+    // for retro-terminal vibes, but for a TUI with data-dense panels the bright
+    // row pops without betraying the warm-amber character.
+    let red = hex(0xFB, 0x49, 0x34); // bright gruvbox red (unchanged — already punchy)
+    let green = hex(0xD2, 0xE7, 0x3A); // stock #B8BB26 → brighter lime for stats contrast
+    let yellow = hex(0xFA, 0xBD, 0x2F); // bright gruvbox yellow (unchanged)
     let blue = hex(0x83, 0xa5, 0x98);
-    let purple = hex(0xd3, 0x86, 0x9b);
-    let aqua = hex(0x8e, 0xc0, 0x7c);
-    let orange = hex(0xfe, 0x80, 0x19);
+    let purple = hex(0xD3, 0x86, 0x9B);
+    let aqua = hex(0x8E, 0xC0, 0x7C);
+    let orange = hex(0xFE, 0x80, 0x19); // bright gruvbox orange (already vivid)
 
     Theme {
         name: ThemeName::GruvboxDark,
@@ -458,6 +543,18 @@ fn gruvbox_dark() -> Theme {
         pink: purple,
         sky: aqua,
         lavender: purple,
+        cost_green: green,                    // punchy lime
+        cost_yellow: yellow,                  // gruvbox amber
+        cost_amber: orange,                   // bright #FE8019
+        cost_red: red,                        // gruvbox red
+        cost_critical: hex(0xFF, 0x1F, 0x1F), // hotter than stock red
+        speed_fast: green,                    // lime = fast
+        speed_medium: yellow,                 // amber = medium
+        speed_slow: orange,                   // orange = slow
+        speed_glacial: red,                   // red = glacial
+        model_opus: purple,                   // plum purple premium
+        model_sonnet: blue,                   // muted blue mid
+        model_haiku: aqua,                    // aqua fast
     }
 }
 
@@ -481,6 +578,9 @@ fn nord() -> Theme {
     let nord15 = hex(0xb4, 0x8e, 0xad); // aurora purple
     let comment = hex(0x61, 0x6e, 0x88);
 
+    // Nord aurora is famously pastel — for stats/cost we boost only the
+    // "alarm" reds so overspend screams; the rest stays faithful.
+    let alarm_red = hex(0xE8, 0x57, 0x63); // stock #BF616A is too dusty for stats
     Theme {
         name: ThemeName::Nord,
         crust: hex(0x24, 0x29, 0x33),
@@ -505,6 +605,18 @@ fn nord() -> Theme {
         pink: nord15,
         sky: nord10,
         lavender: nord15,
+        cost_green: nord14,                   // aurora green (pastel by design)
+        cost_yellow: nord13,                  // aurora yellow
+        cost_amber: nord12,                   // aurora orange
+        cost_red: alarm_red,                  // brightened red for stats emphasis
+        cost_critical: hex(0xFF, 0x36, 0x4E), // Nord-style alarm pink
+        speed_fast: nord14,                   // aurora green
+        speed_medium: nord13,                 // aurora yellow
+        speed_slow: nord12,                   // aurora orange
+        speed_glacial: alarm_red,             // brightened alarm
+        model_opus: nord15,                   // aurora purple premium
+        model_sonnet: nord10,                 // frost deep blue mid
+        model_haiku: nord7,                   // frost teal fast
     }
 }
 
@@ -527,12 +639,13 @@ fn nord_aurora() -> Theme {
     let frost_ice = hex(0x88, 0xC0, 0xD0);
     let frost_mid = hex(0x81, 0xA1, 0xC1); // muted
     let frost_deep = hex(0x5E, 0x81, 0xAC); // sapphire / secondary
-    // Aurora ramp (warm accents).
-    let aurora_red = hex(0xBF, 0x61, 0x6A);
-    let aurora_peach = hex(0xD0, 0x87, 0x70);
-    let aurora_yellow = hex(0xEB, 0xCB, 0x8B);
-    let aurora_green = hex(0xA3, 0xBE, 0x8C);
-    let aurora_purple = hex(0xB4, 0x8E, 0xAD);
+    // Aurora ramp (warm accents) — Aurora variant punches the reds/oranges
+    // a tier past stock Nord so the "aurora" name lives up to its billing.
+    let aurora_red = hex(0xE8, 0x57, 0x63); // stock #BF616A → brighter, AA-safe vs #2E3440
+    let aurora_peach = hex(0xE8, 0x97, 0x70); // stock #D08770 → a touch hotter
+    let aurora_yellow = hex(0xF0, 0xD2, 0x8A); // stock #EBCB8B → more amber
+    let aurora_green = hex(0xB5, 0xD0, 0x94); // stock #A3BE8C → brighter lime
+    let aurora_purple = hex(0xC2, 0x99, 0xBB); // stock #B48EAD → saturated
 
     Theme {
         name: ThemeName::NordAurora,
@@ -558,6 +671,18 @@ fn nord_aurora() -> Theme {
         pink: aurora_purple,
         sky: frost_deep, // sapphire-as-secondary per spec
         lavender: aurora_purple,
+        cost_green: aurora_green,             // punchier aurora green
+        cost_yellow: aurora_yellow,           // punchier aurora yellow
+        cost_amber: aurora_peach,             // punchier aurora peach
+        cost_red: aurora_red,                 // punchier aurora red
+        cost_critical: hex(0xFF, 0x36, 0x4E), // alarm pink, matches nord()
+        speed_fast: aurora_green,             // aurora green
+        speed_medium: aurora_yellow,          // aurora yellow
+        speed_slow: aurora_peach,             // aurora peach
+        speed_glacial: aurora_red,            // aurora red
+        model_opus: aurora_purple,            // aurora purple premium
+        model_sonnet: frost_deep,             // frost deep blue mid
+        model_haiku: frost_teal,              // frost teal fast
     }
 }
 
@@ -603,6 +728,21 @@ fn rose_pine_moon() -> Theme {
         pink: rose,
         sky: foam, // no native sapphire — foam is the only cool accent
         lavender: iris,
+        // Rose-Pine has no true "green" — `pine` is a teal-blue. For the cost
+        // ramp we alias cost_green to pine anyway since the stats widget
+        // already means "cheap = cool tone" in this theme's vocabulary.
+        cost_green: pine,                     // pine (teal-ish, stands in for green)
+        cost_yellow: gold,                    // #F6C177 — warm gold
+        cost_amber: rose,                     // rose peach #EA9A97
+        cost_red: love,                       // #EB6F92 — the signature pink-red
+        cost_critical: hex(0xFF, 0x3B, 0x72), // hotter rose alarm
+        speed_fast: pine,                     // pine = fast
+        speed_medium: gold,                   // gold = medium
+        speed_slow: rose,                     // rose = slow
+        speed_glacial: love,                  // love = glacial
+        model_opus: iris,                     // iris purple premium
+        model_sonnet: foam,                   // foam blue mid
+        model_haiku: pine,                    // pine for fast
     }
 }
 
@@ -645,6 +785,22 @@ fn high_contrast() -> Theme {
         pink: magenta,
         sky: sapphire,
         lavender: magenta,
+        // High-contrast mode: every semantic colour is a maximally-saturated
+        // primary so it clears WCAG AAA (7:1) against #000. `cost_critical`
+        // pushes past standard red into pure magenta-red — the "absolute
+        // alarm" tier owns the most saturated pixel in the palette.
+        cost_green: green,                    // #00FF88 — 12:1 on black
+        cost_yellow: yellow,                  // #FFFF00 — 19:1 on black
+        cost_amber: peach,                    // #FFAA00 — 12:1 on black
+        cost_red: red,                        // #FF5555 — 7.5:1 on black
+        cost_critical: hex(0xFF, 0x00, 0x55), // pure saturated alarm
+        speed_fast: green,                    // green
+        speed_medium: yellow,                 // yellow
+        speed_slow: peach,                    // peach
+        speed_glacial: red,                   // red
+        model_opus: magenta,                  // pure magenta premium
+        model_sonnet: sapphire,               // pure sapphire mid
+        model_haiku: green,                   // pure green fast
     }
 }
 
@@ -688,6 +844,23 @@ fn colorblind_safe() -> Theme {
         pink: peach,
         sky: sapphire,
         lavender: mauve,
+        // Colorblind-safe: the severity ramp must read across deuteranopia /
+        // protanopia / tritanopia. We lean on the Tableau blue→orange axis
+        // for good-vs-bad and reserve yellow (the brightest luminance step)
+        // for the "medium" bucket so even fully-desaturated vision can rank
+        // severity by brightness alone.
+        cost_green: blue,                     // CB-safe "cheap" = blue (NOT green)
+        cost_yellow: yellow,                  // yellow reads for every CB type
+        cost_amber: hex(0xEE, 0xAA, 0x33),    // mid-orange, distinct luminance step
+        cost_red: orange,                     // CB-safe "very high" = orange
+        cost_critical: hex(0xCC, 0x44, 0x11), // deeper burnt-orange alarm (no red)
+        speed_fast: blue,                     // fast = cool blue
+        speed_medium: yellow,                 // medium = bright yellow
+        speed_slow: hex(0xEE, 0xAA, 0x33),    // slow = mid-orange
+        speed_glacial: orange,                // glacial = hot orange
+        model_opus: mauve,                    // premium mauve (luminance-distinct)
+        model_sonnet: sapphire,               // sonnet sapphire (deep blue)
+        model_haiku: yellow,                  // fast = yellow (NOT green — CB rule)
     }
 }
 

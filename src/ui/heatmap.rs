@@ -154,6 +154,219 @@ pub fn hourly_extrema(buckets: &[u32; 24]) -> (Option<u8>, Option<u8>) {
     (most.map(|(h, _)| h), quiet.map(|(h, _)| h))
 }
 
+// ── Weekday-grid (GitHub contributions) heatmap ──────────────────────────
+
+/// 5-step shade palette used by [`render_weekday_grid`]. Index 0 = empty,
+/// 1..=4 step from faint → full saturation. Matches the brief's "░▒▓█"
+/// legend glyphs (index 0 renders as a dim `·` to differentiate "really
+/// empty" from "faintly present").
+const SHADE_GLYPHS: [char; 5] = ['·', '░', '▒', '▓', '█'];
+
+/// Map a raw count to a 5-step shade bucket (0..=4). Used for the
+/// GitHub-style daily grid where cells are laid out as a 7×N matrix rather
+/// than a single ramp.
+pub fn shade_bucket(count: u32, max: u32) -> usize {
+    if count == 0 {
+        return 0;
+    }
+    if max <= 1 {
+        return 2;
+    }
+    let norm = count as f64 / max as f64;
+    if norm < 0.25 {
+        1
+    } else if norm < 0.50 {
+        2
+    } else if norm < 0.80 {
+        3
+    } else {
+        4
+    }
+}
+
+/// Resolve the theme color for a given 5-step shade bucket. The ramp runs
+/// surface1 → overlay0 → overlay2 → mauve → peach so peak activity pops
+/// clearly against the muted filler cells.
+pub fn shade_color(bucket: usize, theme: &Theme) -> Color {
+    match bucket {
+        0 => theme.surface1,
+        1 => theme.overlay0,
+        2 => theme.overlay2,
+        3 => theme.mauve,
+        _ => theme.peach,
+    }
+}
+
+/// One cell in the weekday-grid view.
+#[derive(Debug, Clone, Copy)]
+pub struct WeekdayCell {
+    pub date: NaiveDate,
+    pub count: u32,
+    pub is_today: bool,
+}
+
+/// Render a GitHub-contribution-graph style weekday heatmap for the last
+/// `cells.len()` days. Cells are laid out into 7 rows (Mon..Sun) × N cols
+/// so activity patterns (weekends quieter than weekdays, etc.) read at a
+/// glance.
+///
+/// `cells` must be in chronological order (oldest first, `today` last).
+/// The renderer computes the column for each cell from its weekday, so
+/// leading blanks fill rows above the first cell's weekday.
+///
+/// Layout:
+/// ```text
+///       Mar 20     Mar 27     Apr 03     Apr 10     Apr 17
+///   M   ░ ▒ ▓ ░ ░ ▒ ░ ░ ▓ ▓ ▓ ▒ ░ ░ ▓ █ ▓ ░ ░ ▒ ▓
+///   T   ░ ▒ ▓ ░ ░ ▒ ░ ░ ▓ █ ▓ ▒ ░ ░ ▓ █ █ ▓ ░ ░ ▒
+///   ...
+///   Less ░▒▓█ More
+/// ```
+pub fn render_weekday_grid(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    cells: &[WeekdayCell],
+    theme: &Theme,
+) -> u16 {
+    if cells.is_empty() {
+        return 0;
+    }
+    // 7 rows, one per weekday (Mon = 0 .. Sun = 6).
+    let row_labels: [&str; 7] = ["M", "T", "W", "T", "F", "S", "S"];
+
+    let max = cells.iter().map(|c| c.count).max().unwrap_or(1).max(1);
+
+    // Column index for the first cell (based on its weekday, Mon = 0).
+    let first_col_offset = cells
+        .first()
+        .map(|c| c.date.weekday().num_days_from_monday() as usize)
+        .unwrap_or(0);
+    let total_cols = first_col_offset + cells.len();
+    let col_count = total_cols.div_ceil(7);
+
+    // Build a 7×col_count matrix of Option<WeekdayCell>.
+    let mut grid: Vec<Vec<Option<WeekdayCell>>> =
+        vec![vec![None; col_count]; 7];
+    for (i, cell) in cells.iter().enumerate() {
+        let absolute_idx = first_col_offset + i;
+        let row = absolute_idx % 7;
+        let col = absolute_idx / 7;
+        if col < col_count {
+            grid[row][col] = Some(*cell);
+        }
+    }
+
+    // Header line — weekly date anchors above every ~4th column.
+    let row_label_w = 4usize; // "  M "
+    let cell_w = 2usize; // glyph + space
+    let mut header_cells: Vec<char> =
+        vec![' '; row_label_w + col_count * cell_w];
+    for col in (0..col_count).step_by(2) {
+        // Find the earliest non-None cell in this column to pick a date for
+        // the anchor.
+        let anchor = (0..7).find_map(|r| grid[r][col]).map(|c| c.date);
+        let Some(d) = anchor else { continue };
+        let label = d.format("%b %d").to_string();
+        let start_col = row_label_w + col * cell_w;
+        for (k, ch) in label.chars().enumerate() {
+            if start_col + k < header_cells.len() {
+                header_cells[start_col + k] = ch;
+            }
+        }
+    }
+    let header_text: String = header_cells.into_iter().collect();
+    let header_line = Line::from(vec![Span::styled(header_text, theme.dim())]);
+
+    // Body rows — one line per weekday.
+    let mut body: Vec<Line<'_>> = Vec::with_capacity(9);
+    body.push(header_line);
+    for (r, label) in row_labels.iter().enumerate() {
+        let mut spans: Vec<Span<'_>> = Vec::with_capacity(col_count * 2 + 2);
+        spans.push(Span::styled(
+            format!("  {label} "),
+            Style::default().fg(theme.subtext0),
+        ));
+        for slot in grid[r].iter().take(col_count) {
+            match slot {
+                None => {
+                    spans.push(Span::raw("  "));
+                }
+                Some(cell) => {
+                    let bucket = shade_bucket(cell.count, max);
+                    let glyph = SHADE_GLYPHS[bucket];
+                    let color = shade_color(bucket, theme);
+                    // Today glows — bold + peach accent no matter the
+                    // bucket, so the reader's eye lands on it.
+                    let style = if cell.is_today {
+                        Style::default()
+                            .fg(theme.peach)
+                            .add_modifier(Modifier::BOLD)
+                    } else if bucket == 0 {
+                        Style::default().fg(color)
+                    } else {
+                        Style::default().fg(color).add_modifier(Modifier::BOLD)
+                    };
+                    let glyph_str = if cell.is_today && bucket == 0 {
+                        // Empty cell today: draw a distinguishable marker
+                        // instead of the dot so the eye finds "today".
+                        "◉".to_string()
+                    } else {
+                        glyph.to_string()
+                    };
+                    spans.push(Span::styled(glyph_str, style));
+                    spans.push(Span::raw(" "));
+                }
+            }
+        }
+        body.push(Line::from(spans));
+    }
+
+    // Legend row.
+    let legend = Line::from(vec![
+        Span::raw("  "),
+        Span::styled("Less ", theme.dim()),
+        Span::styled(
+            "·",
+            Style::default().fg(shade_color(0, theme)),
+        ),
+        Span::styled(
+            "░",
+            Style::default().fg(shade_color(1, theme)),
+        ),
+        Span::styled(
+            "▒",
+            Style::default()
+                .fg(shade_color(2, theme))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "▓",
+            Style::default()
+                .fg(shade_color(3, theme))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "█",
+            Style::default()
+                .fg(shade_color(4, theme))
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" More", theme.dim()),
+        Span::styled("   ◉ today", Style::default().fg(theme.peach)),
+    ]);
+    body.push(legend);
+
+    let h = body.len().min(area.height as usize) as u16;
+    let rect = Rect {
+        x: area.x,
+        y: area.y,
+        width: area.width,
+        height: h,
+    };
+    frame.render_widget(Paragraph::new(body), rect);
+    h
+}
+
 // ── Monthly heatmap ──────────────────────────────────────────────────────
 
 /// Render a GitHub-style monthly calendar.
@@ -591,5 +804,35 @@ mod tests {
         let today = NaiveDate::from_ymd_opt(2026, 4, 16).unwrap();
         let start = window_start(today, 7);
         assert_eq!(start, NaiveDate::from_ymd_opt(2026, 4, 10).unwrap());
+    }
+
+    #[test]
+    fn shade_bucket_zero_for_empty() {
+        assert_eq!(shade_bucket(0, 10), 0);
+        assert_eq!(shade_bucket(0, 0), 0);
+    }
+
+    #[test]
+    fn shade_bucket_monotonic_with_intensity() {
+        let max = 100;
+        assert!(shade_bucket(0, max) < shade_bucket(10, max));
+        assert!(shade_bucket(10, max) <= shade_bucket(40, max));
+        assert!(shade_bucket(40, max) <= shade_bucket(90, max));
+        assert_eq!(shade_bucket(90, max), 4);
+    }
+
+    #[test]
+    fn shade_bucket_handles_max_of_one() {
+        // Any non-zero count when max==1 collapses to mid bucket.
+        assert_eq!(shade_bucket(1, 1), 2);
+    }
+
+    #[test]
+    fn shade_color_returns_distinct_colors_per_bucket() {
+        let t = Theme::mocha();
+        // Buckets 0..=4 should map to distinct colors (mostly).
+        let c0 = shade_color(0, &t);
+        let c4 = shade_color(4, &t);
+        assert_ne!(c0, c4, "empty must differ from peak");
     }
 }

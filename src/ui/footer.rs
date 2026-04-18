@@ -17,8 +17,36 @@ use ratatui::Frame;
 use crate::theme::Theme;
 
 /// Separator between hints. A middle dot reads lighter than "|" and doesn't
-/// visually collide with the `▸` cursor glyph on the list.
-const SEP: &str = "  ·  ";
+/// visually collide with the `▸` cursor glyph on the list. Upgraded to a
+/// thick-dot bullet (U+25CF) in theme.dim so separators visually anchor
+/// without pulling focus from the pills themselves.
+const SEP: &str = "  \u{25CF}  ";
+
+/// Render a key-binding hint as a reverse-video pill: `▌key▐ description`.
+///
+/// The pill rails + interior use mauve as bg with crust as fg so keys read as
+/// a single high-contrast slug regardless of terminal theme. Returns the spans
+/// for the pill + a trailing space + the description. `highlight` tints the
+/// description in peach bold when the hint is context-sensitive (e.g. a row
+/// is selected so Enter/v become live actions) per the brief.
+fn key_pill_spans<'a>(key: &str, desc: &str, theme: &Theme, highlight: bool) -> Vec<Span<'a>> {
+    let pill_style = Style::default()
+        .bg(theme.mauve)
+        .fg(theme.crust)
+        .add_modifier(Modifier::BOLD);
+    let desc_style = if highlight {
+        Style::default()
+            .fg(theme.peach)
+            .add_modifier(Modifier::BOLD)
+    } else {
+        theme.key_desc()
+    };
+    vec![
+        Span::styled(format!("\u{258C}{key}\u{2590}"), pill_style),
+        Span::raw(" "),
+        Span::styled(desc.to_string(), desc_style),
+    ]
+}
 
 /// Render the footer for the session-list screen. When in multi-select
 /// mode this renders the context-aware batch-action hints instead.
@@ -65,38 +93,49 @@ pub fn render_session_list_with_multi(
 
 /// Special-case footer shown while the user has a live multi-selection.
 /// Calls out the batch actions so they're discoverable without opening
-/// the help overlay.
+/// the help overlay. The multi-select banner + action pills paint in peach
+/// so the user sees at a glance they're in batch-action mode.
 fn render_multi_hints(f: &mut Frame<'_>, area: Rect, theme: &Theme, count: usize) {
     let dim = theme.dim();
-    let spans = vec![
+    let mut spans = vec![
         Span::raw("  "),
+        // Peach-bold banner badge: `▌N selected▐` so the state is visually
+        // distinct from the normal key-hint footer.
         Span::styled(
-            format!("{count} selected"),
+            format!("\u{258C} {count} selected \u{2590}"),
             Style::default()
-                .fg(theme.peach)
+                .bg(theme.peach)
+                .fg(theme.crust)
                 .add_modifier(Modifier::BOLD),
         ),
         Span::styled(SEP, dim),
-        Span::styled("Tab", theme.key_hint()),
-        Span::raw(" "),
-        Span::styled("toggle", theme.key_desc()),
-        Span::styled(SEP, dim),
-        Span::styled("Esc", theme.key_hint()),
-        Span::raw(" "),
-        Span::styled("clear", theme.key_desc()),
-        Span::styled(SEP, dim),
-        Span::styled("Ctrl+E", theme.key_hint()),
-        Span::raw(" "),
-        Span::styled("export all", theme.key_desc()),
-        Span::styled(SEP, dim),
-        Span::styled("Ctrl+D", theme.key_hint()),
-        Span::raw(" "),
-        Span::styled("delete all", theme.key_desc()),
-        Span::styled(SEP, dim),
-        Span::styled("y", theme.key_hint()),
-        Span::raw(" "),
-        Span::styled("copy ids", theme.key_desc()),
     ];
+    // Batch actions — destructive ones (delete) tint their description in
+    // red so the risk reads at a glance.
+    let batch: &[(&str, &str, bool)] = &[
+        ("Tab", "toggle", false),
+        ("Esc", "clear", false),
+        ("Ctrl+E", "export all", false),
+        ("Ctrl+D", "delete all", true),
+        ("y", "copy ids", false),
+    ];
+    for (i, (key, desc, danger)) in batch.iter().enumerate() {
+        if i > 0 {
+            spans.push(Span::styled(SEP, dim));
+        }
+        let pill_style = Style::default()
+            .bg(theme.peach)
+            .fg(theme.crust)
+            .add_modifier(Modifier::BOLD);
+        let desc_style = if *danger {
+            Style::default().fg(theme.red).add_modifier(Modifier::BOLD)
+        } else {
+            theme.key_desc()
+        };
+        spans.push(Span::styled(format!("\u{258C}{key}\u{2590}"), pill_style));
+        spans.push(Span::raw(" "));
+        spans.push(Span::styled((*desc).to_string(), desc_style));
+    }
     let p = Paragraph::new(Line::from(spans));
     f.render_widget(p, area);
 }
@@ -134,13 +173,17 @@ fn render_hints_with_status(
 ) {
     let mut spans: Vec<Span> = Vec::with_capacity(hints.len() * 4);
     spans.push(Span::raw("  "));
+    // The first two hints (navigate + primary action) are *context-
+    // sensitive* — when anything is selected they resolve to live actions,
+    // so we tint their description in peach bold so the eye gravitates to
+    // the next likely keystroke. Keys past index 1 stay in the normal
+    // key_desc tone.
     for (i, (key, desc)) in hints.iter().enumerate() {
         if i > 0 {
             spans.push(Span::styled(SEP, theme.dim()));
         }
-        spans.push(Span::styled((*key).to_string(), theme.key_hint()));
-        spans.push(Span::raw(" "));
-        spans.push(Span::styled((*desc).to_string(), theme.key_desc()));
+        let highlight = i < 2;
+        spans.extend(key_pill_spans(key, desc, theme, highlight));
     }
 
     // Right-aligned indicators. Use a filler span so the status drifts to

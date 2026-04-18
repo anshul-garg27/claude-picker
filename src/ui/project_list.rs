@@ -32,7 +32,7 @@ use crate::app::App;
 use crate::data::pinned_projects::{PinnedProjects, ToggleResult};
 use crate::data::Project;
 use crate::theme::Theme;
-use crate::ui::text::{pad_to_width, truncate_to_width};
+use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 use crate::ui::thumbnail::{
     self, PinnedSlot, ThumbnailRenderer, MIN_STRIP_WIDTH as THUMB_MIN_STRIP_WIDTH,
     TILE_ROWS as THUMB_TILE_ROWS,
@@ -400,17 +400,42 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
     if app.projects.is_empty() {
-        let p = Paragraph::new(vec![
-            Line::raw(""),
-            Line::raw("No Claude Code projects yet."),
-            Line::raw(""),
-            Line::raw("Run `claude` in any directory to get started."),
-        ])
-        .style(theme.muted())
-        .alignment(ratatui::layout::Alignment::Center);
+        let glyph_style = Style::default()
+            .fg(theme.surface2)
+            .add_modifier(Modifier::BOLD);
+        let primary = Style::default()
+            .fg(theme.subtext1)
+            .add_modifier(Modifier::BOLD);
+        let secondary = Style::default()
+            .fg(theme.overlay0)
+            .add_modifier(Modifier::ITALIC);
+        // Pad vertically so the glyph lands closer to the optical center.
+        let pad = area.height.saturating_sub(6) / 2;
+        let mut lines: Vec<Line<'_>> = Vec::with_capacity(pad as usize + 6);
+        for _ in 0..pad {
+            lines.push(Line::raw(""));
+        }
+        lines.push(Line::from(Span::styled("\u{25EF}", glyph_style)));
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled("no projects yet", primary)));
+        lines.push(Line::raw(""));
+        lines.push(Line::from(Span::styled(
+            "run `claude` in any directory to get started",
+            secondary,
+        )));
+        let p = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
         f.render_widget(p, area);
         return;
     }
+
+    // Pre-compute pin-slot lookup so rows can prefix a `N:` badge in peach
+    // bold when the project is pinned. The pinned store is a small map
+    // (max 9 entries) so scanning it inside the row renderer would also be
+    // cheap — we lift the HashMap here anyway so the row renderer is pure.
+    let pinned = app.project_list().pinned();
+    let slot_by_cwd: std::collections::HashMap<String, u8> = (1u8..=9)
+        .filter_map(|slot| pinned.at_slot(slot).map(|cwd| (cwd.to_string(), slot)))
+        .collect();
 
     let items: Vec<ListItem<'_>> = app
         .filtered_indices
@@ -419,7 +444,10 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
         .map(|(display_idx, &idx)| {
             let p = &app.projects[idx];
             let is_sel = Some(display_idx) == app.cursor_position();
-            ListItem::new(render_row(p, theme, is_sel))
+            let slot = slot_by_cwd
+                .get(&p.path.to_string_lossy().into_owned())
+                .copied();
+            ListItem::new(render_row(p, theme, is_sel, slot))
         })
         .collect();
 
@@ -450,14 +478,21 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     }
 }
 
-fn render_row<'a>(p: &'a Project, theme: &Theme, selected: bool) -> Line<'a> {
+fn render_row<'a>(
+    p: &'a Project,
+    theme: &Theme,
+    selected: bool,
+    pin_slot: Option<u8>,
+) -> Line<'a> {
+    // Name style — theme.text bold for the primary label, selection stripe
+    // wins when the row is under the cursor.
     let name_style = if selected {
         theme.selected_row()
     } else {
         Style::default().fg(theme.text).add_modifier(Modifier::BOLD)
     };
 
-    let pointer = if selected { "▸" } else { " " };
+    let pointer = if selected { "\u{25B8}" } else { " " };
     let pointer_style = if selected {
         Style::default()
             .fg(theme.mauve)
@@ -466,30 +501,71 @@ fn render_row<'a>(p: &'a Project, theme: &Theme, selected: bool) -> Line<'a> {
         Style::default().fg(theme.surface2)
     };
 
-    // Pad to exactly 30 display columns. The old `format!("{name:<30}")`
-    // path measured the formatter's padding in bytes-not-columns; a CJK or
-    // emoji project name would shift the branch/sessions columns out of
-    // alignment. `pad_to_width` is the column-correct replacement.
-    let name = pad_to_width(&p.name, 30);
+    // Pin-slot prefix: `N:` in peach bold when the project is pinned into
+    // one of the k9s-style slots. Non-pinned rows get a 2-space gutter so
+    // names stay column-aligned across pinned / unpinned neighbours.
+    let pin_prefix = match pin_slot {
+        Some(n) => Span::styled(
+            format!("{n}:"),
+            Style::default()
+                .fg(theme.peach)
+                .add_modifier(Modifier::BOLD),
+        ),
+        None => Span::raw("  "),
+    };
 
-    let branch = p
+    // Pad the name to 28 display cols so the following pills line up.
+    let name_col_width: usize = 28;
+    let name = if display_width(&p.name) > name_col_width {
+        truncate_to_width(&p.name, name_col_width)
+    } else {
+        pad_to_width(&p.name, name_col_width)
+    };
+
+    // Optional git-branch inline — dimmer than the name, kept short. Uses
+    // `⌥` as a decorator so the branch reads as a subtitle, not a pill.
+    let branch_span = p
         .git_branch
         .as_deref()
-        .map(|b| format!(" ⌥ {b}"))
-        .unwrap_or_default();
+        .map(|b| {
+            let trimmed = truncate_to_width(b, 16);
+            Span::styled(
+                format!(" \u{2325} {trimmed}"),
+                Style::default().fg(theme.green),
+            )
+        })
+        .unwrap_or_else(|| Span::raw(""));
 
-    let sessions = format!("{} sessions", p.session_count);
+    // Sessions counter as a subtle pill: `▌12 sessions▐` in subtext1 over
+    // surface0 (floating chip look). The pluralisation stays textual so the
+    // pill reads the same on tiny and huge projects.
+    let session_label = if p.session_count == 1 {
+        " 1 session ".to_string()
+    } else {
+        format!(" {} sessions ", p.session_count)
+    };
+    let session_pill = Span::styled(
+        format!("\u{258C}{session_label}\u{2590}"),
+        Style::default()
+            .fg(theme.subtext1)
+            .bg(theme.surface0)
+            .add_modifier(Modifier::BOLD),
+    );
+
+    // Last activity — right-side, theme.dim, small. The helper collapses to
+    // `—` when we have no timestamp so the column stays anchored.
     let age = project_age(p.last_activity);
+    let age_span = Span::styled(format!(" {age:>6}"), theme.dim());
 
-    let mut spans = vec![
-        Span::styled(format!(" {pointer} "), pointer_style),
-        Span::styled(name, name_style),
-        Span::styled(branch, Style::default().fg(theme.green)),
-        Span::raw(" "),
-        Span::styled(sessions, Style::default().fg(theme.overlay1)),
-        Span::raw("  "),
-        Span::styled(age, theme.muted()),
-    ];
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(10);
+    spans.push(Span::styled(format!(" {pointer} "), pointer_style));
+    spans.push(pin_prefix);
+    spans.push(Span::styled(name, name_style));
+    spans.push(branch_span);
+    spans.push(Span::raw(" "));
+    spans.push(session_pill);
+    spans.push(Span::raw("  "));
+    spans.push(age_span);
 
     if selected {
         for span in &mut spans {

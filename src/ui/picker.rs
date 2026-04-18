@@ -477,10 +477,10 @@ fn render_project_screen(f: &mut Frame<'_>, area: Rect, app: &App) {
 
 fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
-    // Middle-dot (·) separates peer-level metadata inside the sticky
-    // header. We previously used › for hierarchy too, but the contextual
-    // header flattens into peer segments at every drill-in level.
-    const MID: &str = " \u{00B7} ";
+    // Peer-level separator — middle dot (·) for metadata siblings (count,
+    // filter, theme). Breadcrumb hierarchy steps use the tail arrow (›).
+    const MID: &str = "  \u{00B7}  ";
+    const BREAD: &str = "  \u{203A}  ";
 
     // Build the contextual segments first as plain strings; we style them
     // once we've confirmed the line fits. This also keeps truncation
@@ -497,9 +497,10 @@ fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
                 .unwrap_or("local");
 
             if let Some(viewer) = app.viewer.as_ref() {
-                // Deepest drill-in: `<project>/<session-id> · turn N/total ·
-                // <model> · $<cost>`. No `claude-picker` prefix — the user
-                // knows the tool they're in; they want session context.
+                // Deepest drill-in: `claude-picker › <project> › <sid8> ·
+                // turn N/total · <model> · $<cost>`. The breadcrumb arrow
+                // reads as drill-down hierarchy; the peer separator kicks
+                // in once we're at "facts about this thing".
                 let (turn, total, model, cost) = viewer_context(viewer, app);
                 let id = app
                     .selected_session_ref()
@@ -507,7 +508,14 @@ fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
                     .unwrap_or("-");
                 let id_short = truncate_to_width(id, 8);
                 segments.push((
-                    format!(" {project_name}/{id_short}"),
+                    format!(" {project_name}"),
+                    Style::default()
+                        .fg(theme.peach)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                segments.push((BREAD.to_string(), theme.dim()));
+                segments.push((
+                    id_short,
                     Style::default()
                         .fg(theme.mauve)
                         .add_modifier(Modifier::BOLD),
@@ -519,33 +527,50 @@ fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
                     segments.push((model, theme.muted()));
                 }
                 segments.push((MID.to_string(), theme.dim()));
-                segments.push((format!("${cost:.2}"), theme.muted()));
-            } else {
-                // Session-list drill-in: `<project> · N sessions · scope:X`.
                 segments.push((
-                    format!(" {project_name} "),
+                    format!("${cost:.2}"),
+                    Style::default()
+                        .fg(theme.subtext1)
+                        .add_modifier(Modifier::BOLD),
+                ));
+            } else {
+                // Session-list drill-in: `claude-picker › <project> (N) ·
+                // [SCOPE] · filter:"…"`. Project in peach bold is the most
+                // prominent cue; the session count rides as a parenthetical.
+                segments.push((
+                    " claude-picker".to_string(),
                     Style::default()
                         .fg(theme.mauve)
                         .add_modifier(Modifier::BOLD),
                 ));
-                segments.push((MID.to_string(), theme.dim()));
+                segments.push((BREAD.to_string(), theme.dim()));
+                segments.push((
+                    project_name.to_string(),
+                    Style::default()
+                        .fg(theme.peach)
+                        .add_modifier(Modifier::BOLD),
+                ));
                 let count = app.sessions.len();
-                let count_label = if count == 1 {
-                    "1 session".to_string()
-                } else {
-                    format!("{count} sessions")
-                };
-                segments.push((count_label, theme.muted()));
-                if let Some(scope) = active_scope_label(app) {
+                segments.push((
+                    format!(" ({count})"),
+                    Style::default()
+                        .fg(theme.subtext1)
+                        .add_modifier(Modifier::BOLD),
+                ));
+                if let Some(chip) = scope_chip(app, theme) {
                     segments.push((MID.to_string(), theme.dim()));
-                    segments.push((format!("scope:{scope}"), theme.muted()));
+                    segments.push(chip);
+                }
+                if let Some(filter_segs) = filter_expr_segments(app, theme) {
+                    segments.push((MID.to_string(), theme.dim()));
+                    segments.extend(filter_segs);
                 }
             }
         }
         Mode::ProjectList => {
-            // Top level: `claude-picker · N projects · scope:X`.
+            // Top level: `claude-picker · N projects · [SCOPE] · filter:"…"`.
             segments.push((
-                " claude-picker ".to_string(),
+                " claude-picker".to_string(),
                 Style::default()
                     .fg(theme.mauve)
                     .add_modifier(Modifier::BOLD),
@@ -557,10 +582,19 @@ fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
             } else {
                 format!("{count} projects")
             };
-            segments.push((count_label, theme.muted()));
-            if let Some(scope) = active_scope_label(app) {
+            segments.push((
+                count_label,
+                Style::default()
+                    .fg(theme.subtext1)
+                    .add_modifier(Modifier::BOLD),
+            ));
+            if let Some(chip) = scope_chip(app, theme) {
                 segments.push((MID.to_string(), theme.dim()));
-                segments.push((format!("scope:{scope}"), theme.muted()));
+                segments.push(chip);
+            }
+            if let Some(filter_segs) = filter_expr_segments(app, theme) {
+                segments.push((MID.to_string(), theme.dim()));
+                segments.extend(filter_segs);
             }
         }
     }
@@ -577,6 +611,37 @@ fn render_title_bar(f: &mut Frame<'_>, area: Rect, app: &App) {
     let budget = area.width as usize;
     let spans = fit_to_width(segments, budget, theme);
     f.render_widget(Paragraph::new(Line::from(spans)), area);
+}
+
+/// Scope chip: `▌SCOPE▐` in mauve reverse video so the active filter scope
+/// reads as an unmissable lozenge in the header. Returns `None` when the
+/// ribbon accessor isn't wired.
+fn scope_chip(app: &App, theme: &Theme) -> Option<(String, Style)> {
+    let label = active_scope_label(app)?;
+    let upper = label.to_ascii_uppercase();
+    let style = Style::default()
+        .bg(theme.mauve)
+        .fg(theme.crust)
+        .add_modifier(Modifier::BOLD);
+    Some((format!("\u{258C}{upper}\u{2590}"), style))
+}
+
+/// Styled segments for the active filter expression. When the filter is
+/// non-empty, renders `filter:"…"` with the quoted body in theme.yellow.
+fn filter_expr_segments(app: &App, theme: &Theme) -> Option<Vec<(String, Style)>> {
+    if app.filter.is_empty() {
+        return None;
+    }
+    let body = truncate_to_width(&app.filter, 32);
+    Some(vec![
+        ("filter:".to_string(), theme.muted()),
+        (
+            format!("\u{201C}{body}\u{201D}"),
+            Style::default()
+                .fg(theme.yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+    ])
 }
 
 /// Shrink `segments` left-to-right until the combined `display_width` fits
