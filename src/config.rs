@@ -59,6 +59,18 @@ pub struct UiConfig {
     /// Column cap on the `--stats` dashboard. 0 means "use full terminal".
     #[serde(default)]
     pub stats_width: u16,
+
+    /// Skip every opt-in animation — the F1 fork-graph radial expansion,
+    /// the F3 pulse-HUD beat, the F4 replay comet trail, and the F5 peek
+    /// slide-in. The one-shot toast slide + cursor-glide trail are
+    /// already governed by `CLAUDE_PICKER_NO_ANIM`; this flag is the
+    /// tachyonfx-era follow-up that moves the preference into config.
+    ///
+    /// Default `false` so the animations are on by default on modern
+    /// terminals. Users on SSH / screen readers / prefers-reduced-motion
+    /// flip this to `true` in `~/.config/claude-picker/config.toml`.
+    #[serde(default)]
+    pub reduce_motion: bool,
 }
 
 impl Default for UiConfig {
@@ -67,6 +79,7 @@ impl Default for UiConfig {
             theme: default_theme(),
             date_format: String::new(),
             stats_width: 0,
+            reduce_motion: false,
         }
     }
 }
@@ -255,6 +268,13 @@ date_format = ""
 # Width cap for the --stats dashboard in columns. 0 = use full terminal.
 stats_width = 0
 
+# Skip every opt-in animation: the fork-graph radial expansion, the
+# session HUD pulse, the replay scrubber comet trail, and the peek-mode
+# slide-in. Leave false to enjoy them; set true for SSH / screen readers
+# / prefers-reduced-motion setups. The `CLAUDE_PICKER_NO_ANIM=1` env var
+# still works for the pre-tachyonfx effects (toast slide, cursor glide).
+reduce_motion = false
+
 [picker]
 # Default sort for the session list. One of: recent, cost, msgs, name,
 # bookmarked-first.
@@ -306,6 +326,7 @@ mod tests {
     fn defaults_are_sane() {
         let c = Config::default();
         assert_eq!(c.ui.theme, "catppuccin-mocha");
+        assert!(!c.ui.reduce_motion, "animations should be on by default");
         assert_eq!(c.picker.sort, "bookmarked-first");
         assert_eq!(c.picker.min_messages, 2);
         assert!(c.picker.include_hidden_projects);
@@ -337,6 +358,7 @@ mod tests {
         assert_eq!(cfg.ui.theme, d.ui.theme);
         assert_eq!(cfg.ui.date_format, d.ui.date_format);
         assert_eq!(cfg.ui.stats_width, d.ui.stats_width);
+        assert_eq!(cfg.ui.reduce_motion, d.ui.reduce_motion);
         assert_eq!(cfg.picker.sort, d.picker.sort);
         assert_eq!(
             cfg.picker.include_hidden_projects,

@@ -14,6 +14,10 @@ pub mod diff;
 pub mod files;
 pub mod filter_ribbon;
 pub mod footer;
+// Shared tachyonfx effect helpers (reduce-motion-aware). Every UI feature
+// that opts into an animation pulls helpers from here so the reduce-motion
+// path is enforced in one place.
+pub mod fx;
 pub mod heatmap;
 pub mod help_overlay;
 pub mod hooks;
@@ -30,5 +34,11 @@ pub mod session_list;
 pub mod stats;
 pub mod task_drawer;
 pub mod text;
+// F2/E17 project thumbnails: identicon renderer + in-memory LRU cache. The
+// cache lives next to the renderer so `project_list` only needs one import
+// path. The renderer emits Unicode halfblocks on every terminal — no
+// graphics-protocol probe, no C library dependencies.
+pub mod thumbnail;
+pub mod thumbnail_cache;
 pub mod tree;
 pub mod which_key;

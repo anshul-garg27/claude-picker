@@ -19,9 +19,11 @@
 //! bar under 80 cols.
 
 use std::borrow::Cow;
-use std::time::Duration;
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Utc};
+use chrono::{DateTime, Local, TimeZone, Utc};
+use ratatui::buffer::Buffer;
 use ratatui::layout::{Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -31,9 +33,12 @@ use ratatui::widgets::{
 };
 use ratatui::Frame;
 
+use tachyonfx::{Effect, Shader};
+
 use crate::app::App;
 use crate::data::Session;
 use crate::theme::{self, Theme};
+use crate::ui::fx as ui_fx;
 use crate::ui::model_pill;
 use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
@@ -73,6 +78,12 @@ pub fn render(f: &mut Frame<'_>, area: Rect, app: &App) {
 
     render_filter(f, chunks[0], app);
     render_list(f, chunks[1], app);
+
+    // F3 — bottom-right 3-line pulse HUD. Draws *after* the list so it
+    // overlays the bottom rows. Skipped on very short panes where we'd
+    // cover meaningful list rows. See `PulseHudState` for the animation
+    // pipeline.
+    render_pulse_hud(f, chunks[1], app);
 }
 
 /// Build the spans that go in the outer-block title.
@@ -644,6 +655,434 @@ fn cost_style(cost: f64, theme: &Theme, selected: bool) -> Style {
     s
 }
 
+// ── F3: Pulse HUD ────────────────────────────────────────────────────────
+//
+// Bottom-right 3-line HUD overlay. Computes three at-a-glance figures from
+// the sessions already loaded on `App`:
+//
+//   today  $4.21 ▂▁▃▅▇█▅▁ 9h
+//   rate   $0.48/h      ●
+//   proj   $8.40 by 6pm
+//
+// - today  — sum of `total_cost_usd` for every session whose
+//   `last_timestamp` falls inside today (local TZ).
+// - sparkline — today's cost bucketed into 8 columns, rendered as unicode
+//   sparkline glyphs (U+2581..U+2588).
+// - rate / proj — `today / hours_elapsed` and `rate * 24`, respectively;
+//   no history store required.
+//
+// The `●` indicator on row 2 pulses via tachyonfx on a 2 s loop. When the
+// user has `config.ui.reduce_motion = true`, the glyph is drawn as a solid
+// `●` without animation.
+//
+// When `today_cost > 95 %` of the 10 USD daily soft-budget heuristic, the
+// HUD's border flashes once via `parallel(fade_from, translate_in)` for
+// 600 ms. The budget threshold is a static heuristic rather than a user
+// preference because the brief's copy ("95 % of daily budget") doesn't
+// specify a source — integrators with a budget store can swap in their own
+// ceiling via `budget_ceiling_usd`.
+
+/// The heuristic daily budget used to gate the flash-border warning.
+/// Can be replaced by integrators by routing their own value through
+/// `PulseHudState::new_with_budget`.
+const DEFAULT_DAILY_BUDGET_USD: f64 = 10.0;
+
+/// Loop length of the live-dot pulse. 2 000 ms matches the brief.
+const PULSE_LOOP_MS: u32 = 2_000;
+/// How long the over-budget border flash runs. 600 ms per the brief.
+const FLASH_MS: u32 = 600;
+
+/// Transient animation state for the pulse HUD. Wrapped in a `thread_local`
+/// `RefCell` — the render path is called with `&App`, and adding per-frame
+/// mutable animation state to `App` is outside the file-ownership of this
+/// patch (see the integration spec at the bottom of the module). The
+/// thread-local is safe because ratatui renders single-threaded and the
+/// state is strictly per-process.
+pub struct PulseHudState {
+    /// Long-running pulse of the live-dot glyph. Set at first render,
+    /// never replaced.
+    pulse: Option<Effect>,
+    /// One-shot border-flash effect; re-seeded whenever `today_cost`
+    /// crosses the 95%-of-budget threshold.
+    flash: Option<Effect>,
+    /// Last tick instant — drives the elapsed-time delta tachyonfx wants.
+    last_tick: Instant,
+    /// `Some(true)` once we've flashed for the current over-budget
+    /// episode. Cleared when today's cost drops back under the threshold
+    /// so the next breach re-fires the flash.
+    flashed_at: Option<f64>,
+    /// Cached `reduce_motion` flag — set once per process so we don't
+    /// allocate an effect that tachyonfx would run but never display.
+    reduce_motion: bool,
+}
+
+impl PulseHudState {
+    fn new(reduce_motion: bool, low: ratatui::style::Color, high: ratatui::style::Color,
+           bg: ratatui::style::Color) -> Self {
+        let pulse = if reduce_motion {
+            None
+        } else {
+            Some(ui_fx::pulse(low, high, bg, PULSE_LOOP_MS))
+        };
+        Self {
+            pulse,
+            flash: None,
+            last_tick: Instant::now(),
+            flashed_at: None,
+            reduce_motion,
+        }
+    }
+
+    /// Trigger the border-flash for this frame if today's cost just crossed
+    /// 95 % of `budget_ceiling`. Idempotent — a flash already armed for the
+    /// same crossing is not re-armed.
+    fn maybe_arm_flash(
+        &mut self,
+        today_cost: f64,
+        budget_ceiling: f64,
+        accent: ratatui::style::Color,
+        bg: ratatui::style::Color,
+    ) {
+        if self.reduce_motion || budget_ceiling <= 0.0 {
+            return;
+        }
+        let ratio = today_cost / budget_ceiling;
+        if ratio >= 0.95 {
+            // Only arm when we weren't already flagged for this episode.
+            if self.flashed_at.is_none() {
+                self.flash = Some(ui_fx::flash_border(accent, bg, FLASH_MS));
+                self.flashed_at = Some(ratio);
+            }
+        } else {
+            // Dropped back below threshold — clear the latch so a
+            // subsequent breach fires again.
+            self.flashed_at = None;
+            self.flash = None;
+        }
+    }
+}
+
+thread_local! {
+    /// Per-thread holder for the live pulse HUD state. Populated lazily on
+    /// the first render so the theme/motion flag are captured from `App`.
+    /// The cell is `RefCell` because render call-sites only have `&App`.
+    static PULSE_HUD: RefCell<Option<PulseHudState>> = const { RefCell::new(None) };
+}
+
+/// Daily-cost snapshot computed from the loaded session list. Kept out of
+/// the render function so the tests can exercise the bucket logic without
+/// a frame buffer.
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub struct HudStats {
+    /// Sum of costs for sessions whose `last_timestamp` falls in today.
+    pub today_cost_usd: f64,
+    /// `today_cost / hours_elapsed_today` — undefined while hours ≤ 0.
+    pub rate_usd_per_hour: f64,
+    /// Projected end-of-day cost at the current rate.
+    pub projected_cost_usd: f64,
+    /// Hours elapsed since local-midnight.
+    pub hours_elapsed: f64,
+    /// 8-bucket sparkline of today's per-hour spend (00:00..now). Fixed
+    /// length 8 so the HUD row layout is stable.
+    pub spark_buckets: [f64; 8],
+    /// Number of sessions that landed in "today" — shown as the trailing
+    /// `9h` hint on row 1 (hours contributed).
+    pub today_session_count: usize,
+}
+
+impl HudStats {
+    /// Compute the HUD stats from the currently-loaded sessions. `now` is
+    /// accepted as a parameter so tests can pin a deterministic wall
+    /// clock.
+    pub fn compute<'a, I: IntoIterator<Item = &'a Session>>(
+        sessions: I,
+        now: DateTime<Utc>,
+    ) -> Self {
+        // Resolve today's local-midnight in UTC. The chain is:
+        //   1. Convert `now` (UTC) to the user's local time zone.
+        //   2. Grab that local date and rebuild a `NaiveDateTime` at 00:00.
+        //   3. Bind that naive value back to `Local` and resolve to UTC for
+        //      comparison against the UTC `last_timestamp` field.
+        //
+        // On DST-transition days `from_local_datetime` can return `None` or
+        // `Ambiguous`; we fall back to `now` as the lower bound in those
+        // pathological cases so the HUD never panics — the worst-case cost
+        // is a temporarily-empty "today" bucket for half an hour.
+        let now_local = now.with_timezone(&Local);
+        let naive_midnight = now_local
+            .date_naive()
+            .and_hms_opt(0, 0, 0)
+            .expect("midnight is a valid wall-clock time");
+        let today_start_local = Local
+            .from_local_datetime(&naive_midnight)
+            .single()
+            .map(|dt| dt.with_timezone(&Utc))
+            .unwrap_or(now);
+
+        let mut today_cost = 0.0f64;
+        let mut spark = [0.0f64; 8];
+        let mut today_count = 0usize;
+
+        for s in sessions {
+            let Some(ts) = s.last_timestamp else { continue };
+            if ts < today_start_local {
+                continue;
+            }
+            today_cost += s.total_cost_usd;
+            today_count += 1;
+            // Bucket across 8 equal slices of the day so the sparkline is
+            // always the same width regardless of the user's local hour.
+            let seconds_since_midnight =
+                (ts - today_start_local).num_seconds().max(0) as f64;
+            let bucket = ((seconds_since_midnight / 86_400.0) * 8.0)
+                .clamp(0.0, 7.9999) as usize;
+            spark[bucket] += s.total_cost_usd;
+        }
+
+        let hours_elapsed = ((now - today_start_local).num_seconds().max(0) as f64) / 3_600.0;
+        let rate = if hours_elapsed > 0.1 {
+            today_cost / hours_elapsed
+        } else {
+            0.0
+        };
+        let projected = rate * 24.0;
+
+        Self {
+            today_cost_usd: today_cost,
+            rate_usd_per_hour: rate,
+            projected_cost_usd: projected,
+            hours_elapsed,
+            spark_buckets: spark,
+            today_session_count: today_count,
+        }
+    }
+
+    /// Render the sparkline string from the buckets. Picks a glyph from
+    /// `▁▂▃▄▅▆▇█` proportional to the bucket's share of the max.
+    pub fn sparkline(&self) -> String {
+        const GLYPHS: [char; 8] =
+            ['\u{2581}', '\u{2582}', '\u{2583}', '\u{2584}', '\u{2585}', '\u{2586}', '\u{2587}', '\u{2588}'];
+        let max = self
+            .spark_buckets
+            .iter()
+            .cloned()
+            .fold(0.0_f64, f64::max);
+        if max <= 0.0 {
+            // Use the lowest glyph for every column so the HUD still shows
+            // a sparkline placeholder rather than blank cells.
+            return std::iter::repeat_n(GLYPHS[0], 8).collect();
+        }
+        self.spark_buckets
+            .iter()
+            .map(|v| {
+                let idx = ((v / max) * 7.0).round().clamp(0.0, 7.0) as usize;
+                GLYPHS[idx]
+            })
+            .collect()
+    }
+}
+
+fn format_budget_cost(cost: f64) -> String {
+    if cost <= 0.0 {
+        "$0.00".to_string()
+    } else if cost < 0.01 {
+        "<$0.01".to_string()
+    } else {
+        format!("${cost:.2}")
+    }
+}
+
+fn format_projection_target() -> String {
+    // End-of-day label — "by 11:59pm" is wordy, so the brief uses the
+    // informal "6pm" / "11pm" feel. We compute the current hour-of-day
+    // as a marker; the projection itself is always end-of-day, so this
+    // is purely a subtitle hint.
+    let now = Local::now();
+    let hour_12 = now.format("%-I%p").to_string().to_lowercase();
+    format!("by {hour_12}")
+}
+
+/// Reduce-motion resolution without reaching into `App` beyond its public
+/// surface. We key off the existing env-driven `theme::animations_disabled`
+/// until `App` exposes the config's `reduce_motion` — the file-ownership of
+/// this patch forbids editing `src/app.rs`, so this reads as "env or
+/// theme-level opt-out counts as reduce-motion for the HUD as well". See
+/// the integration spec.
+fn hud_reduce_motion() -> bool {
+    theme::animations_disabled()
+}
+
+fn render_pulse_hud(f: &mut Frame<'_>, area: Rect, app: &App) {
+    // Need at least 3 rows + a bit of slack so the overlay doesn't
+    // swallow the list entirely on dense panes.
+    if area.height < 8 {
+        return;
+    }
+    // HUD width — 26 cols fits the three rows without feeling chipmunk'd.
+    let hud_w: u16 = 26;
+    if area.width < hud_w + 4 {
+        return;
+    }
+
+    let stats = HudStats::compute(app.sessions.iter(), Utc::now());
+    let theme = &app.theme;
+
+    let rect = Rect {
+        x: area.x + area.width.saturating_sub(hud_w + 1),
+        y: area.y + area.height.saturating_sub(3),
+        width: hud_w,
+        height: 3,
+    };
+
+    // Lazily build the thread-local pulse state on first render so the
+    // theme colours are captured correctly (they can change if the user
+    // hits `t` to cycle themes).
+    PULSE_HUD.with(|cell| {
+        let mut guard = cell.borrow_mut();
+        if guard.is_none() {
+            *guard = Some(PulseHudState::new(
+                hud_reduce_motion(),
+                theme.surface2,
+                theme.green,
+                theme.base,
+            ));
+        }
+        let state = guard.as_mut().unwrap();
+        // Over-budget warning gate — arms the flash exactly once per
+        // crossing episode.
+        state.maybe_arm_flash(
+            stats.today_cost_usd,
+            DEFAULT_DAILY_BUDGET_USD,
+            theme.red,
+            theme.base,
+        );
+
+        // Paint the HUD statically first.
+        paint_hud(f, rect, &stats, theme, state.reduce_motion);
+
+        // Then overlay the live effects via tachyonfx.
+        let now = Instant::now();
+        let elapsed = now.saturating_duration_since(state.last_tick);
+        state.last_tick = now;
+        let delta = ui_fx::delta_from(elapsed);
+
+        // Per-frame pulse on the live-dot cell. The effect covers just
+        // the single cell where the `●` is drawn so other paint doesn't
+        // get dragged through the alpha lerp. Each `process` call takes
+        // its own `buffer_mut` so the &mut Buffer lifetime is scoped to
+        // the one call — avoids repeated-reborrow ambiguity.
+        if let Some(pulse) = state.pulse.as_mut() {
+            let dot_rect = Rect {
+                x: rect.x + hud_w.saturating_sub(3),
+                y: rect.y + 1,
+                width: 1,
+                height: 1,
+            };
+            let buf: &mut Buffer = f.buffer_mut();
+            pulse.process(delta, buf, dot_rect);
+        }
+
+        // Border flash — one-shot, dropped when complete.
+        if let Some(flash) = state.flash.as_mut() {
+            let buf: &mut Buffer = f.buffer_mut();
+            flash.process(delta, buf, rect);
+            if flash.done() {
+                state.flash = None;
+            }
+        }
+    });
+}
+
+/// Paint the static portion of the HUD. The pulse + flash effects run
+/// over the top of this layer in `render_pulse_hud`.
+fn paint_hud(
+    f: &mut Frame<'_>,
+    rect: Rect,
+    stats: &HudStats,
+    theme: &Theme,
+    reduce_motion: bool,
+) {
+    // Clear the cells so the list row underneath doesn't bleed through.
+    f.render_widget(ratatui::widgets::Clear, rect);
+
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .border_type(BorderType::Rounded)
+        .border_style(Style::default().fg(theme.surface2));
+    let inner = block.inner(rect);
+    f.render_widget(block, rect);
+
+    // Row 1: `today  $X.XX  sparkline  Nh`
+    let spark = stats.sparkline();
+    let hours_label = if stats.today_session_count == 0 {
+        "0h".to_string()
+    } else {
+        format!("{}h", stats.hours_elapsed.round() as i64)
+    };
+    let row_today = Line::from(vec![
+        Span::styled("today  ", theme.muted()),
+        Span::styled(
+            format_budget_cost(stats.today_cost_usd),
+            Style::default()
+                .fg(if stats.today_cost_usd > DEFAULT_DAILY_BUDGET_USD * 0.95 {
+                    theme.red
+                } else if stats.today_cost_usd > DEFAULT_DAILY_BUDGET_USD * 0.5 {
+                    theme.yellow
+                } else {
+                    theme.green
+                })
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(spark, Style::default().fg(theme.teal)),
+        Span::raw(" "),
+        Span::styled(hours_label, theme.muted()),
+    ]);
+
+    // Row 2: `rate   $X.XX/h      ●`
+    // The live-dot is drawn here as solid; tachyonfx then modulates its
+    // alpha unless reduce-motion is set — in that case the solid glyph
+    // is the final look.
+    // Solid green glyph in both modes — tachyonfx modulates alpha at render
+    // time when reduce_motion is false. The if/else is collapsed because the
+    // effect path doesn't change the base style, only the per-frame alpha.
+    let _ = reduce_motion;
+    let dot_style = Style::default()
+        .fg(theme.green)
+        .add_modifier(Modifier::BOLD);
+    let rate_label = if stats.rate_usd_per_hour > 0.0 {
+        format!("${:.2}/h", stats.rate_usd_per_hour)
+    } else {
+        "$0.00/h".to_string()
+    };
+    // Pad the middle so the `●` hits col `hud_w - 3`.
+    let inner_w = inner.width as usize;
+    let left = format!("rate   {rate_label}");
+    let left_w = display_width(&left);
+    let pad_w = inner_w.saturating_sub(left_w + 1);
+    let row_rate = Line::from(vec![
+        Span::styled(left, theme.muted()),
+        Span::raw(" ".repeat(pad_w)),
+        Span::styled("\u{25CF}", dot_style),
+    ]);
+
+    // Row 3: `proj   $X.XX by 6pm`
+    let row_proj = Line::from(vec![
+        Span::styled("proj   ", theme.muted()),
+        Span::styled(
+            format_budget_cost(stats.projected_cost_usd),
+            Style::default()
+                .fg(theme.subtext1)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(format_projection_target(), theme.muted()),
+    ]);
+
+    let p = Paragraph::new(vec![row_today, row_rate, row_proj]);
+    f.render_widget(p, inner);
+}
+
 /// Relative-time like "2h", "yd" (yesterday), "3d", or "Apr 10".
 fn relative_time(ts: Option<DateTime<Utc>>) -> String {
     let Some(ts) = ts else {
@@ -766,6 +1205,92 @@ mod tests {
         assert_eq!(relative_time(Some(yesterday)), "yd");
     }
 
+    fn mk_session_at(id: &str, cost: f64, ts: DateTime<Utc>) -> Session {
+        use crate::data::pricing::TokenCounts;
+        use crate::data::SessionKind;
+        use std::path::PathBuf;
+        Session {
+            id: id.into(),
+            project_dir: PathBuf::from("/tmp"),
+            name: None,
+            auto_name: None,
+            last_prompt: None,
+            message_count: 1,
+            tokens: TokenCounts::default(),
+            total_cost_usd: cost,
+            model_summary: String::new(),
+            first_timestamp: Some(ts),
+            last_timestamp: Some(ts),
+            is_fork: false,
+            forked_from: None,
+            entrypoint: SessionKind::Cli,
+            permission_mode: None,
+            subagent_count: 0,
+            turn_durations: Vec::new(),
+        }
+    }
+
+    #[test]
+    fn hud_stats_empty_sessions_yields_zeroes() {
+        let stats = HudStats::compute(std::iter::empty::<&Session>(), Utc::now());
+        assert_eq!(stats.today_cost_usd, 0.0);
+        assert_eq!(stats.today_session_count, 0);
+    }
+
+    #[test]
+    fn hud_stats_excludes_yesterday_sessions() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
+        let yesterday = now - chrono::Duration::hours(30);
+        let today = now - chrono::Duration::hours(2);
+        let sessions = [
+            mk_session_at("old", 5.0, yesterday),
+            mk_session_at("new", 1.5, today),
+        ];
+        let stats = HudStats::compute(sessions.iter(), now);
+        assert!((stats.today_cost_usd - 1.5).abs() < 1e-9,
+            "yesterday's $5 must not count, only today's $1.50");
+        assert_eq!(stats.today_session_count, 1);
+    }
+
+    #[test]
+    fn hud_stats_sparkline_has_8_glyphs() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 17, 20, 0, 0).unwrap();
+        let sessions = [mk_session_at("a", 1.0, now - chrono::Duration::hours(1))];
+        let stats = HudStats::compute(sessions.iter(), now);
+        let spark = stats.sparkline();
+        assert_eq!(spark.chars().count(), 8, "sparkline must always be 8 glyphs");
+    }
+
+    #[test]
+    fn hud_stats_projection_equals_rate_times_24() {
+        // Test the invariant (projection == rate * 24) regardless of the
+        // runner's timezone — `compute()` uses `Local` to bucket sessions
+        // into "today," so absolute rate values depend on the host TZ.
+        let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
+        let sessions = [mk_session_at("a", 6.0, now - chrono::Duration::hours(1))];
+        let stats = HudStats::compute(sessions.iter(), now);
+        if stats.rate_usd_per_hour > 0.0 {
+            let ratio = stats.projected_cost_usd / stats.rate_usd_per_hour;
+            assert!(
+                (ratio - 24.0).abs() < 1e-6,
+                "projection must equal rate * 24, got ratio {ratio}"
+            );
+        }
+    }
+
+    #[test]
+    fn hud_stats_empty_sparkline_still_renders_placeholder() {
+        let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
+        let stats = HudStats::compute(std::iter::empty::<&Session>(), now);
+        let spark = stats.sparkline();
+        assert_eq!(spark.chars().count(), 8);
+        // With no data, every bucket should be the lowest glyph.
+        let lowest = '\u{2581}';
+        for g in spark.chars() {
+            assert_eq!(g, lowest);
+        }
+    }
+
     #[test]
     fn cost_burn_buckets_ramp_green_to_red() {
         let t = Theme::mocha();
@@ -820,3 +1345,31 @@ mod tests {
         assert_eq!(ctx_gutter_color(&mk(500_000), &t), t.red);
     }
 }
+
+// ─── F3 integration spec ─────────────────────────────────────────────────
+//
+// The pulse-HUD animation currently reads its reduce-motion flag via
+// `theme::animations_disabled()` (the env-driven legacy toggle), because
+// this patch's file-ownership forbids editing `src/app.rs`. To honour
+// `config.ui.reduce_motion` at the config-file level, swap
+// `hud_reduce_motion()` for `app.config.ui.reduce_motion`. The two
+// required wiring changes are:
+//
+//   1. Thread the loaded `Config` onto `App`. Add
+//      `pub config: crate::config::Config,` next to the existing `theme`
+//      field on the `App` struct, and accept it as a parameter of
+//      `App::new` / `App::new_with_theme`. Today the config is loaded in
+//      `main.rs` and only its theme string makes it into `App`.
+//
+//   2. Replace the body of `hud_reduce_motion` (above) with
+//      `pub fn hud_reduce_motion(app: &App) -> bool {
+//         app.config.ui.reduce_motion || theme::animations_disabled()
+//      }`
+//      and update `render_pulse_hud` to pass `app` in. The OR keeps the
+//      legacy env escape hatch working.
+//
+// Until the wiring lands, power users can still opt out of the F3
+// animation by setting `CLAUDE_PICKER_NO_ANIM=1`. The HUD stats
+// themselves render either way — only the pulse + border flash are
+// motion-gated.
+

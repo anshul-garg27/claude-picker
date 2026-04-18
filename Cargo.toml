@@ -52,6 +52,27 @@ unicode-segmentation = "1.12"
 # LCS / Myers-style diff for word-level inline diffs. Pure Rust so it works
 # everywhere ratatui does; used by `ui::diff`'s word-mode rendering.
 similar = "2.6"
+# Pixel buffer for the F2/E17 project-thumbnail identicons. We hash each
+# basename into a 64x64 RGB image and render it as Unicode halfblocks that
+# work on every terminal — no graphics protocol, no C deps, no pkg-config.
+# `image` is pure Rust; version 0.25 resolves to the current 0.25.x patch.
+image = "0.25"
+# Shader-style effects + animations for ratatui. Powers the Horizon 3
+# "wow factor" touches (F1 fork-graph radial expansion, F3 session pulse
+# HUD, F4 replay comet trail, F5 peek-mode slide).
+#
+# Version pin rationale: crates.io max_stable_version is 0.25.0 (Feb 27
+# 2026), but the 0.11 → 0.25 line all depend on ratatui 0.29 via
+# ratatui-core 0.1 — incompatible with this crate's `ratatui = "0.28"`
+# pin (the two ratatui versions ship distinct `Color` types so the
+# `Into<Color>` bounds on tachyonfx's fx constructors won't resolve).
+# tachyonfx 0.7.0 is the newest release that depends on ratatui 0.28.1
+# directly. Until we bump ratatui → 0.29 project-wide, 0.7 is the
+# compatible pin. The public API (fade_from / fade_to / slide_in / etc.)
+# is functionally equivalent to 0.25 for the features this patch uses —
+# the main differences are `Direction` (0.7) vs `Motion` (0.25) and the
+# `fx::RadialPattern` path, both accounted for in `src/ui/fx.rs`.
+tachyonfx = "0.7"
 
 [dev-dependencies]
 insta = "1.39"

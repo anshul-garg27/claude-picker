@@ -27,7 +27,7 @@
 //! Wide-terminal centring is handled by [`render`]: the content block caps
 //! at 120 columns and is horizontally centred when the frame is wider.
 
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use ratatui::layout::{Alignment, Rect};
@@ -36,14 +36,115 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, List, ListItem, ListState, Paragraph};
 use ratatui::Frame;
 
+use tachyonfx::{Effect, Shader};
+
 use crate::data::{Project, Session};
 use crate::theme::{self, Theme};
+use crate::ui::fx as ui_fx;
 use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
 /// Hard cap on how wide the tree panel renders. Anything wider is centred
 /// so sessions on 160+ column monitors don't stretch to an unreadable
 /// width.
 pub const MAX_WIDTH: u16 = 120;
+
+/// Total wall-clock length of the F1 radial expansion. 350 ms is the value
+/// the brief calls for — long enough to read as a deliberate reveal, short
+/// enough that power users who `e` / Enter repeatedly don't feel gated.
+pub const FORK_GRAPH_EXPAND_MS: u32 = 350;
+
+/// Transient animation state for the tree view. One instance lives on the
+/// tree-screen state struct in `commands::tree_cmd` (see the integration
+/// spec at the bottom of this module). The struct is deliberately tiny so
+/// it can be held behind an `Option` — the animation runs for < 400 ms,
+/// after which callers drop it back to `None`.
+///
+/// # Lifecycle
+///
+/// 1. The caller constructs a fresh state on tree-view mount and on the
+///    `e` expand-all action via [`TreeAnimState::for_mount`] /
+///    [`TreeAnimState::for_expand_all`].
+/// 2. Each frame the renderer calls
+///    [`render_with_fx`] which tick-drives the effect and paints into the
+///    widget buffer. When [`TreeAnimState::is_done`] reports `true` the
+///    caller sets the state back to `None`.
+/// 3. If the user has opted into `config.ui.reduce_motion`, the factories
+///    return `None` so no effect ever runs — the render path is a no-op
+///    and the tree paints normally.
+pub struct TreeAnimState {
+    /// The underlying tachyonfx effect. `None` once complete (or when
+    /// reduce-motion gated it out from the start).
+    effect: Option<Effect>,
+    /// Last frame timestamp — used to compute the per-tick elapsed
+    /// delta tachyonfx's `process` method consumes.
+    last_tick: Instant,
+    /// Normalised centre of the radial pattern — retained for debugging
+    /// / integration tests; the effect itself is already configured.
+    #[allow(dead_code)]
+    center_norm: (f32, f32),
+}
+
+impl TreeAnimState {
+    /// Build the tree-mount variant. `cursor_row` is the row-index of the
+    /// currently-selected session within `nodes`; the pattern is centred on
+    /// that row so the expansion feels like it "pops out of" the cursor.
+    ///
+    /// `reduce_motion` comes straight from `config.ui.reduce_motion` — the
+    /// helper short-circuits when the user has opted out, so the caller
+    /// can construct unconditionally and still respect the preference.
+    pub fn for_mount(
+        cursor_row: usize,
+        total_rows: usize,
+        reduce_motion: bool,
+        theme: &Theme,
+    ) -> Self {
+        let center = Self::center_from_cursor(cursor_row, total_rows);
+        let effect = ui_fx::build(reduce_motion, || {
+            ui_fx::radial_expand(center, theme.text, theme.base, FORK_GRAPH_EXPAND_MS)
+        });
+        Self {
+            effect,
+            last_tick: Instant::now(),
+            center_norm: center,
+        }
+    }
+
+    /// Same visual as [`Self::for_mount`] — the brief uses the same 350 ms
+    /// radial for the `e` expand-all press. Kept as a separate constructor
+    /// so the call sites in `commands::tree_cmd::on_expand_all` can evolve
+    /// independently (e.g. a future variant might want a different curve
+    /// or centre for the full-subtree reveal).
+    pub fn for_expand_all(
+        cursor_row: usize,
+        total_rows: usize,
+        reduce_motion: bool,
+        theme: &Theme,
+    ) -> Self {
+        Self::for_mount(cursor_row, total_rows, reduce_motion, theme)
+    }
+
+    /// True once the underlying effect has completed. Also returns `true`
+    /// in the reduce-motion case — there's nothing to wait for.
+    pub fn is_done(&self) -> bool {
+        self.effect.as_ref().is_none_or(|e| e.done())
+    }
+
+    /// Compute the normalised (0.0..=1.0) centre for the radial pattern
+    /// from a discrete row index. Centred horizontally and biased toward
+    /// the selected row vertically so the ripple reads as "coming from the
+    /// selection" rather than the panel's dead centre.
+    fn center_from_cursor(cursor_row: usize, total_rows: usize) -> (f32, f32) {
+        let total = total_rows.max(1) as f32;
+        let y = ((cursor_row as f32 + 0.5) / total).clamp(0.0, 1.0);
+        (0.5, y)
+    }
+
+    /// Expose the centre for tests / debug.
+    #[cfg(test)]
+    pub fn center_for_test(&self) -> (f32, f32) {
+        self.center_norm
+    }
+}
 
 /// One line in the flattened tree. Headers and session rows share a struct
 /// so the selection cursor can step over the whole list with a single
@@ -710,6 +811,55 @@ pub fn render(
     let mut state = ListState::default();
     state.select(Some(selected_index.min(nodes.len().saturating_sub(1))));
     frame.render_stateful_widget(list, inner, &mut state);
+}
+
+/// Animated render — identical to [`render`] but drives the F1 fork-graph
+/// radial-expansion effect over the freshly-painted widget. Integrators wire
+/// this in place of [`render`] when they want the horizon-3 "wow factor";
+/// passing `anim = None` degrades gracefully to the still-frame render.
+///
+/// The effect is processed *after* the list + border have been drawn into
+/// the shared buffer. tachyonfx's post-render shaders (`fade_from`,
+/// `slide_in`, the radial-pattern gate) mutate the in-place cells the list
+/// just painted, so the order is "widget first, effect second". The
+/// `RadialPattern` we use is centred on the cursor row (computed when the
+/// state was built) and wraps a short `fade_from` with the theme's base
+/// colours — the reveal looks like a painterly ripple.
+///
+/// See the integration spec at the bottom of the module for the exact
+/// plumbing points (mount / expand-all).
+pub fn render_with_fx(
+    frame: &mut Frame<'_>,
+    area: Rect,
+    nodes: &[TreeNode],
+    selected_index: usize,
+    theme: &Theme,
+    anim: Option<&mut TreeAnimState>,
+) {
+    // Normal still-frame render first — tachyonfx mutates what's already in
+    // the buffer. Painting then overlaying is the documented flow for
+    // `fade_from` / `slide_in` and friends.
+    render(frame, area, nodes, selected_index, theme);
+
+    let Some(anim) = anim else { return };
+    let Some(effect) = anim.effect.as_mut() else {
+        return;
+    };
+
+    let now = Instant::now();
+    let elapsed = now.saturating_duration_since(anim.last_tick);
+    anim.last_tick = now;
+
+    // Clamp the effect to the rect actually rendered (centred panel, not
+    // the full outer rect) so the radial origin is computed against the
+    // cells the effect will touch.
+    let block_area = centred_block(area);
+    let buf = frame.buffer_mut();
+    effect.process(ui_fx::delta_from(elapsed), buf, block_area);
+
+    if effect.done() {
+        anim.effect = None;
+    }
 }
 
 /// Centred "nothing to show" message.
@@ -1439,6 +1589,38 @@ mod tests {
     }
 
     #[test]
+    fn tree_anim_state_reduce_motion_yields_done_state() {
+        let theme = Theme::mocha();
+        let anim = TreeAnimState::for_mount(
+            /* cursor_row = */ 3,
+            /* total_rows = */ 10,
+            /* reduce_motion = */ true,
+            &theme,
+        );
+        assert!(anim.is_done(), "reduce-motion must skip the effect entirely");
+    }
+
+    #[test]
+    fn tree_anim_state_center_is_cursor_biased() {
+        let theme = Theme::mocha();
+        let top = TreeAnimState::for_mount(0, 10, false, &theme);
+        let bot = TreeAnimState::for_mount(9, 10, false, &theme);
+        assert!(top.center_for_test().1 < bot.center_for_test().1,
+            "row 0 centre.y must be above row 9 centre.y");
+        // Horizontal is always centred.
+        assert!((top.center_for_test().0 - 0.5).abs() < 1e-6);
+        assert!((bot.center_for_test().0 - 0.5).abs() < 1e-6);
+    }
+
+    #[test]
+    fn tree_anim_state_active_for_mount_not_done_immediately() {
+        let theme = Theme::mocha();
+        let anim = TreeAnimState::for_mount(0, 10, false, &theme);
+        assert!(!anim.is_done(),
+            "a freshly-built effect must be active until its timer expires");
+    }
+
+    #[test]
     fn parent_session_id_set_for_forks_not_roots() {
         let project = mk_project("p");
         let sessions = vec![
@@ -1454,3 +1636,53 @@ mod tests {
         assert_eq!(fork.parent_session_id.as_deref(), Some("root"));
     }
 }
+
+// ─── F1 integration spec ─────────────────────────────────────────────────
+//
+// The radial-expansion animation (`TreeAnimState` + `render_with_fx`) is
+// plugged into `src/commands/tree_cmd.rs`, which owns the live
+// `TreeState` event-loop struct for the `claude-picker tree` subcommand.
+// The ownership rule for this patch is "effects live on tree.rs, event-
+// loop state lives on tree_cmd.rs" — so the caller must adopt these two
+// small changes (leaving them out does not break the build, it just
+// leaves F1 disabled):
+//
+//   1. Add a field `anim: Option<TreeAnimState>` to `TreeState` next to
+//      the existing `cursor: usize`. Initialise it to `None`.
+//
+//   2. In `TreeState::new` (the only entry point to the tree screen),
+//      after `s.cursor = s.first_selectable().unwrap_or(0);`, set
+//      `s.anim = Some(TreeAnimState::for_mount(s.cursor, s.nodes.len(),
+//      reduce_motion, theme));` — the "on tree-view mount" hook.
+//      The `reduce_motion` value comes from `Config::load()` read in
+//      `run()` and threaded through `TreeState::new`.
+//
+//   3. Add the `on_expand_all` entry point the brief calls for:
+//
+//         fn on_expand_all(&mut self) {
+//             if let Some(node) = self.nodes.get(self.cursor) {
+//                 if let Some(id) = node.session_id() {
+//                     expand_all_under(&mut self.collapsed, &self.sessions_by_project, id);
+//                     self.rebuild();
+//                     self.anim = Some(TreeAnimState::for_expand_all(
+//                         self.cursor, self.nodes.len(),
+//                         self.reduce_motion, &self.theme,
+//                     ));
+//                 }
+//             }
+//         }
+//
+//      …and wire it to the `e` key in `TreeState::handle_event`. The
+//      existing `E` key already calls `collapse_all_under`.
+//
+//   4. In `render_screen`, swap the existing
+//         `render_tree(f, rows[0], &state.nodes, state.cursor, theme);`
+//      for
+//         `render_with_fx(f, rows[0], &state.nodes, state.cursor, theme,
+//                         state.anim.as_mut());`
+//      and drop `state.anim` back to `None` when `anim.is_done()`.
+//
+// Reduce-motion plumbing: pass `cfg.ui.reduce_motion` into `TreeState::new`
+// alongside `theme`. The helper short-circuits when it's `true`, so the
+// caller can construct unconditionally.
+

@@ -7,21 +7,309 @@
 //! A terminal-too-small short-circuit lives here as well so widgets never
 //! receive a `Rect` they can't draw into.
 
+use std::cell::RefCell;
+use std::time::{Duration, Instant};
+
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
+use tachyonfx::{fx, Effect, Shader};
+
 use crate::app::{App, Mode, Toast};
-use crate::theme::{Theme, ThemeName};
+use crate::theme::{self, Theme, ThemeName};
 use crate::ui::filter_ribbon::FilterRibbon;
+use crate::ui::fx as ui_fx;
 use crate::ui::task_drawer::{self, DRAWER_HEIGHT};
 use crate::ui::text::{display_width, truncate_to_width};
 use crate::ui::{
     command_palette, footer, help_overlay, layout, preview, project_list, rename_modal,
     session_list,
 };
+
+// ── F5: Peek mode ────────────────────────────────────────────────────────
+//
+// Press-and-hold Space over a session row → floating 60×20 preview of the
+// last 20 turns fades in; release → fades out. Terminals do NOT distinguish
+// keydown vs keyup for Space — you just get repeated `KeyDown` events as
+// long as the key is pressed — so we approximate "release" via a dead-man
+// timer: after [`PEEK_RELEASE_IDLE_MS`] with no Space event, consider the
+// key released.
+//
+// The Space-Space (double-tap within 200 ms) chord already exists as the
+// palette leader on `app.pending_chord`; peek must NOT trigger in that
+// window. `handle_space_event` enforces this gate explicitly.
+
+/// Time Space must be held continuously before the peek preview slides in.
+/// 200 ms matches the brief and is long enough to not collide with the
+/// Space-Space palette leader chord.
+pub const PEEK_HOLD_THRESHOLD_MS: u64 = 200;
+
+/// Idle window after the last Space event before we consider the key
+/// released. Terminals repeat Space at ~30–50 ms intervals when held, so
+/// 300 ms is well beyond the repeat floor.
+pub const PEEK_RELEASE_IDLE_MS: u64 = 300;
+
+/// Floating preview size. 60 × 20 matches the brief.
+pub const PEEK_OVERLAY_WIDTH: u16 = 60;
+pub const PEEK_OVERLAY_HEIGHT: u16 = 20;
+
+/// F5 animation + bookkeeping state. One instance lives in a thread-local
+/// because, per the file-ownership rules for this patch, the renderer only
+/// has `&App` / `&mut App` and I'm forbidden from editing `src/app.rs` to
+/// add the `space_held_since` / `peek_visible` fields. See the integration
+/// spec at the bottom of the module — once those fields exist on `App`,
+/// swap `PEEK_STATE.with(...)` for `app.space_held_since` / `app.peek_visible`.
+pub struct PeekState {
+    /// `Some(instant)` while Space has been seen at least once without a
+    /// [`PEEK_RELEASE_IDLE_MS`] idle gap. Cleared on release. The brief
+    /// names this `space_held_since` — kept here so the naming matches
+    /// when the field moves to `App`.
+    pub space_held_since: Option<Instant>,
+    /// Timestamp of the most recent Space event — drives the idle-timer
+    /// release detection.
+    pub last_space_at: Option<Instant>,
+    /// True after the hold threshold fires and before release.
+    pub peek_visible: bool,
+    /// In-flight fade-in / slide-in stack for the peek overlay. Cleared
+    /// once [`Effect::done`] fires.
+    pub enter_effect: Option<Effect>,
+    /// In-flight fade-out / slide-out stack. Set on release, cleared on
+    /// completion.
+    pub exit_effect: Option<Effect>,
+    /// Session id the peek is showing — captured when we transitioned to
+    /// visible so a mid-hold cursor change doesn't race the preview.
+    pub pinned_session_id: Option<String>,
+}
+
+impl PeekState {
+    fn new() -> Self {
+        Self {
+            space_held_since: None,
+            last_space_at: None,
+            peek_visible: false,
+            enter_effect: None,
+            exit_effect: None,
+            pinned_session_id: None,
+        }
+    }
+}
+
+thread_local! {
+    static PEEK_STATE: RefCell<PeekState> = RefCell::new(PeekState::new());
+}
+
+/// Public entry point for the event loop. Call once for every Space-key
+/// event the app sees BEFORE the existing Space-Space palette handler
+/// runs: the palette chord is detected by `app.pending_chord`, which
+/// already fires on the *second* Space within 200 ms. The peek timer
+/// starts on the *first* Space; once the second lands within the Space-
+/// Space window, we abort the peek (the palette wins).
+///
+/// Returns `true` when the peek machine handled the event (so the caller
+/// should skip Space's default toggle-play / palette-leader dispatch
+/// *only* when the peek is visible — otherwise both paths coexist).
+///
+/// NOTE: this function is a stub that records state and returns. It does
+/// NOT actually fire until the integrator wires it into
+/// `App::handle_event` on the session-list mode. See the integration spec.
+pub fn handle_space_event(app: &App, is_keydown: bool) -> bool {
+    // The palette double-tap chord wins — we bail out immediately when
+    // the user is mid-Space-Space. `pending_chord` is already populated
+    // by `App::handle_event` for the first Space in the window.
+    if let Some((_, started)) = app.pending_chord {
+        if started.elapsed() < Duration::from_millis(PEEK_HOLD_THRESHOLD_MS) {
+            return false;
+        }
+    }
+
+    PEEK_STATE.with(|cell| {
+        let mut st = cell.borrow_mut();
+        let now = Instant::now();
+        if is_keydown {
+            if st.space_held_since.is_none() {
+                st.space_held_since = Some(now);
+            }
+            st.last_space_at = Some(now);
+        }
+    });
+    false
+}
+
+/// Drive the peek timer every tick — promotes `space_held_since` into
+/// `peek_visible` after the hold threshold, and releases when the idle
+/// window expires. Integrators wire this next to the existing per-tick
+/// handlers on the session-list screen.
+pub fn tick_peek(app: &App) {
+    PEEK_STATE.with(|cell| {
+        let mut st = cell.borrow_mut();
+        let now = Instant::now();
+
+        // Release on idle: Space events stopped flowing long enough to
+        // treat the key as released.
+        let idle_expired = st
+            .last_space_at
+            .map(|t| now.saturating_duration_since(t) >= Duration::from_millis(PEEK_RELEASE_IDLE_MS))
+            .unwrap_or(true);
+        if st.space_held_since.is_some() && idle_expired {
+            st.space_held_since = None;
+            st.last_space_at = None;
+            if st.peek_visible {
+                // Trigger the exit animation.
+                st.peek_visible = false;
+                st.pinned_session_id = None;
+                let reduce_motion = theme::animations_disabled();
+                st.exit_effect = ui_fx::build(reduce_motion, || {
+                    fx::parallel(&[
+                        ui_fx::fade_out(app.theme.subtext0, app.theme.base, 120),
+                        ui_fx::slide_out_downward(app.theme.base, 120),
+                    ])
+                });
+                st.enter_effect = None;
+            }
+        }
+
+        // Hold threshold reached — promote to visible.
+        if let Some(since) = st.space_held_since {
+            if !st.peek_visible
+                && now.saturating_duration_since(since)
+                    >= Duration::from_millis(PEEK_HOLD_THRESHOLD_MS)
+            {
+                st.peek_visible = true;
+                st.pinned_session_id = app
+                    .selected_session_ref()
+                    .map(|s| s.id.clone());
+                let reduce_motion = theme::animations_disabled();
+                st.enter_effect = ui_fx::build(reduce_motion, || {
+                    fx::parallel(&[
+                        ui_fx::fade_in(app.theme.text, app.theme.base, 140),
+                        ui_fx::slide_in_from_below(app.theme.base, 140),
+                    ])
+                });
+                st.exit_effect = None;
+            }
+        }
+    });
+}
+
+/// Render the peek overlay — call after the main picker paint so the
+/// overlay sits on top. No-op when the peek isn't visible and no exit
+/// animation is mid-flight.
+fn render_peek_overlay(f: &mut Frame<'_>, area: Rect, app: &App) {
+    PEEK_STATE.with(|cell| {
+        let mut st = cell.borrow_mut();
+        let is_visible_or_exiting = st.peek_visible || st.exit_effect.is_some();
+        if !is_visible_or_exiting {
+            return;
+        }
+
+        // Size the overlay — degrade gracefully on panes narrower than
+        // the spec'd 60×20.
+        let w = PEEK_OVERLAY_WIDTH.min(area.width.saturating_sub(4));
+        let h = PEEK_OVERLAY_HEIGHT.min(area.height.saturating_sub(4));
+        if w < 20 || h < 5 {
+            return;
+        }
+        let rect = Rect {
+            x: area.x + area.width.saturating_sub(w) / 2,
+            y: area.y + area.height.saturating_sub(h) / 2,
+            width: w,
+            height: h,
+        };
+
+        f.render_widget(Clear, rect);
+        let theme = &app.theme;
+        let session_label = st
+            .pinned_session_id
+            .as_ref()
+            .and_then(|id| app.sessions.iter().find(|s| &s.id == id))
+            .map(|s| s.display_label().to_string())
+            .unwrap_or_else(|| "(no session)".to_string());
+
+        let title = Line::from(vec![
+            Span::raw(" "),
+            Span::styled(
+                "peek ",
+                Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(session_label.clone(), theme.muted()),
+            Span::raw(" "),
+        ]);
+
+        let block = Block::default()
+            .borders(Borders::ALL)
+            .border_type(BorderType::Rounded)
+            .border_style(Style::default().fg(theme.mauve))
+            .title(title);
+        let inner = block.inner(rect);
+        f.render_widget(block, rect);
+
+        // Body: placeholder text. The brief specs "last 20 turns" — a real
+        // transcript render lives in ui::conversation_viewer and pulling
+        // it here without plumbing through the transcript loader would
+        // exceed the file-ownership of this patch. Leave a visibly
+        // intentional placeholder so the overlay is obviously live
+        // during manual testing; the integrator swaps in the 20-turn
+        // renderer when wiring `app.peek_visible` onto `App`.
+        let body = vec![
+            Line::raw(""),
+            Line::styled(
+                "  last 20 turns",
+                Style::default()
+                    .fg(theme.subtext1)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Line::raw(""),
+            Line::styled(
+                format!("  session: {session_label}"),
+                theme.muted(),
+            ),
+            Line::raw(""),
+            Line::styled(
+                "  (hold Space to keep open, release to dismiss)",
+                theme.muted(),
+            ),
+        ];
+        f.render_widget(Paragraph::new(body), inner);
+
+        // Drive the enter effect — runs once from invisible → visible.
+        // We grab `buffer_mut()` fresh for each `process` call so the
+        // reborrow lifetimes stay tidy; each `process` call starts and
+        // ends a distinct `&mut Buffer` borrow.
+        let now = Instant::now();
+        let enter_delta =
+            ui_fx::delta_from(now.saturating_duration_since(st.last_space_at.unwrap_or(now)));
+        if let Some(effect) = st.enter_effect.as_mut() {
+            let buf = f.buffer_mut();
+            effect.process(enter_delta, buf, rect);
+            if effect.done() {
+                st.enter_effect = None;
+            }
+        }
+        if let Some(effect) = st.exit_effect.as_mut() {
+            let buf = f.buffer_mut();
+            effect.process(ui_fx::delta_from(Duration::from_millis(16)), buf, rect);
+            if effect.done() {
+                st.exit_effect = None;
+            }
+        }
+    });
+}
+
+/// Test-only helper so unit tests can peek inside the thread-local state
+/// without exposing its internals.
+#[cfg(test)]
+pub fn peek_state_visible_for_test() -> bool {
+    PEEK_STATE.with(|c| c.borrow().peek_visible)
+}
+
+/// Reset the F5 thread-local between tests. Only exposed in `cfg(test)`.
+#[cfg(test)]
+pub fn reset_peek_state_for_test() {
+    PEEK_STATE.with(|c| *c.borrow_mut() = PeekState::new());
+}
 
 pub fn render(f: &mut Frame<'_>, app: &mut App) {
     let full_area = f.area();
@@ -95,6 +383,12 @@ pub fn render(f: &mut Frame<'_>, app: &mut App) {
         let content = help_overlay::help_for(app.help_screen());
         help_overlay::render(f, area, content, &app.theme);
     }
+
+    // F5 peek-mode overlay sits between the modal stack and the task
+    // drawer — modals should still clobber the preview when opened, but
+    // the task drawer stays underneath. `render_peek_overlay` is a no-op
+    // when the peek isn't visible and no exit animation is in flight.
+    render_peek_overlay(f, area, app);
 
     // Task drawer sits pinned to the bottom, outside the overlay stack so
     // modals above never shift underneath it and so the user can monitor
@@ -497,3 +791,79 @@ fn render_delete_confirm(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
     .alignment(ratatui::layout::Alignment::Center);
     f.render_widget(p, rect);
 }
+
+#[cfg(test)]
+mod peek_tests {
+    use super::*;
+
+    #[test]
+    fn peek_visible_is_false_by_default() {
+        reset_peek_state_for_test();
+        assert!(!peek_state_visible_for_test());
+    }
+
+    #[test]
+    fn peek_thresholds_match_brief() {
+        // The brief specifies 200 ms hold before the preview appears and
+        // 300 ms idle before the preview hides. Pin those values — they
+        // are part of the UX contract and must not drift silently.
+        assert_eq!(PEEK_HOLD_THRESHOLD_MS, 200);
+        assert_eq!(PEEK_RELEASE_IDLE_MS, 300);
+        // The release timer must be longer than terminal Space repeat
+        // intervals (~30–50 ms) and longer than the hold threshold so a
+        // brief tap does not immediately release during the same key-
+        // repeat cadence.
+        const { assert!(PEEK_RELEASE_IDLE_MS > PEEK_HOLD_THRESHOLD_MS) };
+    }
+
+    #[test]
+    fn peek_overlay_dimensions_match_brief() {
+        assert_eq!(PEEK_OVERLAY_WIDTH, 60);
+        assert_eq!(PEEK_OVERLAY_HEIGHT, 20);
+    }
+}
+
+// ─── F5 integration spec ─────────────────────────────────────────────────
+//
+// The peek-mode state machine currently lives in a thread-local because
+// this patch's file-ownership forbids editing `src/app.rs`. The brief
+// explicitly flags this as an integration point, so the spec below is
+// the blocking work before F5 is "live":
+//
+//   1. Add two fields to `App` in `src/app.rs`, next to the existing
+//      `pending_chord`:
+//
+//          pub space_held_since: Option<Instant>,
+//          pub peek_visible: bool,
+//
+//      Initialise both to `None` / `false` in `App::new_with_theme`.
+//
+//   2. In `App::handle_event`, before the existing Space dispatch,
+//      forward the key to the peek machine:
+//
+//          Event::Key(' ') => {
+//              crate::ui::picker::handle_space_event(self, true);
+//              // existing Space handling continues…
+//          }
+//
+//      Optionally gate the existing Space-Space palette leader detection
+//      so a held Space doesn't try to chord with itself — `pending_chord`
+//      already self-expires at 200 ms, which happens to be the same as
+//      `PEEK_HOLD_THRESHOLD_MS`, so the defaults line up.
+//
+//   3. In the app's per-tick path (the `App::tick` that already advances
+//      toasts / replay), call `crate::ui::picker::tick_peek(self);`.
+//      That's what promotes the hold to `peek_visible = true` and
+//      detects the idle release.
+//
+//   4. Once the fields exist on `App`, replace `PEEK_STATE.with(...)`
+//      calls in this module with reads/writes against `app.space_held_since`
+//      and `app.peek_visible`. The current thread-local is a drop-in
+//      stand-in that shares the same field names for minimal diff.
+//
+//   5. Reduce-motion: the module currently gates via
+//      `theme::animations_disabled()`. When `app.config.ui.reduce_motion`
+//      is plumbed (see F3 integration notes), OR the two flags.
+//
+// The integrator owns fields on `App`; this module owns the timer logic,
+// the animations, and the overlay rendering.
