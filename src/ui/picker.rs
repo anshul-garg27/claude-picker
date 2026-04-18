@@ -813,7 +813,7 @@ mod peek_tests {
         // intervals (~30–50 ms) and longer than the hold threshold so a
         // brief tap does not immediately release during the same key-
         // repeat cadence.
-        assert!(PEEK_RELEASE_IDLE_MS > PEEK_HOLD_THRESHOLD_MS);
+        const { assert!(PEEK_RELEASE_IDLE_MS > PEEK_HOLD_THRESHOLD_MS) };
     }
 
     #[test]

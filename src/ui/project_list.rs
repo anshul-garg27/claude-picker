@@ -53,11 +53,11 @@ pub struct ProjectList {
     pinned: PinnedProjects,
     /// F2/E17 thumbnail renderer. Wrapped in `RefCell` because `App` only
     /// exposes `&ProjectList` and the renderer needs `&mut self` to bump
-    /// its LRU and build per-frame `StatefulProtocol`s. The borrow is held
-    /// for one render pass so there's no risk of overlap.
+    /// its LRU. The borrow is held for one render pass so there's no risk
+    /// of overlap.
     ///
-    /// Lazily initialised on first access to keep `ProjectList::load()`
-    /// cheap (the terminal stdio probe costs a round-trip).
+    /// Lazily initialised on first access; construction is cheap now that
+    /// the renderer no longer probes stdio for a graphics protocol.
     thumbnails: RefCell<Option<ThumbnailRenderer>>,
 }
 

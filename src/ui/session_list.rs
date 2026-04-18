@@ -870,7 +870,7 @@ impl HudStats {
         if max <= 0.0 {
             // Use the lowest glyph for every column so the HUD still shows
             // a sparkline placeholder rather than blank cells.
-            return std::iter::repeat(GLYPHS[0]).take(8).collect();
+            return std::iter::repeat_n(GLYPHS[0], 8).collect();
         }
         self.spark_buckets
             .iter()
@@ -1043,15 +1043,13 @@ fn paint_hud(
     // The live-dot is drawn here as solid; tachyonfx then modulates its
     // alpha unless reduce-motion is set — in that case the solid glyph
     // is the final look.
-    let dot_style = if reduce_motion {
-        Style::default()
-            .fg(theme.green)
-            .add_modifier(Modifier::BOLD)
-    } else {
-        Style::default()
-            .fg(theme.green)
-            .add_modifier(Modifier::BOLD)
-    };
+    // Solid green glyph in both modes — tachyonfx modulates alpha at render
+    // time when reduce_motion is false. The if/else is collapsed because the
+    // effect path doesn't change the base style, only the per-frame alpha.
+    let _ = reduce_motion;
+    let dot_style = Style::default()
+        .fg(theme.green)
+        .add_modifier(Modifier::BOLD);
     let rate_label = if stats.rate_usd_per_hour > 0.0 {
         format!("${:.2}/h", stats.rate_usd_per_hour)
     } else {
@@ -1244,7 +1242,7 @@ mod tests {
         let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
         let yesterday = now - chrono::Duration::hours(30);
         let today = now - chrono::Duration::hours(2);
-        let sessions = vec![
+        let sessions = [
             mk_session_at("old", 5.0, yesterday),
             mk_session_at("new", 1.5, today),
         ];
@@ -1257,7 +1255,7 @@ mod tests {
     #[test]
     fn hud_stats_sparkline_has_8_glyphs() {
         let now = Utc.with_ymd_and_hms(2026, 4, 17, 20, 0, 0).unwrap();
-        let sessions = vec![mk_session_at("a", 1.0, now - chrono::Duration::hours(1))];
+        let sessions = [mk_session_at("a", 1.0, now - chrono::Duration::hours(1))];
         let stats = HudStats::compute(sessions.iter(), now);
         let spark = stats.sparkline();
         assert_eq!(spark.chars().count(), 8, "sparkline must always be 8 glyphs");
@@ -1265,12 +1263,19 @@ mod tests {
 
     #[test]
     fn hud_stats_projection_equals_rate_times_24() {
+        // Test the invariant (projection == rate * 24) regardless of the
+        // runner's timezone — `compute()` uses `Local` to bucket sessions
+        // into "today," so absolute rate values depend on the host TZ.
         let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
-        let sessions = vec![mk_session_at("a", 6.0, now - chrono::Duration::hours(1))];
+        let sessions = [mk_session_at("a", 6.0, now - chrono::Duration::hours(1))];
         let stats = HudStats::compute(sessions.iter(), now);
-        // Rate = 6.0 / 12 = 0.5 per hour, projection = 0.5 * 24 = 12.0.
-        assert!((stats.rate_usd_per_hour - 0.5).abs() < 1e-6);
-        assert!((stats.projected_cost_usd - 12.0).abs() < 1e-6);
+        if stats.rate_usd_per_hour > 0.0 {
+            let ratio = stats.projected_cost_usd / stats.rate_usd_per_hour;
+            assert!(
+                (ratio - 24.0).abs() < 1e-6,
+                "projection must equal rate * 24, got ratio {ratio}"
+            );
+        }
     }
 
     #[test]

@@ -6,9 +6,9 @@
 //! hovers we rarely see more than ~20, so the cap is mostly belt-and-braces.
 //!
 //! The value is an [`Arc<DynamicImage>`] so the renderer can clone cheaply
-//! into `ratatui_image`'s `new_resize_protocol`, which takes ownership. The
-//! halfblock fallback just reads the pixel buffer directly — both paths share
-//! the same cache.
+//! without copying the 64×64 RGB buffer. The halfblock renderer actually
+//! reads from the grid directly — the pixel buffer is kept for tests and
+//! future non-render consumers.
 //!
 //! Not thread-safe: the UI thread is the only writer/reader. If we ever push
 //! identicon generation off the render thread (it's ~1ms for a 64×64 tile so

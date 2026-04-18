@@ -4,25 +4,26 @@
 //! Each project basename hashes to a deterministic 4×4 symmetric pattern
 //! (top-left quadrant randomised, the rest mirrors) and is painted into a
 //! 64×64 pixel buffer using a palette derived from the active theme's
-//! accent colors. We render the buffer through `ratatui-image` when the
-//! terminal supports kitty / iTerm2 / sixel, and fall back to Unicode
-//! halfblocks otherwise so every terminal shows *something*.
+//! accent colors. We render the buffer as Unicode halfblocks so every
+//! terminal — kitty, iTerm2, tmux, ssh, CI, VHS recorders — shows the
+//! same tile. No graphics-protocol probe, no C library dependencies.
 //!
 //! # Layout of a rendered tile
 //!
 //! ```text
-//! [ 1: ░▓░▓ architex ]     ← image/halfblocks tile + slot number + basename
+//! [ 1: ░▓░▓ architex ]     ← halfblocks tile + slot number + basename
 //! ```
 //!
 //! The caller (currently `ui::project_list`) decides spacing, active-slot
 //! outlining, and narrow-terminal degradation. This module only owns:
 //!
-//! - [`ThumbnailRenderer`] — wraps the `ratatui-image` `Picker` probe plus
-//!   the LRU cache. Constructed once at startup; cheap to clone-ref.
+//! - [`ThumbnailRenderer`] — wraps the LRU cache. Constructed once at
+//!   startup; cheap to clone-ref.
 //! - [`identicon_image`] — deterministic `DynamicImage` for a basename under
-//!   a given [`IdenticonPalette`].
-//! - [`halfblock_lines`] — lines-ready-for-ratatui halfblock rendering for
-//!   the fallback path.
+//!   a given [`IdenticonPalette`]. Kept even though the halfblock path
+//!   reads from the grid directly — other call sites (tests, future
+//!   exporters) still want the RGB buffer.
+//! - [`halfblock_lines`] — lines-ready-for-ratatui halfblock rendering.
 //! - [`render_pinned_strip_with_thumbnails`] — the public entry point the
 //!   project-list screen calls.
 //!
@@ -49,13 +50,10 @@ use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Paragraph};
 use ratatui::Frame;
-use ratatui_image::picker::{Picker, ProtocolType};
-use ratatui_image::protocol::StatefulProtocol;
-use ratatui_image::StatefulImage;
 
 use crate::theme::Theme;
 use crate::ui::text::truncate_to_width;
-use crate::ui::thumbnail_cache::{ThumbKey, ThumbnailCache, CACHE_CAP};
+use crate::ui::thumbnail_cache::{ThumbKey, ThumbnailCache};
 
 /// Side length of the identicon grid in logical cells. 4×4 gives 16 cells,
 /// with 4-way symmetry that makes each identicon trivially recognisable.
@@ -80,6 +78,11 @@ pub const TILE_COLS: u16 = 4;
 
 /// Height in terminal rows one tile occupies.
 pub const TILE_ROWS: u16 = 2;
+
+/// Label budget per pinned slot: "N: " prefix + truncated basename.
+/// Shared between the strip-layout math and the per-slot renderer so
+/// the budgets stay in sync if we ever widen them.
+const LABEL_MAX: usize = 14;
 
 /// A 4×4 boolean grid with 4-way symmetry. Index as `cells[y * 4 + x]`.
 ///
@@ -190,8 +193,9 @@ pub fn identicon_grid(basename: &str) -> IdenticonGrid {
     IdenticonGrid { cells, secondary }
 }
 
-/// Paint `grid` into a 64×64 RGB image using `palette`. The output is
-/// ready to hand to `ratatui_image`'s `new_resize_protocol`.
+/// Paint `grid` into a 64×64 RGB image using `palette`. The buffer is
+/// kept around for the identicon cache so theme-consumer APIs (tests,
+/// future exporters) can read the pixel data directly.
 pub fn identicon_image(grid: &IdenticonGrid, palette: &IdenticonPalette) -> DynamicImage {
     let size = GRID * CELL_PX;
     let mut buf = RgbImage::from_pixel(size, size, palette.bg);
@@ -270,86 +274,26 @@ fn rgb_to_color(c: Rgb<u8>) -> Color {
     Color::Rgb(c.0[0], c.0[1], c.0[2])
 }
 
-/// Which rendering backend we ended up with after probing stdio. Cached
-/// for the lifetime of the renderer — reprobing on every frame would
-/// cost a terminal round-trip.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub enum Backend {
-    /// A graphics protocol the terminal acknowledges — kitty, iTerm2,
-    /// or Sixel. We let `ratatui-image` pick the specific one.
-    Graphics(ProtocolType),
-    /// Every terminal can render Unicode halfblocks, and ratatui-image's
-    /// halfblocks backend sometimes misidentifies colors on attach-in-
-    /// tmux, so we render halfblocks ourselves in the fallback path and
-    /// treat this variant as "no image protocol available".
-    Halfblocks,
-}
-
-/// Top-level renderer: owns the probed protocol backend plus the LRU of
-/// rendered images. One instance lives in `App` and is passed into
+/// Top-level renderer: owns the LRU of rendered images. One instance
+/// lives in `App` and is passed into
 /// [`render_pinned_strip_with_thumbnails`] on every project-list frame.
 ///
-/// Cheap to hold: the `Picker` stores a small amount of terminal-caps
-/// state, and the cache caps itself at [`CACHE_CAP`] entries.
+/// Cheap to hold: the cache caps itself at [`CACHE_CAP`] entries and
+/// each entry is a 64×64 RGB buffer (~12 KB).
 pub struct ThumbnailRenderer {
-    /// The `ratatui-image` picker, used to build per-tile protocol
-    /// states. `None` iff probing failed — in which case we force the
-    /// halfblocks fallback.
-    picker: Option<Picker>,
-    backend: Backend,
     cache: ThumbnailCache,
 }
 
 impl ThumbnailRenderer {
-    /// Construct a renderer by probing stdio for graphics-protocol
-    /// support. On probe failure (non-TTY stdio, terminal refuses to
-    /// reply, sandbox blocks the query) we silently fall back to
-    /// [`Backend::Halfblocks`]. This means:
-    ///
-    /// - CI / piped-to-file: halfblocks (useful for VHS recordings).
-    /// - tmux/ssh without passthrough: halfblocks.
-    /// - kitty / iTerm2 / Ghostty / Wezterm: the native protocol.
+    /// Construct a fresh renderer. Previously this probed stdio for a
+    /// graphics protocol (kitty / iTerm2 / sixel); we render every tile
+    /// as Unicode halfblocks now so no probe is needed. Halfblocks look
+    /// the same across CI, tmux, ssh, kitty, and iTerm2 — one rendering
+    /// path, no C library dependencies, no pkg-config at build time.
     pub fn new() -> Self {
-        // `from_query_stdio()` returns a Result — we map every failure
-        // mode to the halfblock fallback. Deliberately does not panic: a
-        // broken probe must never kill the UI startup.
-        let (picker, backend) = match Picker::from_query_stdio() {
-            Ok(p) => {
-                let backend = match p.protocol_type() {
-                    ProtocolType::Halfblocks => Backend::Halfblocks,
-                    other => Backend::Graphics(other),
-                };
-                // If the probe returned Halfblocks, skip the picker
-                // entirely and use our own halfblock renderer — we
-                // render with per-cell fg/bg which is richer than what
-                // ratatui-image's halfblock backend produces.
-                let picker = if matches!(backend, Backend::Halfblocks) {
-                    None
-                } else {
-                    Some(p)
-                };
-                (picker, backend)
-            }
-            Err(_) => (None, Backend::Halfblocks),
-        };
-
         Self {
-            picker,
-            backend,
             cache: ThumbnailCache::new(),
         }
-    }
-
-    /// Whether the probe found a usable image protocol. The project-list
-    /// screen uses this to choose between the image-tile path and the
-    /// halfblock-tile path on every frame (both render fine, but
-    /// halfblocks are one row shorter).
-    pub fn has_graphics(&self) -> bool {
-        matches!(self.backend, Backend::Graphics(_))
-    }
-
-    pub fn backend(&self) -> Backend {
-        self.backend
     }
 
     /// Drop the cached images. Called on theme switch; cheap but
@@ -370,17 +314,6 @@ impl ThumbnailRenderer {
         let img = Arc::new(identicon_image(&grid, palette));
         self.cache.insert(key, img.clone());
         img
-    }
-
-    /// Build a fresh `StatefulProtocol` for the given image. Must be
-    /// called each frame — `ratatui-image`'s state isn't `Clone`, so we
-    /// can't stash it in the cache. The underlying pixel buffer *is*
-    /// cached (see [`Self::image_for`]), which is where the cost lives.
-    ///
-    /// Takes `&self` because `Picker::new_resize_protocol` is immutable.
-    fn protocol_for(&self, img: &DynamicImage) -> Option<StatefulProtocol> {
-        let picker = self.picker.as_ref()?;
-        Some(picker.new_resize_protocol(img.clone()))
     }
 }
 
@@ -452,8 +385,6 @@ pub fn render_pinned_strip_with_thumbnails(
     // inside each sub-Rect. Between slots we leave a one-column gap so
     // adjacent outlines don't touch.
     const GAP: u16 = 1;
-    // Label budget per slot: "N: " prefix + truncated basename.
-    const LABEL_MAX: usize = 14;
     let slot_cols = TILE_COLS + 2 /* border */ + 1 /* space */ + LABEL_MAX as u16 + 2 /* brackets */;
 
     let mut cursor_x = area.x;
@@ -523,34 +454,22 @@ fn render_one_slot(
         height: inner.height,
     };
 
-    // Tile.
-    let img = renderer.image_for(slot.basename, palette);
-    let drew_image = if renderer.has_graphics() {
-        if let Some(mut proto) = renderer.protocol_for(&img) {
-            f.render_stateful_widget(StatefulImage::default(), tile_area, &mut proto);
-            // Surface encoding errors as "not drawn" so we can fall
-            // through to the halfblock path and keep the strip visible
-            // even when the backend hits a terminal-specific bug.
-            proto.last_encoding_result().map(|r| r.is_ok()).unwrap_or(false)
-        } else {
-            false
-        }
+    // Tile. Always halfblocks — every terminal renders the same tile.
+    // The RGB-image cache on `renderer` is still available for
+    // non-render consumers (tests, future exporters); the render path
+    // reads from the grid directly so we don't pay the 64×64 fill on
+    // frames we wouldn't use it.
+    let _ = renderer;
+    let grid = identicon_grid(slot.basename);
+    let [l1, l2] = halfblock_lines(&grid, palette);
+    // Two lines fit in the default 2-row tile height; in the 1-row
+    // degraded case we just draw the first.
+    let para = if tile_area.height >= 2 {
+        Paragraph::new(vec![l1, l2])
     } else {
-        false
+        Paragraph::new(vec![l1])
     };
-
-    if !drew_image {
-        let grid = identicon_grid(slot.basename);
-        let [l1, l2] = halfblock_lines(&grid, palette);
-        // Two lines fit in the default 2-row tile height; in the 1-row
-        // degraded case we just draw the first.
-        let para = if tile_area.height >= 2 {
-            Paragraph::new(vec![l1, l2])
-        } else {
-            Paragraph::new(vec![l1])
-        };
-        f.render_widget(para, tile_area);
-    }
+    f.render_widget(para, tile_area);
 
     // Label.
     let label = truncate_to_width(slot.basename, LABEL_MAX);

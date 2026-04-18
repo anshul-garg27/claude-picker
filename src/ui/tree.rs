@@ -80,6 +80,7 @@ pub struct TreeAnimState {
     last_tick: Instant,
     /// Normalised centre of the radial pattern — retained for debugging
     /// / integration tests; the effect itself is already configured.
+    #[allow(dead_code)]
     center_norm: (f32, f32),
 }
 
@@ -125,7 +126,7 @@ impl TreeAnimState {
     /// True once the underlying effect has completed. Also returns `true`
     /// in the reduce-motion case — there's nothing to wait for.
     pub fn is_done(&self) -> bool {
-        self.effect.as_ref().map_or(true, |e| e.done())
+        self.effect.as_ref().is_none_or(|e| e.done())
     }
 
     /// Compute the normalised (0.0..=1.0) centre for the radial pattern

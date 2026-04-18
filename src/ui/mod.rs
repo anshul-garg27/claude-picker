@@ -36,8 +36,8 @@ pub mod task_drawer;
 pub mod text;
 // F2/E17 project thumbnails: identicon renderer + in-memory LRU cache. The
 // cache lives next to the renderer so `project_list` only needs one import
-// path. The renderer degrades gracefully (image protocol → halfblocks → none)
-// based on `ratatui_image`'s stdio probe.
+// path. The renderer emits Unicode halfblocks on every terminal — no
+// graphics-protocol probe, no C library dependencies.
 pub mod thumbnail;
 pub mod thumbnail_cache;
 pub mod tree;
