@@ -40,11 +40,18 @@ use crate::data::Session;
 use crate::theme::{self, Theme};
 use crate::ui::fx as ui_fx;
 use crate::ui::model_pill;
-use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
+use crate::ui::text::{display_width, truncate_to_width};
 
 /// Width of the name column within a row. The row renderer appends cost and
 /// age after this, so keep the header/list aligned by anchoring off of it.
 const NAME_COL_WIDTH: usize = 28;
+
+/// Max display cols for the last-prompt teaser appended after the pills when
+/// there's room. Sized against the brief's 120-col mockup: name (28) + pill
+/// pack (~18) + teaser + cost (8) + age (6) ≈ 120 leaves ~60 cols for the
+/// teaser at the widest useful pane. We cap at 52 so shorter panes don't push
+/// cost/age off-screen.
+const TEASER_MAX_COLS: usize = 52;
 
 /// Render the entire left pane into `area`.
 ///
@@ -232,13 +239,15 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
 fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
-    // Empty states — different copy depending on cause.
+    // Empty states — different copy depending on cause. Each variant carries
+    // a large glyph, a primary subtext1-bold message, and a dim italic
+    // secondary hint (see the `empty_copy_*` helpers below).
     if app.sessions.is_empty() {
-        empty_state(f, area, theme, empty_copy_no_sessions());
+        empty_state(f, area, theme, empty_copy_no_sessions(theme));
         return;
     }
     if app.filtered_indices.is_empty() {
-        empty_state(f, area, theme, empty_copy_no_matches(&app.filter));
+        empty_state(f, area, theme, empty_copy_no_matches(&app.filter, theme));
         return;
     }
 
@@ -372,7 +381,10 @@ fn render_row<'a>(
             .fg(theme.subtext0)
             .add_modifier(Modifier::ITALIC)
     };
+    // Post-fade primary name style. Fed into `build_name_zone` so the
+    // primary label visually decays in sync with the rest of the row.
     let name_style = maybe_fade(name_style_base, theme, age, apply_fade);
+    let _ = name_style_base; // base style is only referenced via `name_style`
 
     let pointer_style_base = if multi {
         // Tick mark styled peach so it reads as "you picked me".
@@ -416,8 +428,21 @@ fn render_row<'a>(
     // column because .chars().count() undercounted them. Use the unicode
     // helpers so the name always occupies exactly NAME_COL_WIDTH terminal
     // cells, pad or truncate.
-    let name = pad_to_width(s.display_label(), NAME_COL_WIDTH);
-    let name_span = Span::styled(name, name_style);
+    //
+    // Typographic hierarchy: the primary label (either the user-set `name`,
+    // the last-prompt, or the auto-name) gets full theme.text bold. If the
+    // session falls back to the dim "auto-name" we tint the whole block
+    // `subtext0 italic`. When BOTH a `name` and an `auto_name` are present
+    // and differ, a tail `· auto-name` suffix is appended in a dimmer
+    // subtext1 so the hierarchy reads at a glance.
+    let (name_spans, name_width) = build_name_zone(s, name_style, apply_fade, age, theme);
+    // Pad-to-width: the name block may be shorter than NAME_COL_WIDTH, in
+    // which case we append trailing spaces so the following pills line up.
+    let mut spans_name: Vec<Span<'a>> = name_spans;
+    if name_width < NAME_COL_WIDTH {
+        // Pad style picks up the row bg (selection stripe) below, if any.
+        spans_name.push(Span::raw(" ".repeat(NAME_COL_WIDTH - name_width)));
+    }
 
     // Chip-style model pill. Fade fg only when unselected — we don't want a
     // year-old session's pill to be indistinguishable from the border.
@@ -429,13 +454,18 @@ fn render_row<'a>(
     }
 
     // Optional permission-mode pill — only drawn for non-default modes.
-    let perm_pill = s
+    // Upgraded to a reverse-video "danger badge": `▌PLAN▐` style, rails in
+    // the mode's accent colour with bold fg in white (crust → readable in
+    // both light and dark themes via theme.pill_text_color). For non-default
+    // modes this is the loudest element on the row on purpose — the user
+    // needs to see at a glance that plan/bypass/accept is active.
+    let perm_badge = s
         .permission_mode
-        .and_then(|m| model_pill::permission_pill(m, theme));
+        .and_then(|m| permission_badge(m, theme, apply_fade, age));
 
-    // Subagent marker — tiny "◈ N" glyph when the session spawned
-    // sub-agents, otherwise nothing. Using ASCII to stay brand-aligned
-    // (no emojis anywhere in the UI).
+    // Subagent counter as a circled-N glyph (U+2460..U+2468 → 1..9, 0 for
+    // more). Replaces the older `◈ N` pair; the circled glyph reads as a
+    // single self-contained signal without needing the diamond marker.
     let subagent_marker = if s.subagent_count > 0 {
         let base = if selected {
             theme.selected_row()
@@ -443,17 +473,18 @@ fn render_row<'a>(
             Style::default().fg(theme.teal).add_modifier(Modifier::BOLD)
         };
         Some(Span::styled(
-            format!(" ◈{} ", s.subagent_count),
+            format!(" {} ", circled_digit(s.subagent_count)),
             maybe_fade(base, theme, age, apply_fade),
         ))
     } else {
         None
     };
 
-    let cost = format_cost(s.total_cost_usd);
-    let cost_style_base = cost_style(s.total_cost_usd, theme, selected);
-    let cost_style = maybe_fade(cost_style_base, theme, age, apply_fade);
-    let cost_span = Span::styled(format!("{cost:>7}"), cost_style);
+    // Cost chip — tinted capsule `▌$12.40▐` using cost-severity tokens. The
+    // rails + interior bg come from a `surface0` bed so the chip visually
+    // floats; the fg uses theme.cost_* tokens when they exist, else falls
+    // through to the legacy cost_color ramp.
+    let cost_chip = cost_chip_span(s.total_cost_usd, theme, selected, apply_fade, age);
 
     let age_label = relative_time(s.last_timestamp);
     let age_span = Span::styled(
@@ -468,14 +499,14 @@ fn render_row<'a>(
         },
     );
 
-    let mut spans = vec![
-        Span::styled(format!(" {pointer} "), pointer_style),
-        pin,
-        name_span,
-        Span::raw(" "),
-        pill,
-    ];
-    if let Some(p) = perm_pill {
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(16);
+    spans.push(Span::styled(format!(" {pointer} "), pointer_style));
+    spans.push(pin);
+    // Hierarchical name zone (title + optional auto-name suffix).
+    spans.extend(spans_name);
+    spans.push(Span::raw(" "));
+    spans.push(pill);
+    if let Some(p) = perm_badge {
         spans.push(Span::raw(" "));
         spans.push(p);
     }
@@ -497,7 +528,17 @@ fn render_row<'a>(
         spans.push(Span::styled("\u{258D}", bar_style));
         spans.push(Span::raw(" "));
     }
-    spans.push(cost_span);
+
+    // Last-prompt teaser — italic subtext1 wedge between the pill pack / bar
+    // and the cost chip. Tells the user what this session was *doing* at a
+    // glance without opening the preview. Dropped when there's no distinct
+    // `last_prompt` or the pane is too narrow to leave room for cost/age.
+    if let Some(t) = build_teaser_span(s, theme, selected, apply_fade, age, area_width) {
+        spans.push(t);
+        spans.push(Span::raw("  "));
+    }
+
+    spans.push(cost_chip);
     spans.push(age_span);
 
     // If selected, stripe the row background by injecting a surface0 span
@@ -552,6 +593,225 @@ fn render_row<'a>(
     }
 
     Line::from(spans)
+}
+
+/// Build the "name zone" for a row: primary label in `primary_style`, an
+/// optional dim `· auto-name` suffix in subtext1. Returns the spans plus the
+/// total display width used so the caller can pad to [`NAME_COL_WIDTH`] for
+/// column-true pill alignment.
+///
+/// Typographic hierarchy goals:
+///   1. Primary title reads loudest (caller-chosen style — text bold for
+///      named sessions, subtext0 italic for fallback auto-names).
+///   2. If we have BOTH a user-set name and a distinct auto-name, append
+///      the auto-name in subtext1 (one step dimmer than the primary). This
+///      gives the row a miniature "title · subtitle" hierarchy.
+fn build_name_zone<'a>(
+    s: &'a Session,
+    primary_style: Style,
+    apply_fade: bool,
+    age: Duration,
+    theme: &Theme,
+) -> (Vec<Span<'a>>, usize) {
+    let col_width = NAME_COL_WIDTH;
+    let primary = s.display_label();
+    let (primary_text, primary_w) = if display_width(primary) > col_width {
+        let truncated = truncate_to_width(primary, col_width);
+        let w = display_width(&truncated);
+        (Cow::Owned(truncated), w)
+    } else {
+        (Cow::Borrowed(primary), display_width(primary))
+    };
+
+    let mut spans: Vec<Span<'a>> = Vec::with_capacity(3);
+    match primary_text {
+        Cow::Borrowed(b) => spans.push(Span::styled(b, primary_style)),
+        Cow::Owned(o) => spans.push(Span::styled(o, primary_style)),
+    }
+
+    let mut used = primary_w;
+    // Only append the auto-name suffix when the user explicitly set a
+    // `name` AND we have a distinct auto-name. The separator eats 3 cols so
+    // we need at least that much room plus a few chars of the suffix to
+    // be worth printing.
+    if let (Some(name), Some(auto)) = (s.name.as_deref(), s.auto_name.as_deref()) {
+        if !name.is_empty() && !auto.is_empty() && name != auto && used + 4 < col_width {
+            let budget = col_width.saturating_sub(used + 3);
+            if budget >= 3 {
+                let suffix_text = truncate_to_width(auto, budget);
+                let suffix_w = display_width(&suffix_text);
+                let suffix_style_base = Style::default().fg(theme.subtext1);
+                let suffix_style = maybe_fade(suffix_style_base, theme, age, apply_fade);
+                spans.push(Span::styled(" · ".to_string(), theme.dim()));
+                spans.push(Span::styled(suffix_text, suffix_style));
+                used += 3 + suffix_w;
+            }
+        }
+    }
+
+    (spans, used)
+}
+
+/// Permission-mode badge — reverse-video `▌LABEL▐` in the mode's accent bg
+/// with pill-text fg. Returns `None` for `PermissionMode::Default`.
+///
+/// The rails share the same bg as the interior so the badge reads as a solid
+/// slug, matching the brief's "reverse-video danger badge" language. Using
+/// [`theme::pill_text_color`] keeps the label legible on every palette
+/// (dark themes use `crust`; light themes keep the same darkest shade).
+fn permission_badge<'a>(
+    mode: crate::data::PermissionMode,
+    theme: &Theme,
+    apply_fade: bool,
+    age: Duration,
+) -> Option<Span<'a>> {
+    use crate::data::PermissionMode;
+    let label = mode.pill_label()?;
+    let bg = match mode {
+        PermissionMode::Plan => theme.sky,
+        PermissionMode::BypassPermissions => theme.red,
+        PermissionMode::AcceptEdits => theme.yellow,
+        PermissionMode::DontAsk => theme.pink,
+        PermissionMode::Auto => theme.lavender,
+        PermissionMode::Other(_) => theme.mauve,
+        PermissionMode::Default => return None,
+    };
+    let fg = theme::pill_text_color(theme);
+    let mut style = Style::default()
+        .bg(bg)
+        .fg(fg)
+        .add_modifier(Modifier::BOLD);
+    if apply_fade {
+        if let Some(c) = style.fg {
+            style.fg = Some(theme::age_fade(theme, c, age));
+        }
+        if let Some(c) = style.bg {
+            style.bg = Some(theme::age_fade(theme, c, age));
+        }
+    }
+    Some(Span::styled(format!("\u{258C}{label}\u{2590}"), style))
+}
+
+/// Render the subagent count as a circled glyph (U+2460..U+2468 = 1..9).
+/// Counts of 10+ collapse to `⑨+` so the glyph stays a single pre-attentive
+/// tag. Chosen over the old `◈ N` pair because the circled digit reads as
+/// one self-contained signal.
+fn circled_digit(n: u32) -> String {
+    if n == 0 {
+        return String::new();
+    }
+    if n >= 10 {
+        return "\u{2468}+".to_string();
+    }
+    let codepoint = 0x2460u32 + (n - 1);
+    char::from_u32(codepoint).unwrap_or('?').to_string()
+}
+
+/// Cost-severity foreground colour for a running session total.
+///
+/// Uses the theme's dedicated `cost_*` tokens so every screen agrees about
+/// "cheap / medium / hot" spend. Thresholds mirror the stats widget so the
+/// session list and the stats page never contradict each other. Zero-cost
+/// rows fall back to `subtext0` so an unpriced row still occupies the column
+/// visually but reads as "not applicable" rather than "cheap".
+fn cost_severity_fg(cost_usd: f64, theme: &Theme) -> ratatui::style::Color {
+    if cost_usd <= 0.0 {
+        theme.subtext0
+    } else if cost_usd < 1.0 {
+        theme.cost_green
+    } else if cost_usd < 10.0 {
+        theme.cost_yellow
+    } else if cost_usd < 50.0 {
+        theme.cost_amber
+    } else if cost_usd < 100.0 {
+        theme.cost_red
+    } else {
+        theme.cost_critical
+    }
+}
+
+/// Cost chip: `▌$12.40▐` capsule in cost-severity colour over `surface0`.
+///
+/// Zero-cost rows render the full chip with an em-dash placeholder so the
+/// column stays visually anchored — the eye tracks the cost column down the
+/// list and never sees a hole where the chip would be.
+fn cost_chip_span<'a>(
+    cost_usd: f64,
+    theme: &Theme,
+    selected: bool,
+    apply_fade: bool,
+    age: Duration,
+) -> Span<'a> {
+    let label = if cost_usd <= 0.0 {
+        " — ".to_string()
+    } else if cost_usd < 0.01 {
+        "<$0.01".to_string()
+    } else {
+        format!("${cost_usd:.2}")
+    };
+    let fg = cost_severity_fg(cost_usd, theme);
+    let mut style = Style::default()
+        .fg(fg)
+        .bg(theme.surface0)
+        .add_modifier(Modifier::BOLD);
+    let _ = selected; // selected row stripe is applied later by the outer pass
+    if apply_fade {
+        if let Some(c) = style.fg {
+            style.fg = Some(theme::age_fade(theme, c, age));
+        }
+    }
+    Span::styled(format!("\u{258C}{label}\u{2590}"), style)
+}
+
+/// Italic last-prompt teaser wedged between the pill pack and the cost chip
+/// on wide panes. Returns `None` on narrow panes, empty prompts, or when the
+/// teaser would simply echo the primary label.
+fn build_teaser_span<'a>(
+    s: &'a Session,
+    theme: &Theme,
+    selected: bool,
+    apply_fade: bool,
+    age: Duration,
+    area_width: usize,
+) -> Option<Span<'a>> {
+    if area_width < 90 {
+        return None;
+    }
+    let prompt = s.last_prompt.as_deref()?;
+    // Skip when the teaser would echo the primary label (no user-set name
+    // and last-prompt is already the display label).
+    if s.name.is_none() && prompt == s.display_label() {
+        return None;
+    }
+    // Reserve ~30 cols for the cost chip, age, and gutter slack on the
+    // right. Cap the teaser at TEASER_MAX_COLS so wide panes don't drown
+    // out the name/pill zones.
+    let reserved: usize = 32;
+    let available = area_width.saturating_sub(reserved).min(TEASER_MAX_COLS);
+    if available < 10 {
+        return None;
+    }
+    let flat: String = prompt
+        .chars()
+        .map(|c| if c == '\n' || c == '\r' { ' ' } else { c })
+        .collect();
+    let trimmed = flat.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    let body = truncate_to_width(trimmed, available);
+    let quoted = format!("\u{201C}{body}\u{201D}");
+    let mut style = Style::default()
+        .fg(theme.subtext1)
+        .add_modifier(Modifier::ITALIC);
+    if selected {
+        style = style.bg(theme.surface0);
+    } else if apply_fade {
+        if let Some(c) = style.fg {
+            style.fg = Some(theme::age_fade(theme, c, age));
+        }
+    }
+    Some(Span::styled(quoted, style))
 }
 
 /// Colour for the cost-burn 1-cell bar (E6 fallback variant).
@@ -627,6 +887,11 @@ pub fn truncate_with_ellipsis(s: &str, max_cols: usize) -> Cow<'_, str> {
 
 /// Format a USD cost the way the Python picker does:
 /// <$0.01 → dim, <$1 → two-decimal, ≥$1 → two-decimal with prefix.
+///
+/// Retained for the existing unit tests; the live row renderer now formats
+/// cost inline inside [`cost_chip_span`] so this helper is no longer on the
+/// hot path.
+#[allow(dead_code)]
 fn format_cost(cost: f64) -> String {
     if cost <= 0.0 {
         return String::new();
@@ -639,9 +904,10 @@ fn format_cost(cost: f64) -> String {
 
 /// Heat-mapped coloring for the cost column.
 ///
-/// Zero-cost rows stay dim (they're still "cheap"); everything else rides the
-/// shared `theme::cost_color` ramp so the session-list, tree, preview, and
-/// conversation-viewer all agree about "hot" vs "cool" money.
+/// Superseded by [`cost_chip_span`] which renders the cost as a capsule
+/// rather than a flat number. Retained at `#[allow(dead_code)]` in case
+/// external modules want the old flat-number treatment.
+#[allow(dead_code)]
 fn cost_style(cost: f64, theme: &Theme, selected: bool) -> Style {
     let fg = if cost <= 0.0 {
         theme.subtext0
@@ -1140,19 +1406,52 @@ fn empty_state(f: &mut Frame<'_>, area: Rect, theme: &Theme, lines: Vec<Line<'_>
     f.render_widget(p, area);
 }
 
-fn empty_copy_no_sessions<'a>() -> Vec<Line<'a>> {
+fn empty_copy_no_sessions<'a>(theme: &Theme) -> Vec<Line<'a>> {
+    let glyph_style = Style::default()
+        .fg(theme.surface2)
+        .add_modifier(Modifier::BOLD);
+    let primary = Style::default()
+        .fg(theme.subtext1)
+        .add_modifier(Modifier::BOLD);
+    let secondary = Style::default()
+        .fg(theme.overlay0)
+        .add_modifier(Modifier::ITALIC);
     vec![
-        Line::raw("No Claude Code sessions found."),
         Line::raw(""),
-        Line::raw("Run `claude` somewhere to create one."),
+        Line::from(Span::styled("\u{25EF}", glyph_style)),
+        Line::raw(""),
+        Line::from(Span::styled("no sessions yet", primary)),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "start a claude session to see it here",
+            secondary,
+        )),
     ]
 }
 
-fn empty_copy_no_matches(filter: &str) -> Vec<Line<'_>> {
+fn empty_copy_no_matches<'a>(filter: &str, theme: &Theme) -> Vec<Line<'a>> {
+    let glyph_style = Style::default()
+        .fg(theme.surface2)
+        .add_modifier(Modifier::BOLD);
+    let primary = Style::default()
+        .fg(theme.subtext1)
+        .add_modifier(Modifier::BOLD);
+    let secondary = Style::default()
+        .fg(theme.overlay0)
+        .add_modifier(Modifier::ITALIC);
     vec![
-        Line::raw(format!("No matches for \"{filter}\".")),
         Line::raw(""),
-        Line::raw("Press Esc to clear the filter."),
+        Line::from(Span::styled("\u{25EF}", glyph_style)),
+        Line::raw(""),
+        Line::from(Span::styled(
+            format!("no matches for \u{201C}{filter}\u{201D}"),
+            primary,
+        )),
+        Line::raw(""),
+        Line::from(Span::styled(
+            "press Esc to clear the filter",
+            secondary,
+        )),
     ]
 }
 
@@ -1301,6 +1600,50 @@ mod tests {
         assert_eq!(cost_burn_color(9.99, &t), t.yellow);
         assert_eq!(cost_burn_color(10.0, &t), t.red);
         assert_eq!(cost_burn_color(99.0, &t), t.red);
+    }
+
+    #[test]
+    fn circled_digit_maps_1_through_9() {
+        assert_eq!(circled_digit(1), "\u{2460}"); // ①
+        assert_eq!(circled_digit(5), "\u{2464}"); // ⑤
+        assert_eq!(circled_digit(9), "\u{2468}"); // ⑨
+    }
+
+    #[test]
+    fn circled_digit_clips_double_digits() {
+        assert_eq!(circled_digit(10), "\u{2468}+");
+        assert_eq!(circled_digit(99), "\u{2468}+");
+    }
+
+    #[test]
+    fn circled_digit_zero_is_empty() {
+        assert_eq!(circled_digit(0), "");
+    }
+
+    #[test]
+    fn cost_severity_uses_cost_tokens_not_generic_accents() {
+        // The severity helper MUST read from the theme's dedicated cost_*
+        // tokens so theme overrides (CB-safe, cold palette) land correctly.
+        let t = Theme::mocha();
+        assert_eq!(cost_severity_fg(0.0, &t), t.subtext0);
+        assert_eq!(cost_severity_fg(0.5, &t), t.cost_green);
+        assert_eq!(cost_severity_fg(5.0, &t), t.cost_yellow);
+        assert_eq!(cost_severity_fg(20.0, &t), t.cost_amber);
+        assert_eq!(cost_severity_fg(75.0, &t), t.cost_red);
+        assert_eq!(cost_severity_fg(150.0, &t), t.cost_critical);
+    }
+
+    #[test]
+    fn cost_chip_always_wraps_in_half_blocks() {
+        // The cost chip MUST keep the `▌…▐` rail shape even for zero-cost
+        // rows so the column stays visually anchored across the list.
+        let t = Theme::mocha();
+        let z = cost_chip_span(0.0, &t, false, false, Duration::ZERO);
+        assert!(z.content.starts_with('\u{258C}'));
+        assert!(z.content.ends_with('\u{2590}'));
+        let hot = cost_chip_span(123.45, &t, false, false, Duration::ZERO);
+        assert!(hot.content.contains("$123.45"));
+        assert_eq!(hot.style.fg, Some(t.cost_critical));
     }
 
     #[test]

@@ -301,29 +301,24 @@ fn render_custom_status(
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
 
-    let rule_width = area.width.saturating_sub(2) as usize;
-    let rule = "─".repeat(rule_width);
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(rule, theme.dim()),
-        ])),
+        Paragraph::new(section_divider_line("preview-cmd", area.width, theme)),
         chunks[0],
     );
 
     let (label, label_style) = match output.kind {
         PreviewKind::Ok => (
-            "preview-cmd",
+            "ok",
             Style::default()
                 .fg(theme.green)
                 .add_modifier(Modifier::BOLD),
         ),
         PreviewKind::Empty => (
-            "preview-cmd (empty — showing default)",
+            "empty \u{2014} showing default",
             Style::default().fg(theme.yellow),
         ),
         PreviewKind::Failed => (
-            "preview-cmd failed",
+            "failed",
             Style::default().fg(theme.red).add_modifier(Modifier::BOLD),
         ),
     };
@@ -341,14 +336,29 @@ fn render_custom_status(
 }
 
 fn placeholder(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
-    let p = Paragraph::new(vec![
-        Line::raw(""),
-        Line::raw(""),
-        Line::styled("no session selected", theme.muted()),
-        Line::raw(""),
-        Line::styled("type to filter, or clear with Esc", theme.dim()),
-    ])
-    .alignment(ratatui::layout::Alignment::Center);
+    let glyph_style = Style::default()
+        .fg(theme.surface2)
+        .add_modifier(Modifier::BOLD);
+    let primary = Style::default()
+        .fg(theme.subtext1)
+        .add_modifier(Modifier::BOLD);
+    let secondary = Style::default()
+        .fg(theme.overlay0)
+        .add_modifier(Modifier::ITALIC);
+    let pad = area.height.saturating_sub(6) / 2;
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(pad as usize + 6);
+    for _ in 0..pad {
+        lines.push(Line::raw(""));
+    }
+    lines.push(Line::from(Span::styled("\u{25EF}", glyph_style)));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled("no session selected", primary)));
+    lines.push(Line::raw(""));
+    lines.push(Line::from(Span::styled(
+        "type to filter, or clear with Esc",
+        secondary,
+    )));
+    let p = Paragraph::new(lines).alignment(ratatui::layout::Alignment::Center);
     f.render_widget(p, area);
 }
 
@@ -356,32 +366,40 @@ fn render_header(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1), // header row
+            Constraint::Length(1), // header row: project + short id
             Constraint::Length(1), // title
-            Constraint::Length(1), // meta
-            Constraint::Length(1), // rule
+            Constraint::Length(1), // meta key-value row
+            Constraint::Length(1), // meta section divider
         ])
         .split(area);
 
-    // Header: "PREVIEW" left, short id right. We split the row so the left
-    // and right paragraphs can align independently — trying to right-align
-    // a tail span inside a single Line isn't supported cleanly.
+    // Header: project basename (peach bold) + mauve-bold short id right.
+    // Using the project basename rather than the flat "PREVIEW" caption
+    // grounds the preview in *which thing* the user is inspecting.
     let row = Layout::default()
         .direction(Direction::Horizontal)
-        .constraints([Constraint::Min(1), Constraint::Length(10)])
+        .constraints([Constraint::Min(1), Constraint::Length(12)])
         .split(chunks[0]);
+
+    let project_name: String = session
+        .project_dir
+        .file_name()
+        .and_then(|s| s.to_str())
+        .unwrap_or("preview")
+        .to_string();
     f.render_widget(
         Paragraph::new(Line::from(vec![
             Span::raw(" "),
             Span::styled(
-                "PREVIEW",
+                project_name,
                 Style::default()
-                    .fg(theme.overlay0)
+                    .fg(theme.peach)
                     .add_modifier(Modifier::BOLD),
             ),
         ])),
         row[0],
     );
+
     // Session ids are ASCII UUIDs so `.chars().take(8)` happens to be safe
     // here; keep it, but route the length through a byte slice with a guard
     // in case a test fixture ever injects a non-ASCII id.
@@ -392,15 +410,20 @@ fn render_header(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
         .collect::<String>()
         .to_uppercase();
     f.render_widget(
-        Paragraph::new(Line::from(Span::styled(short_id, theme.muted())))
-            .alignment(ratatui::layout::Alignment::Right),
+        Paragraph::new(Line::from(Span::styled(
+            short_id,
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        )))
+        .alignment(ratatui::layout::Alignment::Right),
         row[1],
     );
 
-    // Title.
+    // Title line — primary label in the appropriate weight.
     let title_style = if session.name.is_some() {
         Style::default()
-            .fg(theme.green)
+            .fg(theme.text)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default()
@@ -413,32 +436,67 @@ fn render_header(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
     ]);
     f.render_widget(Paragraph::new(title_line), chunks[1]);
 
-    // Meta.
+    // Meta row: key-value pairs with keys in subtext1 and values in
+    // theme.text bold. Reads as a "spec sheet" for the session.
     let meta = meta_line(session, theme);
     f.render_widget(Paragraph::new(meta), chunks[2]);
 
-    // Rule.
-    let rule_width = area.width.saturating_sub(2) as usize;
-    let rule = "─".repeat(rule_width);
+    // Section divider: `─── meta ───` — tags what the header block was.
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(rule, theme.dim()),
-        ])),
+        Paragraph::new(section_divider_line(
+            "last message",
+            area.width,
+            theme,
+        )),
         chunks[3],
     );
 }
 
+/// Build a `─── label ───` divider line — dim rules flanking a subtle label
+/// so the preview pane reads as a stack of titled sections rather than a
+/// flat stream of text.
+fn section_divider_line<'a>(label: &str, pane_width: u16, theme: &Theme) -> Line<'a> {
+    // Total width budget: pane width minus the 1-col leading space.
+    let budget = pane_width.saturating_sub(2) as usize;
+    let label_w = display_width(label) + 2; // padding around label
+    let total_rule = budget.saturating_sub(label_w);
+    let left_rule = total_rule / 2;
+    let right_rule = total_rule - left_rule;
+    let left = "\u{2500}".repeat(left_rule.max(3));
+    let right = "\u{2500}".repeat(right_rule.max(3));
+    Line::from(vec![
+        Span::raw(" "),
+        Span::styled(left, theme.dim()),
+        Span::raw(" "),
+        Span::styled(
+            label.to_string(),
+            Style::default()
+                .fg(theme.subtext1)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
+        Span::styled(right, theme.dim()),
+    ])
+}
+
+/// Build the meta row as a compact key-value sheet:
+/// `created MMM DD HH:MM · msgs 128 · first Nm ago`. Keys in subtext1, values
+/// in theme.text bold, separators in theme.dim.
 fn meta_line<'a>(session: &'a Session, theme: &Theme) -> Line<'a> {
     let created = session
         .first_timestamp
         .map(|ts| ts.with_timezone(&Local).format("%b %d %H:%M").to_string())
-        .unwrap_or_else(|| "—".to_string());
+        .unwrap_or_else(|| "\u{2014}".to_string());
+    let key_style = Style::default().fg(theme.subtext1);
+    let val_style = Style::default().fg(theme.text).add_modifier(Modifier::BOLD);
+    let sep = Span::styled("  \u{00B7}  ", theme.dim());
     Line::from(vec![
         Span::raw(" "),
-        Span::styled(format!("created {created}"), theme.muted()),
-        Span::styled("  ·  ", theme.dim()),
-        Span::styled(format!("{} msgs", session.message_count), theme.muted()),
+        Span::styled("created ", key_style),
+        Span::styled(created, val_style),
+        sep.clone(),
+        Span::styled("msgs ", key_style),
+        Span::styled(session.message_count.to_string(), val_style),
     ])
 }
 
@@ -487,13 +545,10 @@ fn render_footer(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme
         .constraints([Constraint::Length(1), Constraint::Length(1)])
         .split(area);
 
-    let rule_width = area.width.saturating_sub(2) as usize;
-    let rule = "─".repeat(rule_width);
+    // Labeled section divider: `─── stats ───` so the footer row reads as a
+    // distinct spec-sheet block rather than a tail caption.
     f.render_widget(
-        Paragraph::new(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(rule, theme.dim()),
-        ])),
+        Paragraph::new(section_divider_line("stats", area.width, theme)),
         chunks[0],
     );
 
