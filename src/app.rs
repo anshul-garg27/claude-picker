@@ -663,6 +663,14 @@ impl App {
             Mode::ProjectList => vec![true; total],
         };
 
+        // Safety valve: if the ribbon filtered out every session even though
+        // the list isn't empty, show them anyway. Path encoding is lossy on
+        // Claude Code's side (/ and _ both map to -), so the auto-detected
+        // REPO predicate can mismatch a decoded project path and produce
+        // "0/N" with every row hidden — which looks broken.
+        let all_hidden = matches!(self.mode, Mode::SessionList) && total > 0 && !ribbon_mask.iter().any(|&v| v);
+        let ribbon_mask = if all_hidden { vec![true; total] } else { ribbon_mask };
+
         if self.filter.is_empty() {
             self.filtered_indices
                 .extend((0..total).filter(|&i| ribbon_mask.get(i).copied().unwrap_or(true)));
@@ -1883,6 +1891,12 @@ impl App {
                 self.selected_session = Some(0);
                 self.mode = Mode::SessionList;
                 self.filter.clear();
+                // Repoint the ribbon's REPO chip at the project the user just
+                // drilled into. Without this, REPO stays locked to whatever
+                // project auto-activation picked at launch — so navigating
+                // anywhere else produces "0/N" with every session filtered out.
+                self.filter_ribbon
+                    .set_current_repo(Some(project.path.to_string_lossy().into_owned()));
                 self.rebuild_haystacks();
                 self.apply_filter();
             }
