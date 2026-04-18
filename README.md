@@ -1,272 +1,262 @@
+<h1 align="center">claude-picker</h1>
+
 <p align="center">
-  <h1 align="center">claude-picker</h1>
-  <p align="center">
-    <strong>Terminal session manager for Claude Code — written in Rust.</strong><br>
-    Twelve screens, one binary. Pivot sessions by file, scrub them like a timeline, one-key AI summaries, and a cost-optimization audit you won't find in any other Claude TUI.
-  </p>
-  <p align="center">
-    <a href="https://crates.io/crates/claude-picker"><img src="https://img.shields.io/crates/v/claude-picker.svg" alt="Crates.io"></a>
-    <a href="https://github.com/anshul-garg27/claude-picker/releases"><img src="https://img.shields.io/github/v/release/anshul-garg27/claude-picker.svg" alt="Release"></a>
-    <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/License-MIT-yellow.svg" alt="License: MIT"></a>
-  </p>
-  <p align="center">
-    <a href="#install">Install</a> &bull;
-    <a href="#features">Features</a> &bull;
-    <a href="#commands">Commands</a> &bull;
-    <a href="#keyboard">Keyboard</a> &bull;
-    <a href="#themes">Themes</a> &bull;
-    <a href="#configuration">Config</a> &bull;
-    <a href="#how-it-works">How it works</a> &bull;
-    <a href="#classic-mode">Classic mode</a>
-  </p>
+  <strong>A terminal session manager for Claude Code.</strong><br>
+  Thirteen screens. Ten themes. One Rust binary. Zero runtime dependencies.
 </p>
 
-![claude-picker demo](assets/gifs/hero.gif)
+<p align="center">
+  <a href="https://crates.io/crates/claude-picker"><img src="https://img.shields.io/crates/v/claude-picker.svg?style=flat-square" alt="crates.io"></a>
+  <a href="https://github.com/anshul-garg27/claude-picker/releases"><img src="https://img.shields.io/github/v/release/anshul-garg27/claude-picker.svg?style=flat-square" alt="releases"></a>
+  <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="MIT"></a>
+  <img src="https://img.shields.io/badge/rust-1.86%2B-orange.svg?style=flat-square" alt="Rust 1.86+">
+  <img src="https://img.shields.io/badge/tests-568-brightgreen.svg?style=flat-square" alt="568 tests">
+</p>
 
-> **Written in Rust. Single static binary (~2.1 MB). 12 screens. 6 themes. Per-model cost tracking, fork-aware tree view, word-level diff, 11-operator filter language, file-centric pivot, time-travel replay, one-key AI summaries, cost-optimization audit. No Python, no fzf, no dependencies.**
-
-<details>
-<summary>More feature demos</summary>
-
-| Feature | Demo |
-|---------|------|
-| `--search` full-text with 11-operator filter language | ![](assets/gifs/search.gif) |
-| `--stats` dashboard with heatmaps and histograms | ![](assets/gifs/stats.gif) |
-| `--tree` fork tree with drill-down expansion | ![](assets/gifs/tree.gif) |
-| `--diff` two sessions with word-level diff | ![](assets/gifs/diff.gif) |
-| `--files` file-centric pivot view | ![](assets/gifs/files.gif) |
-| `R` time-travel replay of any session | ![](assets/gifs/replay.gif) |
-| `Ctrl+A` one-key AI summary via Haiku 4.5 | ![](assets/gifs/summarize.gif) |
-| `--audit` cost-optimization report | ![](assets/gifs/audit.gif) |
-| `*` bookmark and `Ctrl+E` export to markdown | ![](assets/gifs/bookmarks.gif) |
-
-</details>
+<p align="center">
+  <a href="#install">Install</a> ·
+  <a href="#the-headline-features">Features</a> ·
+  <a href="#screens">Screens</a> ·
+  <a href="#keyboard">Keyboard</a> ·
+  <a href="#themes">Themes</a> ·
+  <a href="#configuration">Config</a> ·
+  <a href="#how-it-works">How it works</a>
+</p>
 
 ---
 
-## The Problem
+## The problem
 
-Claude Code saves every conversation, but finding them again is painful:
+Claude Code writes every conversation to disk, but the built-in `/resume` is a flat list of UUIDs:
 
 ```
 ? Pick a conversation to resume
-  4a2e8f1c-9b3d-4e7a... (2 hours ago)
-  b7c9d2e0-1f4a-8b6c... (3 hours ago)
-  e5f8a3b1-7c2d-9e0f... (yesterday)
+  4a2e8f1c-9b3d-4e7a…  (2 hours ago)
+  b7c9d2e0-1f4a-8b6c…  (3 hours ago)
+  e5f8a3b1-7c2d-9e0f…  (yesterday)
 ```
 
-No project filtering. No preview. No names. Just UUIDs.
+No projects. No preview. No names. No cost. No search. No way to find that one session from last Tuesday where you fixed the auth bug.
 
-**claude-picker** gives you a Ratatui-powered session manager with labeled borders, rich preview, per-model cost tracking, bookmarks, AI summaries, full-text search with an operator language, file-centric pivot, time-travel replay, side-by-side diff, and a cost-optimization audit — all from one ~2.1 MB binary with zero runtime dependencies.
+**claude-picker** reads those same JSONL files and turns them into thirteen tightly-wired screens: two-pane project/session browser with live preview, fork-aware tree view, word-level diff, file-centric pivot ("which sessions touched `auth.rs`?"), time-travel replay, 11-operator filter language, one-key AI summaries, cost-optimization audit, and a stats dashboard with per-model spend and a GitHub-style activity heatmap.
 
 ---
 
 ## Install
 
-Pick whichever one you already trust the most. The binary is identical.
+Three ways. The binary is identical everywhere.
 
 ```bash
-# Homebrew (macOS and Linux)
-brew install anshul-garg27/tap/claude-picker
-
-# Shell installer (downloads a prebuilt binary from GitHub Releases)
-curl -LsSf https://github.com/anshul-garg27/claude-picker/releases/latest/download/claude-picker-installer.sh | sh
-
-# Cargo (builds from source, needs a Rust toolchain)
+# 1. Cargo (always-latest from crates.io — no cache lag)
 cargo install claude-picker
 
-# From source (for contributors)
-git clone https://github.com/anshul-garg27/claude-picker.git
-cd claude-picker && cargo install --path .
+# 2. Homebrew (macOS + Linux)
+brew install anshul-garg27/tap/claude-picker
+
+# 3. Shell installer (curl a prebuilt binary from GitHub Releases)
+curl -LsSf https://github.com/anshul-garg27/claude-picker/releases/latest/download/claude-picker-installer.sh | sh
 ```
 
-Direct downloads for every platform live on the
-[Releases page](https://github.com/anshul-garg27/claude-picker/releases).
+Prebuilt binaries for every platform live on the [Releases page](https://github.com/anshul-garg27/claude-picker/releases).
 
-**Requirements:**
-- [Claude Code](https://claude.ai/code) CLI on your PATH
-- macOS, Linux, or Windows — no runtime deps
-- Rust 1.86+ if you build from source (MSRV)
-
-**What the installer does:**
-- Drops the Rust binary into `~/.local/bin/claude-picker`
-- Adds a `Ctrl+P` shell keybinding to `.zshrc` / `.bashrc`
-- Auto-detects [Warp](https://warp.dev) and installs a tab config
+**Requirements**
+- [Claude Code](https://claude.ai/code) on your `PATH`
+- macOS, Linux, or Windows (no runtime deps)
+- Rust 1.86+ if building from source
 
 ---
 
-## Features
+## The headline features
 
 ### Three pivots no other Claude TUI has
 
-| Pivot | What it does |
-|-------|--------------|
-| **`--files` file-centric view** | Every file Claude has ever touched, with a reverse pivot from file → sessions that touched it. Answers "which chats edited `src/auth/middleware.ts`?" in one keystroke. Index cached at `~/.config/claude-picker/file-index.json`. |
-| **`R` time-travel replay** | Scrub any session forward and backward as a timeline player with gap capping so long idle stretches compress to a beat. Perfect for reconstructing what you did last Tuesday. |
-| **`Ctrl+A` AI summarize** | One keystroke. Claude Haiku 4.5 produces a focused TL;DR of the highlighted session. Cost-gated, and every summary is cached to disk at `~/.config/claude-picker/summaries.json`. |
+| | What it does | How you get there |
+|---|---|---|
+| **File-centric pivot** | Every file Claude has ever touched, with a reverse pivot from file → sessions. Answers *"which chats edited `src/auth/middleware.ts`?"* in one keystroke. Cached at `~/.config/claude-picker/file-index.json`. | `claude-picker files` / `--files` |
+| **Time-travel replay** | Scrub any session as a timeline. Gap-capping compresses long idle stretches so playback stays watchable. Comet-trail scrubber so you can see where you were. | `R` on any session |
+| **One-key AI summary** | Claude Haiku 4.5 produces a TL;DR of the highlighted session. Cost-gated, cached to disk at `~/.config/claude-picker/summaries.json`, so re-press is free. | `Ctrl+A` |
 
-### Browse and resume
+### Five more you'll reach for daily
 
-| Feature | Description |
-|---------|------------|
-| **Project picker** | All directories with Claude sessions, git branch, session count |
-| **Session picker** | Two-pane project → session layout with live preview; named sessions float to the top, unnamed ones auto-label from the first user message |
-| **Conversation viewer (`v`)** | Full-screen transcript with styled metadata and messages |
-| **Fuzzy search** | Instant nucleo 0.5 fuzzy matcher — roughly 6× faster than skim |
-| **Multi-select (`Tab`)** | Flag multiple sessions at once for bulk operations |
-| **Bookmarks (`*` toggle, `b` filter)** | Pin important sessions; persists in `bookmarks.json` |
-| **Rename (`r`)** | Edit the `custom-title` in-place; changes are written back into the JSONL |
-| **Open in `$EDITOR` (`o`)** | Drops you into the raw JSONL for when you need to grep offline |
-| **Copy (`y` / `Y`)** | `y` copies the session ID, `Y` copies the full content via arboard |
-| **Age warnings** | Timestamps turn peach after 7 days, red with a warning icon after 30 days |
-| **Permission-mode badges** | Dangerous / acceptEdits / default / plan flagged in the preview pane |
-| **Subagent counter** | Parses and surfaces subagent invocations per session |
-| **Last-prompt line** | Shows the first 80 chars of the last user message so you recognize sessions at a glance |
-
-### Analyze and audit
-
-| Feature | Description |
-|---------|------------|
-| **`stats` dashboard** | KPI cards (total cost, tokens, sessions), 24×7 hourly heatmap, GitHub-style monthly activity heatmap, turn-duration histogram, per-project and per-model breakdowns, activity timeline |
-| **`tree` view** | Sessions grouped by project with fork relationships (`forkedFrom`) and drill-down expansion (`fork_descendants`, `is_expanded`) |
-| **`diff` view** | Side-by-side session compare with a word-level diff toggle powered by `similar 2.6` LCS |
-| **`search` view** | Full-text plus an 11-operator filter language: `project:`, `model:`, `cost:>X`, `tokens:>Y`, `has:tools`, `before:`, `after:`, `sub:`, `mode:`, `bookmarked`, and free text. Parser lives in `src/data/search_filters.rs` |
-| **`hooks` view** | Every configured Claude Code hook plus execution history |
-| **`mcp` view** | Installed MCP servers and tool-call usage across sessions |
-| **`checkpoints` view** | File-history checkpoints per session |
-| **`files` view** | The pivot. Optional `--project NAME` to scope it |
-| **`audit` view** | Cost-optimization report with three heuristics: tool-ratio, cache-efficiency, and model-mismatch |
-| **Budget forecast** | Monthly budget stored in `~/.config/claude-picker/budget.toml`, plus a burn-rate forecast |
-
-### Accurate cost tracking
-
-Pricing is verified against the latest Anthropic rates:
-
-| Model | Input ($/MTok) | Output ($/MTok) |
-|-------|----------------|-----------------|
-| Opus 4.x | $5 | $25 |
-| Sonnet 4.x | $3 | $15 |
-| Haiku 4.5 | $1 | $5 |
-| Opus 3 (legacy) | $15 | $75 |
-
-Cache multipliers: `write_5m = 1.25×` input, `write_1h = 2×` input, `read = 0.1×` input. Tokens are parsed out of every `message.usage` block including `cache_creation.ephemeral_5m_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`, and `cache_read_input_tokens`.
-
-### Integrations and scripting
-
-| Feature | Description |
-|---------|------------|
-| **`pipe` mode** | `claude-picker pipe` (or `-p` / `--pipe`) writes the selected session ID to stdout — wire it into any script |
-| **`ai-titles` batch job** | `claude-picker ai-titles` (or `--ai-titles`) auto-names every unnamed session using Haiku 4.5, with a cost-gated confirmation prompt |
-| **`Ctrl+E` export** | Hands the session off to `session-export.py` for clean markdown under `~/Desktop/claude-exports/` |
-| **`Enter` resume** | Exec's `claude` via `CommandExt::exec` so it fully replaces the picker process; flags are read from `CLAUDE_PICKER_FLAGS` (defaults to `--dangerously-skip-permissions`) |
-| **`--preview-cmd`** | Swap the preview for your own command with `{sid}` and `{cwd}` substitution |
-| **Shell keybinding** | `Ctrl+P` launches claude-picker from anywhere |
-| **Warp terminal** | One-click from Warp's `+` menu |
-| **Claude Code skill** | Available as `/claude-picker` inside Claude Code |
+- **Cost audit** (`--audit`) flags sessions that could have been cheaper with three heuristics: tool-ratio, cache-efficiency, and model-mismatch.
+- **Pinned project slots** (`u` pins, `1`–`9` jumps, `0` clears) — `k9s`-style favorites for the projects you touch every day.
+- **Filter ribbon** (`Ctrl-r`) cycles `[ALL] [REPO] [7D] [RUNNING] [FORKED]`. Auto-activates `REPO` when you launch from inside a project directory, `atuin`-style.
+- **11-operator filter language** — `project:web cost:>1 model:opus mode:acceptEdits bookmarked sub:1 has:tools after:2026-04-01 tokens:>50k`. Parser in `src/data/search_filters.rs`.
+- **Which-key popup** — press `Space` or `g` and wait 250ms; a helix-style grid pops up showing every follow-up key with a description. Nothing to memorize.
 
 ---
 
-## Commands
+## Screens
 
-```bash
-claude-picker                       # default picker: project → session with preview
-claude-picker stats                 # KPI cards, heatmaps, histograms, breakdowns
-claude-picker tree                  # fork-aware session tree with drill-down
-claude-picker diff                  # side-by-side compare with word-level diff
-claude-picker search                # full-text + 11-operator filter language
-claude-picker hooks                 # Claude Code hooks and execution history
-claude-picker mcp                   # MCP servers and tool-call usage
-claude-picker checkpoints           # file-history checkpoints per session
-claude-picker files                 # the file-centric pivot
-claude-picker files --project NAME  # scope the pivot to one project
-claude-picker audit                 # cost-optimization report
-claude-picker pipe                  # print selected session ID to stdout
-claude-picker ai-titles             # batch-name unnamed sessions via Haiku 4.5
-```
+Thirteen of them. Each has its own screen, keyboard context, and help overlay.
 
-Every subcommand also has a `--flag` alias (`--stats`, `--tree`, `--diff`, `--search` / `-s`, `--hooks`, `--mcp`, `--checkpoints`, `--files`, `--audit`, `--pipe` / `-p`, `--ai-titles`) so old muscle memory keeps working.
+| Screen | Launch | What it shows |
+|---|---|---|
+| **Picker** (default) | `claude-picker` | Two-pane projects → sessions with live preview, filter ribbon, pinned slots |
+| **Stats** | `stats` / `--stats` | KPI hero cards (tokens, cost, sessions) with delta chips + inline sparklines, rank-badged per-project table with model-colored stacked bars, GitHub-style 30-day activity heatmap, speed-colored turn-duration histogram with p50/p95/p99 markers, traffic-light budget with per-model pill breakdown |
+| **Tree** | `tree` / `--tree` | Session fork tree with jless-style collapsed-node summaries `{3 branches · 127 turns · $4.21}`; `e` / `E` expand / collapse subtree |
+| **Diff** | `diff` / `--diff` | Side-by-side session compare; `d` toggles word-level inline diff; `n` / `N` jump between hunks |
+| **Search** | `search` / `--search` / `-s` | Full-text plus the 11-operator filter language |
+| **Conversation viewer** | `v` on a session | Full-screen transcript with right-edge heatmap gutter colored by cost / duration / tokens (`c` cycles); `Ctrl-e` pipes the current turn to `$EDITOR` |
+| **Time-travel replay** | `R` on a session | Timeline scrubber with gap-capping and a 4-position comet trail |
+| **Files** | `files` / `--files` | The file-centric pivot. Add `--project NAME` to scope |
+| **Hooks** | `hooks` / `--hooks` | Every configured Claude Code hook + execution history |
+| **MCP** | `mcp` / `--mcp` | Installed MCP servers + tool-call usage rolled up across sessions |
+| **Checkpoints** | `checkpoints` / `--checkpoints` | File-history checkpoints per session |
+| **Audit** | `audit` / `--audit` | Cost-optimization report |
+| **Task drawer** | `w` (overlay, any screen) | Background jobs with progress bars; `j` / `k` navigate, `x` cancels the focused task |
 
-### Global flags
-
-| Flag | Purpose |
-|------|---------|
-| `--theme NAME` | Pick a theme for this run (precedence: flag > env var > config file > default) |
-| `--list-themes` | Print every installed theme and exit |
-| `--generate-config` | Write a default `config.toml` to `~/.config/claude-picker/` |
-| `--config-file PATH` | Load config from an explicit path |
-| `--force` | Skip cost-gated confirmation prompts (AI batch jobs) |
-| `--preview-cmd CMD` | Override the preview pane; supports `{sid}` and `{cwd}` |
-| `--project NAME` | Scope `files`, `search`, and a few others to one project |
-| `--classic` | Falls back to the legacy Python + fzf implementation |
+Plus two scripting modes: `pipe` / `--pipe` / `-p` writes the selected session ID to stdout, and `ai-titles` / `--ai-titles` batch-names every unnamed session via Haiku 4.5 (cost-gated).
 
 ---
 
 ## Keyboard
 
-Every screen uses the same map. `?` brings up a context-aware help overlay.
+Every screen shares the same core map. Press `?` for a context-aware help overlay. Hold any leader key (`Space`, `g`) for 250ms and a helix-style which-key popup appears with every follow-up.
+
+### Navigation
 
 | Key | Action |
-|-----|--------|
+|---|---|
 | `j` / `k` or `↓` / `↑` | Move selection |
-| `gg` / `G` | Jump to top / bottom (the `gg` chord is tracked via `pending_g` state) |
-| `Tab` | Toggle multi-select (a `HashSet` in app state) |
-| `Enter` | Exec `claude` on the current session; flags come from `CLAUDE_PICKER_FLAGS` |
-| `v` | Open the full-screen conversation viewer |
-| `R` | Open the time-travel replay player |
-| `r` | Rename the session (writes a new `custom-title` into the JSONL) |
-| `o` | Open the session JSONL in `$EDITOR` |
-| `y` | Copy session ID (arboard) |
-| `Y` | Copy the full session content |
-| `Ctrl+A` | AI summarize via Haiku 4.5 (cost-gated, cached on disk) |
-| `Ctrl+E` | Export session via `session-export.py` |
-| `Space` | Command palette (leader) |
-| `?` | Context-aware help overlay |
-| `t` | Cycle to the next theme live |
-| `/` | Search within the current view |
-| `*` | Toggle bookmark |
-| `b` | Toggle bookmarks-only filter |
+| `gg` / `G` | Top / bottom |
+| `3j` `12G` `5dd` | Vim-style count prefix |
+| `Ctrl-o` / `Ctrl-i` | Jump back / forward (selection history ring) |
+| `Tab` | Multi-select toggle |
 | `q` / `Esc` | Back out or quit |
+
+### Action
+
+| Key | Action |
+|---|---|
+| `Enter` | Exec `claude` on the selected session (replaces this process) |
+| `v` | Full-screen conversation viewer |
+| `R` | Time-travel replay |
+| `r` | Rename session (writes `custom-title` back into JSONL) |
+| `o` | Open raw JSONL in `$EDITOR` |
+| `y` / `Y` | Copy session ID / full content to clipboard |
+| `Ctrl+A` | AI summarize via Haiku 4.5 (cached) |
+| `Ctrl-e` | Send current turn (in viewer) to `$EDITOR` |
+| `*` / `b` | Toggle bookmark / filter to bookmarks-only |
+| `z` / `Z` | Undo / redo (rename today; delete coming) |
+
+### Project + scope
+
+| Key | Action |
+|---|---|
+| `u` | Pin current project |
+| `1`–`9` | Jump to pinned slot |
+| `0` | Clear project filter (all projects) |
+| `Ctrl-r` | Cycle filter ribbon (`ALL` → `REPO` → `7D` → `RUNNING` → `FORKED`) |
+| `/` | Filter within current view |
+| `Space` | Command palette (leader) |
+
+### Special (viewer / tree / stats)
+
+| Key | Action |
+|---|---|
+| `c` (viewer) | Cycle heatmap dimension (cost / duration / tokens) |
+| `n` / `N` (viewer) | Jump to next / previous turn boundary |
+| `n` / `N` (diff) | Jump to next / previous hunk |
+| `e` / `E` (tree) | Expand / collapse subtree recursively |
+| `w` / `x` | Toggle task drawer / cancel focused task |
+| `t` | Cycle theme live |
+| `?` | Help overlay |
 
 ---
 
 ## Themes
 
-Six themes ship in the binary, powered by the `catppuccin 2.7` crate:
+Ten themes ship in the binary. Cycle live with `t`, list with `--list-themes`.
 
-- `catppuccin-mocha` (default)
-- `catppuccin-macchiato`
-- `catppuccin-frappe`
-- `catppuccin-latte`
-- `tokyonight`
-- `gruvbox`
+| Theme | Mood |
+|---|---|
+| `catppuccin-mocha` *(default)* | Purple-forward dark, punchy accents |
+| `catppuccin-macchiato` | Slightly softer cousin of mocha |
+| `catppuccin-frappe` | Mid-contrast dark, desaturated |
+| `catppuccin-latte` | Cream-light for daylight desks |
+| `tokyonight` | Neon indigo on near-black |
+| `gruvbox` | Warm retro, boosted greens |
+| `nord-aurora` | Cool polar-night base with brightened aurora accents |
+| `rose-pine-moon` | Warm desaturated, WCAG-readable |
+| `high-contrast` | AAA (7:1) ratios everywhere, for low-vision use |
+| `colorblind-safe` | Blue / orange diff pair — never red-green |
 
-Cycle them live with `t`. List them with `claude-picker --list-themes`. Pick one with any of:
+**Precedence**: `--theme` flag > `CLAUDE_PICKER_THEME` env > `config.toml` `[ui].theme` > default.
 
 ```bash
 claude-picker --theme tokyonight          # highest priority
-export CLAUDE_PICKER_THEME=gruvbox        # next
-# then config.toml ui.theme = "catppuccin-latte"
-# then the default (catppuccin-mocha)
+export CLAUDE_PICKER_THEME=nord-aurora    # next
+# config.toml: [ui] theme = "rose-pine-moon"
 ```
 
-Precedence is strictly `--theme` flag > `CLAUDE_PICKER_THEME` env var > `config.toml` `[ui].theme` > default.
+Every theme carries the same 12 semantic tokens (`cost_green/yellow/amber/red/critical`, `speed_fast/medium/slow/glacial`, `model_opus/sonnet/haiku`) so stats render with consistent meaning across palettes. `colorblind-safe` deliberately maps `cost_green = blue` and `cost_red = orange` — no red-green pairs anywhere.
+
+---
+
+## Accurate cost tracking
+
+Pricing is verified against the latest Anthropic rates:
+
+| Model | Input ($/MTok) | Output ($/MTok) |
+|---|---|---|
+| Opus 4.x | $5 | $25 |
+| Sonnet 4.x | $3 | $15 |
+| Haiku 4.5 | $1 | $5 |
+| Opus 3 (legacy) | $15 | $75 |
+
+Cache pricing: `write_5m = 1.25×` input, `write_1h = 2×` input, `read = 0.1×` input. Tokens come from every `message.usage` block, including `cache_creation.ephemeral_5m_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`, and `cache_read_input_tokens`.
+
+Set a monthly budget in `~/.config/claude-picker/budget.toml`; the stats dashboard flashes the budget band at >95% of forecast.
+
+---
+
+## Configuration
+
+Everything lives under `~/.config/claude-picker/`. Generate a starter with `claude-picker --generate-config`.
+
+| File | Purpose |
+|---|---|
+| `config.toml` | `[ui]` theme, `reduce_motion` toggle, other preferences |
+| `bookmarks.json` | Pinned session IDs |
+| `summaries.json` | Cached AI summaries keyed by session ID |
+| `file-index.json` | `--files` pivot index |
+| `budget.toml` | Monthly budget for the stats forecast |
+| `pinned.toml` | `u`-pinned project slots (1–9) |
+
+### `reduce_motion`
+
+```toml
+[ui]
+reduce_motion = true
+```
+
+Disables every animation — fork-tree reveal, pulsing HUD dot, replay comet trail, peek-mode fade, cursor glide, toast slide. Respects screen-reader and accessibility preferences.
+
+### Claude flags
+
+By default, claude-picker launches `claude` with `--dangerously-skip-permissions`. Override via env:
+
+```bash
+export CLAUDE_PICKER_FLAGS=""                  # vanilla permissions
+export CLAUDE_PICKER_FLAGS="--model sonnet"    # force sonnet
+```
+
+### Global CLI flags
+
+| Flag | Purpose |
+|---|---|
+| `--theme NAME` | Theme for this run |
+| `--list-themes` | Print all themes and exit |
+| `--generate-config` | Write a default `config.toml` |
+| `--config-file PATH` | Use a non-default config path |
+| `--preview-cmd CMD` | Override the preview pane (supports `{sid}` / `{cwd}`) |
+| `--project NAME` | Scope `files` and a few others to one project |
+| `--force` | Skip cost-gated confirmations (AI batch jobs) |
 
 ---
 
 ## Usage
-
-### Name your sessions
-
-```bash
-claude --name "auth-refactor"
-claude --name "fix-bug-123"
-```
-
-Named sessions appear at the top with a yellow indicator. Or run `claude-picker ai-titles` once and let Haiku 4.5 name the backlog for you.
-
-### Bookmark important sessions
-
-Press `*` in the picker. Bookmarked sessions pin to the top; toggle bookmarks-only mode with `b`. State lives in `bookmarks.json`.
 
 ### Find a session by content
 
@@ -274,31 +264,20 @@ Press `*` in the picker. Bookmarked sessions pin to the top; toggle bookmarks-on
 claude-picker search
 ```
 
-Free text searches every interactive session. For anything more specific, use the operator language:
+Free text, or the operator language:
 
 ```text
-kubernetes project:web-app cost:>1.00 model:opus mode:acceptEdits bookmarked
-sub:1 has:tools after:2026-04-01 before:2026-04-15 tokens:>50000
+kubernetes project:web-app cost:>1 model:opus after:2026-04-01 bookmarked
 ```
 
-Operators available: `project:`, `model:`, `cost:>X`, `tokens:>Y`, `has:tools`, `before:`, `after:`, `sub:`, `mode:`, `bookmarked`, plus free text. Parser source: `src/data/search_filters.rs`.
-
-### Pivot from a file to the sessions that touched it
+### Pivot from a file
 
 ```bash
-claude-picker files
-claude-picker files --project my-api
+claude-picker files                        # every file, ever
+claude-picker files --project my-api       # scoped
 ```
 
-Lists every file Claude has touched. Drill in and it flips to "sessions that touched this file". The index is cached at `~/.config/claude-picker/file-index.json`.
-
-### Scrub a session like a timeline
-
-Highlight a session and press `R`. Long idle stretches are gap-capped so the playback stays watchable. Step through tool calls, responses, and file edits in order.
-
-### Summarize with one keystroke
-
-Press `Ctrl+A`. Haiku 4.5 produces a focused TL;DR; the cost is shown up front so you can cancel, and the result is cached at `~/.config/claude-picker/summaries.json`. Subsequent `Ctrl+A` on the same session hits the cache for free.
+Drill in and it flips to "sessions that touched this file". Index at `~/.config/claude-picker/file-index.json`.
 
 ### Audit what's costing you money
 
@@ -306,155 +285,74 @@ Press `Ctrl+A`. Haiku 4.5 produces a focused TL;DR; the cost is shown up front s
 claude-picker audit
 ```
 
-Runs three heuristics and flags sessions where you could have saved:
-
-- **Tool-ratio** — sessions where tool calls dominate and a cheaper model would've done fine
-- **Cache-efficiency** — sessions with weak cache reads that could be prompt-cached
+- **Tool-ratio** — sessions dominated by tool calls that a cheaper model could've handled
+- **Cache-efficiency** — weak cache reads that could be prompt-cached
 - **Model-mismatch** — Opus on throwaway work, Haiku on reasoning-heavy work
 
-### Compare two sessions
+### Scrub a long session
+
+Highlight a session, press `R`. Gap-capping compresses long idle stretches. Every tool call, file edit, and assistant turn becomes a timeline frame.
+
+### Pipe into other tools
 
 ```bash
-claude-picker diff
-```
-
-Pick two sessions. Toggle word-level diff for the fine-grained view; the LCS is powered by `similar 2.6`.
-
-### View the tree
-
-```bash
-claude-picker tree
-```
-
-Projects contain sessions; sessions contain forks. Drill-down expansion keeps the view tight until you open a branch.
-
-### Check costs
-
-Every session shows token and cost estimates. `stats` rolls them up by project and model with heatmaps and a turn-duration histogram. Set a monthly budget in `~/.config/claude-picker/budget.toml` and the dashboard forecasts burn-rate against it.
-
-### Export conversations
-
-Press `Ctrl+E` on any session to save it as clean markdown in `~/Desktop/claude-exports/`.
-
-### Pipe to other tools
-
-```bash
-# Resume a specific session from a script
+# resume a specific session from a script
 claude --resume $(claude-picker pipe)
 
-# Export a session by ID
-python3 ~/.claude-picker/lib/session-export.py <session-id>
+# one-shot: jump to the last session that touched auth.rs
+claude --resume $(claude-picker files --project my-api --pipe auth.rs)
 ```
 
 ---
 
-## Configuration
+## How it works
 
-All state lives under `~/.config/claude-picker/`:
+Claude Code stores sessions in `~/.claude/projects/` as JSONL files. Each project directory is lossy-encoded (`/Users/you/my_project` → `-Users-you-my-project`). Per-session metadata lives in `~/.claude/sessions/`.
 
-| File | Purpose |
-|------|---------|
-| `config.toml` | `[ui] theme = "..."` and other preferences. Generate with `claude-picker --generate-config` |
-| `bookmarks.json` | Pinned session IDs |
-| `summaries.json` | Cached AI summaries keyed by session ID |
-| `file-index.json` | Cached file → sessions index for `--files` |
-| `budget.toml` | Monthly budget for the forecast in `stats` |
+claude-picker reads these directly to:
 
-### Claude flags
-
-By default, claude-picker launches Claude with `--dangerously-skip-permissions`. Override this:
-
-```bash
-export CLAUDE_PICKER_FLAGS=""                    # no flags
-export CLAUDE_PICKER_FLAGS="--model sonnet"      # custom model
-```
-
-### Warp terminal
-
-The installer auto-detects Warp and adds a tab config. Access via `+` menu and select **Claude Picker**.
-
-Manual install:
-
-```bash
-cp ~/.claude-picker/warp/claude_picker.toml ~/.warp/tab_configs/
-```
-
----
-
-## How It Works
-
-Claude Code stores sessions in `~/.claude/projects/` as JSONL files. Each project directory is encoded (`/Users/you/my_project` becomes `-Users-you-my-project`). Metadata lives in `~/.claude/sessions/`.
-
-claude-picker reads these files to:
-
-1. **Discover projects** — scans encoded directories, resolves real paths via metadata lookup, the JSONL `cwd` field, and an encode-and-compare fallback
-2. **Extract session info** — names from `custom-title` entries, message counts, permission modes, subagent counts, and the last user prompt
+1. **Discover projects** — scans encoded directories, resolves real paths via a three-layer decoder (session-metadata lookup → JSONL `cwd` scan → naive decode fallback)
+2. **Extract session info** — names from `custom-title` entries, message counts, permission modes, subagent counts, last user prompt
 3. **Compute cost** — parses `message.usage` including cache-creation and cache-read fields against the pricing table above
-4. **Detect forks** — reads `forkedFrom` fields to build parent-child session trees with drill-down expansion
-5. **Index files** — walks tool-use events to build the reverse `file → sessions` cache
-6. **Filter noise** — skips SDK-based tools via the `entrypoint` field and strips system messages from previews
-7. **Render UI** — ratatui 0.28 + crossterm 0.28 with 24-bit colors from the `catppuccin 2.7` crate, unicode-aware widths via `unicode-width 0.2` + `unicode-segmentation 1.12`, fuzzy via `nucleo 0.5`, diff via `similar 2.6`, clipboard via `arboard 3.0`
+4. **Detect forks** — follows `forkedFrom` to build parent/child trees with drill-down expansion
+5. **Index files** — walks tool-use events to build the reverse `file → sessions` map
+6. **Filter noise** — skips SDK-entrypoint sessions and strips system messages from previews
+7. **Render** — `ratatui` + `crossterm` with 24-bit color, unicode-correct rendering, ~6× faster fuzzy than skim, LCS word-diff, clipboard via `arboard`, Kitty/iTerm2/halfblock identicon thumbnails, `tachyonfx` animations (all respecting `reduce_motion`)
 
-No data leaves your machine except when you explicitly invoke an AI feature (`Ctrl+A` summarize, `ai-titles`). Every other read is local.
+Nothing leaves your machine unless you explicitly call an AI feature (`Ctrl+A` summarize, `ai-titles`). Everything else is local file IO.
 
 ---
 
-## Project Stats
+## Project stats
 
-- **28** Rust files
-- **~13,000** LOC
-- **425** tests
-- **~2.1 MB** release binary
+- **74** Rust files · **42 k** LOC
+- **568** tests (unit + integration)
+- **~2.5 MB** release binary
+- **18** direct dependencies
 - **Rust 1.86+** MSRV
-- **12** direct dependencies
 
 ### Tech stack
 
-- `ratatui 0.28` + `crossterm 0.28` — TUI engine
-- `nucleo 0.5` — fuzzy matcher, ~6× faster than skim
-- `catppuccin 2.7` — theme palettes
-- `clap 4.5` (derive) — CLI parsing
+- `ratatui` + `crossterm` — TUI engine
+- `nucleo` — fuzzy matcher (~6× faster than `skim`)
+- `catppuccin` — palette source for 4 of the 10 themes
+- `tachyonfx` — shader-style animations (fork reveal, comet trail, peek fade, pulse HUD) — all gated by `reduce_motion`
+- `image` — pure-Rust pixel buffer for identicon thumbnails (halfblock rendering, works in every terminal)
+- `clap` (derive) — CLI parsing
 - `serde` + `serde_json` — JSONL parsing
-- `unicode-width 0.2` + `unicode-segmentation 1.12` — correct rendering of CJK, emoji, and ZWJ sequences
-- `arboard 3.0` — cross-platform clipboard
-- `similar 2.6` — word- and line-level diff
-- `toml 0.8` — config and budget
-- `chrono` — timestamps
-- `anyhow` — error handling
-
----
-
-## Classic mode
-
-Prefer the original Python + fzf flow? Run `claude-picker --classic`.
-Requires Python 3.10+, fzf 0.58+, and `rich`. Still supported, still works,
-will be maintained indefinitely for users who don't want the Rust binary.
-
-```bash
-# Install the classic scripts side-by-side with the Rust binary:
-git clone https://github.com/anshul-garg27/claude-picker.git ~/.claude-picker
-~/.claude-picker/claude-picker --classic
-```
-
-The classic wrapper preserves every legacy flag: `--pipe`, `--search`,
-`--stats`, `--tree`, `--diff`, and the `Ctrl+B` / `Ctrl+E` / `Ctrl+D`
-keybindings inside fzf.
-
----
-
-## Uninstall
-
-```bash
-bash ~/.claude-picker/uninstall.sh
-```
+- `unicode-width` + `unicode-segmentation` — grapheme-safe rendering for CJK and emoji
+- `arboard` — cross-platform clipboard
+- `similar` — LCS diff (word + line)
+- `toml` — config + budget
+- `chrono`, `anyhow`, `thiserror` — utilities
 
 ---
 
 ## Contributing
 
-Contributions welcome. Open an issue or PR.
+Open an issue or PR — contributions welcome.
 
-See [CHANGELOG.md](CHANGELOG.md) for the release history.
+See [CHANGELOG.md](CHANGELOG.md) for the release history. See [BREW-TAP.md](BREW-TAP.md) for Homebrew tap maintenance.
 
 If claude-picker saves you time, [star the repo](https://github.com/anshul-garg27/claude-picker) — it helps others find it.
 
@@ -462,10 +360,8 @@ If claude-picker saves you time, [star the repo](https://github.com/anshul-garg2
 
 ## License
 
-MIT
-
----
+MIT. See [LICENSE](LICENSE).
 
 <p align="center">
-  Built by <a href="https://github.com/anshul-garg27">Anshul Garg</a>
+  Built by <a href="https://github.com/anshul-garg27">Anshul Garg</a>.
 </p>
