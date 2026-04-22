@@ -23,7 +23,7 @@ use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
-use crate::data::cost_audit::{AuditFinding, Severity};
+use crate::data::cost_audit::{summary_by_kind, AuditFinding, FindingKind, Severity};
 use crate::theme::Theme;
 
 /// View state: the list of findings plus cursor/scroll position.
@@ -85,13 +85,93 @@ pub fn total_savings(state: &AuditState) -> f64 {
 }
 
 /// Render the audit screen into `area`.
+///
+/// Layout (top to bottom):
+/// 1. Summary band (5 rows: top rule + 3 heuristic rows + bottom rule) —
+///    always present so every run visibly proves all three heuristics ran.
+/// 2. Body — per-session findings list (the scrollable part).
+/// 3. Footer — key hints + total savings (2 rows).
 pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut AuditState, theme: &Theme) {
+    let summary = summary_by_kind(&state.findings);
     let chunks = Layout::default()
         .direction(Direction::Vertical)
-        .constraints([Constraint::Min(5), Constraint::Length(2)])
+        .constraints([
+            Constraint::Length(5),
+            Constraint::Min(5),
+            Constraint::Length(2),
+        ])
         .split(area);
-    render_body(f, chunks[0], state, theme);
-    render_footer(f, chunks[1], state, theme);
+    render_summary_band(f, chunks[0], summary, theme);
+    render_body(f, chunks[1], state, theme);
+    render_footer(f, chunks[2], state, theme);
+}
+
+/// Top-of-screen three-row band that always shows every heuristic category,
+/// even when zero findings — the point is to make the "three heuristics"
+/// promise visible on every audit run. Shape:
+///
+/// ```text
+/// ─── summary ───────────────────────────
+///   tool-ratio         2 findings   $3.40
+///   cache-efficiency   6 findings   $0.28
+///   model-mismatch     0 findings   $0.00
+/// ───────────────────────────────────────
+/// ```
+fn render_summary_band(
+    f: &mut Frame<'_>,
+    area: Rect,
+    summary: [(FindingKind, usize, f64); 3],
+    theme: &Theme,
+) {
+    let rule_style = theme.dim();
+    let label_style = Style::default().fg(theme.subtext1);
+    let zero_label_style = theme.muted();
+    let count_style = Style::default().fg(theme.mauve);
+    let savings_style = Style::default()
+        .fg(theme.green)
+        .add_modifier(Modifier::BOLD);
+    let zero_savings_style = theme.muted();
+
+    let width = area.width as usize;
+    let rule = "─".repeat(width.saturating_sub(2));
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(5);
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(format!("─── summary {}", rule), rule_style),
+    ]));
+
+    for (kind, count, savings) in summary {
+        let label = match kind {
+            FindingKind::ToolRatio => "tool-ratio",
+            FindingKind::CacheEfficiency => "cache-efficiency",
+            FindingKind::ModelMismatch => "model-mismatch",
+        };
+        let count_str = format!("{} findings", count);
+        let savings_str = format!("${:.2}", savings);
+        let label_pad = 18usize.saturating_sub(label.chars().count());
+        let count_pad = 14usize.saturating_sub(count_str.chars().count());
+        let (lab_s, cnt_s, sav_s) = if count == 0 {
+            (zero_label_style, theme.muted(), zero_savings_style)
+        } else {
+            (label_style, count_style, savings_style)
+        };
+        lines.push(Line::from(vec![
+            Span::raw("  "),
+            Span::styled(label.to_string(), lab_s),
+            Span::raw(" ".repeat(label_pad.max(1))),
+            Span::styled(count_str, cnt_s),
+            Span::raw(" ".repeat(count_pad.max(3))),
+            Span::styled(savings_str, sav_s),
+        ]));
+    }
+
+    lines.push(Line::from(vec![
+        Span::raw(" "),
+        Span::styled(format!("────────────{}", rule), rule_style),
+    ]));
+
+    f.render_widget(Paragraph::new(lines), area);
 }
 
 /// Draw the scrollable list of findings inside a rounded border.
@@ -326,5 +406,78 @@ mod tests {
         let s = AuditState::new(vec![]);
         assert_eq!(total_savings(&s), 0.0);
         assert_eq!(s.cursor, 0);
+    }
+
+    #[test]
+    fn render_summary_band_emits_all_three_rows_even_when_empty() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = Theme::default();
+        let summary = [
+            (FindingKind::ToolRatio, 0usize, 0.0f64),
+            (FindingKind::CacheEfficiency, 0, 0.0),
+            (FindingKind::ModelMismatch, 0, 0.0),
+        ];
+        term.draw(|f| {
+            let area = f.area();
+            render_summary_band(f, area, summary, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let dump: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(dump.contains("tool-ratio"), "tool-ratio row missing: {dump}");
+        assert!(
+            dump.contains("cache-efficiency"),
+            "cache-efficiency row missing: {dump}"
+        );
+        assert!(
+            dump.contains("model-mismatch"),
+            "model-mismatch row missing: {dump}"
+        );
+        assert!(dump.contains("0 findings"), "zero-findings text missing");
+        assert!(dump.contains("$0.00"), "zero-savings text missing");
+    }
+
+    #[test]
+    fn render_summary_band_shows_positive_savings_when_flagged() {
+        use ratatui::backend::TestBackend;
+        use ratatui::Terminal;
+
+        let backend = TestBackend::new(80, 5);
+        let mut term = Terminal::new(backend).unwrap();
+        let theme = Theme::default();
+        let summary = [
+            (FindingKind::ToolRatio, 2usize, 3.40f64),
+            (FindingKind::CacheEfficiency, 6, 0.28),
+            (FindingKind::ModelMismatch, 0, 0.0),
+        ];
+        term.draw(|f| {
+            let area = f.area();
+            render_summary_band(f, area, summary, &theme);
+        })
+        .unwrap();
+        let buf = term.backend().buffer();
+        let dump: String = (0..buf.area.height)
+            .map(|y| {
+                (0..buf.area.width)
+                    .map(|x| buf[(x, y)].symbol())
+                    .collect::<String>()
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        assert!(dump.contains("2 findings"), "tool-ratio count missing");
+        assert!(dump.contains("$3.40"), "tool-ratio savings missing");
+        assert!(dump.contains("6 findings"), "cache-efficiency count missing");
+        assert!(dump.contains("$0.28"), "cache-efficiency savings missing");
     }
 }
