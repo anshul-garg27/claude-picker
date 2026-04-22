@@ -11,7 +11,8 @@
 //! keystrokes: rebuilding the filtered index on every char-press is
 //! microseconds for < 1k sessions.
 
-use std::collections::{HashSet, VecDeque};
+use std::cell::Cell;
+use std::collections::{HashMap, HashSet, VecDeque};
 use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::process::Command;
@@ -323,6 +324,25 @@ pub struct App {
     /// (indexers, fork-graph builders, heatmap rollups) hold a clone of the
     /// Arc and take the mutex briefly to push / update / finish rows.
     pub task_queue: crate::data::task_queue::SharedTaskQueue,
+
+    /// Last cursor row the user left on in a session-list, keyed by the
+    /// owning project's resolved path. Re-entering the same project
+    /// restores the cursor here instead of resetting to 0. In-memory only
+    /// — dropped when the picker exits.
+    pub session_cursor_memory: HashMap<String, usize>,
+    /// Smoothed scroll anchor for the session-list viewport. Interpolates
+    /// toward the `cursor`-derived target over a handful of frames so
+    /// large jumps feel like a glide rather than a teleport. See
+    /// [`crate::ui::fx::SmoothScroll`].
+    ///
+    /// Stored behind a [`Cell`] so the render path (which only borrows
+    /// `&App`) can update the `target` after inspecting the viewport
+    /// height — the cursor-move handlers don't know `visible_rows`, only
+    /// the renderer does.
+    pub scroll_session: Cell<crate::ui::fx::SmoothScroll>,
+    /// Smoothed scroll anchor for the project-list viewport. Same machine
+    /// as [`Self::scroll_session`], just tracking a different list.
+    pub scroll_project: Cell<crate::ui::fx::SmoothScroll>,
 }
 
 /// Window in which two `g` presses collapse into a jump-to-top. Matches the
@@ -418,6 +438,9 @@ impl App {
             filter_ribbon,
             task_drawer: crate::ui::task_drawer::TaskDrawerState::new(),
             task_queue,
+            session_cursor_memory: HashMap::new(),
+            scroll_session: Cell::new(crate::ui::fx::SmoothScroll::new()),
+            scroll_project: Cell::new(crate::ui::fx::SmoothScroll::new()),
         };
         s.rebuild_haystacks();
         s.apply_filter();
@@ -1352,6 +1375,10 @@ impl App {
         let Some(point) = self.jump_ring.get(self.jump_index).cloned() else {
             return;
         };
+        // Stash the current session-cursor before the jump lands — even
+        // jump-ring hops should participate in cursor memory so ping-ponging
+        // between views feels like picking up where you left off.
+        self.save_session_cursor_memory();
         match point.view {
             ScreenKind::ProjectList => {
                 self.mode = Mode::ProjectList;
@@ -1367,6 +1394,7 @@ impl App {
                         .unwrap_or(0);
                     self.cursor = pos;
                 }
+                self.snap_project_scroll(self.cursor);
             }
             ScreenKind::SessionList => {
                 if let Some(id) = point.session_id {
@@ -1380,6 +1408,7 @@ impl App {
                             .position(|i| *i == sess_idx)
                             .unwrap_or(0);
                         self.cursor = pos;
+                        self.snap_session_scroll(self.cursor);
                     }
                 }
             }
@@ -1926,11 +1955,29 @@ impl App {
             Mode::SessionList => {
                 // Pop back to project-list if we have one to show.
                 if !self.projects.is_empty() {
+                    // Stash the session cursor before mode flips so the
+                    // next drill-in restores this row.
+                    self.save_session_cursor_memory();
                     self.mode = Mode::ProjectList;
                     self.sessions.clear();
                     self.selected_session = None;
                     self.rebuild_haystacks();
                     self.apply_filter();
+                    // Put the cursor back on the project we just left so
+                    // Esc → Enter round-trips cleanly.
+                    if let Some(proj_idx) = self.selected_project {
+                        if let Some(pos) = self
+                            .filtered_indices
+                            .iter()
+                            .position(|&i| i == proj_idx)
+                        {
+                            self.cursor = pos;
+                        }
+                    }
+                    // Project scroll persists across drill-ins (the list
+                    // data itself hasn't changed), but we still snap so
+                    // the cursor is guaranteed visible after the jump.
+                    self.snap_project_scroll(self.cursor);
                 } else {
                     self.should_quit = true;
                 }
@@ -1986,6 +2033,18 @@ impl App {
                     .set_current_repo(Some(project.path.to_string_lossy().into_owned()));
                 self.rebuild_haystacks();
                 self.apply_filter();
+                // Restore per-project cursor memory if we've visited this
+                // project before this picker session. `apply_filter` just
+                // forced cursor=0, so we overwrite it here.
+                self.restore_session_cursor_memory();
+                // Scroll anchor has to start fresh when the underlying
+                // list swaps — otherwise the smooth interpolator glides
+                // across rows from the previous project's data. We don't
+                // know `visible_rows` here (the render pass computes it),
+                // so snap to the cursor row as an upper-bound anchor; the
+                // render-time `anchored_scroll` clamp reins it in to the
+                // actual viewport the next frame.
+                self.snap_session_scroll(self.cursor);
             }
             Ok(_) => {
                 self.toast = Some(Toast::new(
@@ -2012,6 +2071,105 @@ impl App {
             self.previous_cursor = Some(before);
             self.cursor_changed_at = Some(Instant::now());
         }
+    }
+
+    /// Key identifying which project owns the currently-active session
+    /// list. Stable across reloads because it's derived from the resolved
+    /// filesystem path, which the project-scan pins to every `Project`.
+    fn current_project_key(&self) -> Option<String> {
+        let idx = self.selected_project?;
+        let project = self.projects.get(idx)?;
+        Some(project.path.to_string_lossy().into_owned())
+    }
+
+    /// Persist the current cursor row into session-cursor-memory, keyed by
+    /// the active project's path. Called whenever we are about to leave
+    /// [`Mode::SessionList`] so re-entering that project's sessions
+    /// restores the cursor rather than snapping back to row 0.
+    fn save_session_cursor_memory(&mut self) {
+        if self.mode != Mode::SessionList {
+            return;
+        }
+        if let Some(key) = self.current_project_key() {
+            self.session_cursor_memory.insert(key, self.cursor);
+        }
+    }
+
+    /// Restore the cursor row from memory for the currently-selected
+    /// project, clamped to the filtered-index length so a session that
+    /// got deleted while away doesn't land the cursor past the end.
+    /// No-op when the project has no recorded entry yet.
+    fn restore_session_cursor_memory(&mut self) {
+        let Some(key) = self.current_project_key() else {
+            return;
+        };
+        if let Some(&saved) = self.session_cursor_memory.get(&key) {
+            let len = self.filtered_indices.len();
+            if len == 0 {
+                self.cursor = 0;
+            } else {
+                self.cursor = saved.min(len - 1);
+            }
+        }
+    }
+
+    /// Compute the top-row anchor of the visible slice for the
+    /// session-list, respecting smooth-scroll interpolation and the
+    /// reduce-motion gate. Renderers call this instead of the local
+    /// `scroll_start` so animation state stays on the app struct.
+    ///
+    /// This has a side effect: it updates the smooth-scroll `target` to
+    /// the freshly-computed baseline anchor. The renderer is the first
+    /// code path per frame that knows `visible_rows`, so the target gets
+    /// refreshed here rather than guessing in `move_cursor`. Because
+    /// `SmoothScroll` is `Copy` and stored in a `Cell`, this stays
+    /// `&self`-compatible.
+    pub fn session_scroll_start(&self, visible_rows: usize, total: usize) -> usize {
+        let reduce = crate::theme::animations_disabled();
+        let target = baseline_scroll_start(self.cursor, visible_rows, total);
+        let mut ss = self.scroll_session.get();
+        ss.set_target(target, reduce);
+        self.scroll_session.set(ss);
+        anchored_scroll(self.cursor, visible_rows, total, ss.offset())
+    }
+
+    /// Same as [`Self::session_scroll_start`] but for the project list.
+    pub fn project_scroll_start(&self, visible_rows: usize, total: usize) -> usize {
+        let reduce = crate::theme::animations_disabled();
+        let target = baseline_scroll_start(self.cursor, visible_rows, total);
+        let mut ss = self.scroll_project.get();
+        ss.set_target(target, reduce);
+        self.scroll_project.set(ss);
+        anchored_scroll(self.cursor, visible_rows, total, ss.offset())
+    }
+
+    /// Hard-snap the session scroller to `row`. Used whenever the
+    /// underlying list swaps (entering a project, jumping views) so the
+    /// interpolator doesn't glide through rows that no longer exist.
+    fn snap_session_scroll(&self, row: usize) {
+        let mut ss = self.scroll_session.get();
+        ss.snap_to(row);
+        self.scroll_session.set(ss);
+    }
+
+    /// Mirror of [`Self::snap_session_scroll`] for the project list.
+    fn snap_project_scroll(&self, row: usize) {
+        let mut ps = self.scroll_project.get();
+        ps.snap_to(row);
+        self.scroll_project.set(ps);
+    }
+
+    /// Read-only snapshot of the session-list smooth scroller. Test-only
+    /// hook and the occasional renderer that wants the raw float for a
+    /// sub-row effect.
+    pub fn session_scroll_state(&self) -> crate::ui::fx::SmoothScroll {
+        self.scroll_session.get()
+    }
+
+    /// Read-only snapshot of the project-list smooth scroller. Mirror of
+    /// [`Self::session_scroll_state`].
+    pub fn project_scroll_state(&self) -> crate::ui::fx::SmoothScroll {
+        self.scroll_project.get()
     }
 
     /// True when the cursor glide trail should still be painted behind the
@@ -2211,6 +2369,15 @@ impl App {
                 self.cursor_changed_at = None;
             }
         }
+        // Drive the smooth-scroll interpolators once per frame. Reduce
+        // motion collapses the animation to a single-frame snap.
+        let reduce_motion = crate::theme::animations_disabled();
+        let mut ss = self.scroll_session.get();
+        ss.advance(reduce_motion);
+        self.scroll_session.set(ss);
+        let mut ps = self.scroll_project.get();
+        ps.advance(reduce_motion);
+        self.scroll_project.set(ps);
         // Advance replay virtual clock if a replay is open.
         if let Some(replay) = self.replay.as_mut() {
             replay.advance(Instant::now());
@@ -2226,6 +2393,46 @@ impl App {
 
 fn is_filter_char(c: char) -> bool {
     c.is_alphanumeric() || matches!(c, ' ' | '-' | '_' | '.' | '/' | '@')
+}
+
+/// Canonical "the cursor is always on-screen" anchor. Matches the
+/// `scroll_start` helpers previously inlined into `project_list` and
+/// `session_list` — top-anchored until the cursor crosses the first
+/// page, bottom-anchored afterwards.
+///
+/// Moved onto `app.rs` so the smooth-scroll interpolator shares the same
+/// source of truth as the render path; the renderers still keep their
+/// local copies as a fallback when App state isn't available (tests,
+/// stand-alone unit runs).
+fn baseline_scroll_start(selected: usize, visible_rows: usize, total: usize) -> usize {
+    if visible_rows == 0 || total <= visible_rows {
+        return 0;
+    }
+    if selected < visible_rows {
+        0
+    } else {
+        selected + 1 - visible_rows
+    }
+}
+
+/// Anchor the viewport using the smoothed offset, but clamp so the cursor
+/// is always visible. This preserves the "cursor never scrolls off-screen"
+/// contract even while the smoothed offset is mid-interpolation: if the
+/// interpolator is lagging behind a fast `j`-burst, we pin the viewport
+/// to whichever anchor keeps the cursor on-screen.
+fn anchored_scroll(
+    selected: usize,
+    visible_rows: usize,
+    total: usize,
+    smooth_offset: usize,
+) -> usize {
+    if visible_rows == 0 || total <= visible_rows {
+        return 0;
+    }
+    let max_start = total - visible_rows;
+    let min_start = (selected + 1).saturating_sub(visible_rows);
+    let max_cursor_visible = selected.min(max_start);
+    smooth_offset.clamp(min_start, max_cursor_visible)
 }
 
 /// Best-effort delete of the session JSONL.
@@ -2725,6 +2932,112 @@ mod tests {
         assert!(app.jump_ring_position().is_none());
         app.handle_event(Event::Ctrl('o')).unwrap();
         assert!(app.jump_ring_position().is_none());
+    }
+
+    fn mk_project(name: &str, path: &str) -> Project {
+        use crate::data::Project;
+        Project {
+            name: name.to_string(),
+            path: PathBuf::from(path),
+            encoded_dir: name.to_string(),
+            session_count: 0,
+            last_activity: None,
+            git_branch: None,
+        }
+    }
+
+    #[test]
+    fn cursor_memory_restores_on_reentry() {
+        // Arrange a session list owned by project 0 and drop the cursor on
+        // row 3, then simulate leaving → re-entering the same project. The
+        // cursor should come back to row 3 instead of snapping to 0.
+        let projects = vec![mk_project("alpha", "/tmp/alpha")];
+        let sessions = vec![
+            mk_session("s0", Some("zero")),
+            mk_session("s1", Some("one")),
+            mk_session("s2", Some("two")),
+            mk_session("s3", Some("three")),
+            mk_session("s4", Some("four")),
+        ];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+        let mut app = App::new(
+            projects,
+            sessions,
+            bm,
+            Mode::SessionList,
+            Some(0),
+        );
+        app.cursor = 3;
+
+        // Leaving session-list must stash the cursor.
+        app.save_session_cursor_memory();
+        assert_eq!(
+            app.session_cursor_memory.get("/tmp/alpha").copied(),
+            Some(3),
+            "memory should be keyed by the project path"
+        );
+
+        // Emulate a re-entry: reset the cursor to 0 (apply_filter always
+        // does this) and then restore from memory.
+        app.cursor = 0;
+        app.restore_session_cursor_memory();
+        assert_eq!(app.cursor, 3, "cursor must snap back to the saved row");
+    }
+
+    #[test]
+    fn cursor_memory_per_project_isolation() {
+        // Two projects keep independent cursor memories — switching
+        // between them must not cross-contaminate.
+        let projects = vec![
+            mk_project("alpha", "/tmp/alpha"),
+            mk_project("bravo", "/tmp/bravo"),
+        ];
+        let sessions = vec![
+            mk_session("a0", Some("a0")),
+            mk_session("a1", Some("a1")),
+            mk_session("a2", Some("a2")),
+            mk_session("a3", Some("a3")),
+        ];
+        let bm = BookmarkStore::load_from(PathBuf::from("/tmp/nonexistent-bookmarks.json"))
+            .expect("load");
+
+        // Project 0 — save cursor on row 2.
+        let mut app = App::new(
+            projects.clone(),
+            sessions.clone(),
+            bm,
+            Mode::SessionList,
+            Some(0),
+        );
+        app.cursor = 2;
+        app.save_session_cursor_memory();
+
+        // Swap to project 1 with its own session set; cursor goes to row 0.
+        app.selected_project = Some(1);
+        app.cursor = 0;
+        app.restore_session_cursor_memory();
+        assert_eq!(
+            app.cursor, 0,
+            "project bravo has no saved cursor — should stay at 0"
+        );
+
+        // Save a different row under project 1.
+        app.cursor = 1;
+        app.save_session_cursor_memory();
+
+        // Back to project 0 — we must retrieve its own saved row (2),
+        // not the row just saved for project 1 (1).
+        app.selected_project = Some(0);
+        app.cursor = 0;
+        app.restore_session_cursor_memory();
+        assert_eq!(app.cursor, 2, "project alpha's row must be restored");
+
+        // And project 1's memory is preserved too.
+        app.selected_project = Some(1);
+        app.cursor = 0;
+        app.restore_session_cursor_memory();
+        assert_eq!(app.cursor, 1, "project bravo's row must be independent");
     }
 
     #[test]

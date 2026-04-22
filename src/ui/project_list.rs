@@ -512,7 +512,11 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let visible_rows = area.height as usize;
     let total = app.filtered_indices.len();
     let cursor = app.cursor.min(total.saturating_sub(1));
-    let start = scroll_start(cursor, visible_rows, total);
+    let _ = cursor; // retained for clarity — see session_list for rationale
+    // Smooth-scroll aware anchor. Matches the semantics of the inline
+    // `scroll_start` helper below, just with interpolated intermediate
+    // frames when animations are enabled.
+    let start = app.project_scroll_start(visible_rows, total);
 
     let buf = f.buffer_mut();
     for (offset, display_idx) in (start..total.min(start + visible_rows)).enumerate() {
@@ -554,6 +558,12 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
 
 /// Viewport start index — same formula as `ratatui::widgets::List` so the
 /// cursor never scrolls off-screen.
+///
+/// Retained as a local helper because the test suite exercises the pure
+/// semantics directly; the live render path now goes through
+/// [`App::project_scroll_start`] which wraps this formula in the smooth-
+/// scroll interpolator.
+#[allow(dead_code)]
 fn scroll_start(selected: usize, visible_rows: usize, total: usize) -> usize {
     if visible_rows == 0 || total <= visible_rows {
         return 0;

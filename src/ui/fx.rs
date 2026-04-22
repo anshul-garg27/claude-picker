@@ -213,6 +213,111 @@ pub fn still_running(effect: &mut Effect) -> Option<&mut Effect> {
     }
 }
 
+// ── Smooth scroll (critically-damped lerp) ───────────────────────────────
+
+/// Per-frame interpolation rate for the smooth-scroll helper. `current`
+/// moves 30 % of the remaining distance toward `target` each tick, so the
+/// visible offset reaches within 0.5 rows of the target in roughly four
+/// frames (0.7^4 ≈ 0.24, 0.7^5 ≈ 0.17).
+///
+/// Why 0.30 specifically: it was picked so a single page-jump (say 12 rows)
+/// resolves in ~5 render ticks — long enough that the eye registers the
+/// motion as a glide rather than a teleport, short enough that the cursor
+/// is never visibly "behind" the input. Higher rates (0.5+) feel like a
+/// hard snap; lower rates (0.15-) feel rubbery on fast `j`/`k` bursts.
+pub const SMOOTH_SCROLL_LERP: f32 = 0.30;
+
+/// Snap threshold in rows. When `|target - current|` drops below this the
+/// helper assigns `current = target` outright, preventing the float from
+/// chasing an asymptote forever (and keeping the rendered offset stable —
+/// no 0.4-row sub-pixel flicker).
+pub const SMOOTH_SCROLL_SNAP: f32 = 0.5;
+
+/// Lightweight scroll-position interpolator.
+///
+/// Each list with a scrolled viewport owns one of these. The render path
+/// reads [`SmoothScroll::offset`] (rounded to the nearest row) to place its
+/// visible slice; the cursor-move path calls [`SmoothScroll::set_target`]
+/// whenever the anchor should change; and the per-frame `tick()` drives
+/// [`SmoothScroll::advance`] once.
+///
+/// Reduce-motion is respected: [`SmoothScroll::set_target`] with
+/// `reduce_motion = true` snaps immediately, bypassing the interpolation
+/// entirely. Toggling the flag mid-animation simply makes the *next*
+/// `advance` call finish at whatever `target` is at that moment — so a
+/// user flipping `CLAUDE_PICKER_NO_ANIM` on during a glide sees the list
+/// park at the final anchor on the next tick, not mid-animation.
+#[derive(Debug, Clone, Copy, Default)]
+pub struct SmoothScroll {
+    current: f32,
+    target: f32,
+}
+
+impl SmoothScroll {
+    /// Fresh scroller anchored at the origin.
+    pub const fn new() -> Self {
+        Self {
+            current: 0.0,
+            target: 0.0,
+        }
+    }
+
+    /// Current interpolated offset, rounded to a row index. This is the
+    /// value the render path slices against.
+    pub fn offset(&self) -> usize {
+        self.current.round().max(0.0) as usize
+    }
+
+    /// Raw interpolated offset (useful in tests and for sub-row effects).
+    pub fn current(&self) -> f32 {
+        self.current
+    }
+
+    /// Requested viewport anchor. Always a whole row — only `current`
+    /// carries the fractional state.
+    pub fn target(&self) -> f32 {
+        self.target
+    }
+
+    /// Update the scroll target.
+    ///
+    /// When `reduce_motion` is set the current offset snaps to the target
+    /// immediately — no subsequent [`SmoothScroll::advance`] calls are
+    /// needed for the viewport to settle.
+    pub fn set_target(&mut self, target: usize, reduce_motion: bool) {
+        self.target = target as f32;
+        if reduce_motion {
+            self.current = self.target;
+        }
+    }
+
+    /// Hard-reset both sides of the interpolation — useful when the
+    /// underlying list swaps (e.g. entering a new project) and the
+    /// previous scroll position is meaningless against the new data.
+    pub fn snap_to(&mut self, target: usize) {
+        self.target = target as f32;
+        self.current = self.target;
+    }
+
+    /// Advance one tick toward `target` using [`SMOOTH_SCROLL_LERP`]. When
+    /// `reduce_motion` is on the offset is clamped to `target` immediately;
+    /// otherwise the standard `current += (target - current) * rate`
+    /// applies, with a [`SMOOTH_SCROLL_SNAP`]-rows dead zone to avoid
+    /// float chasing.
+    pub fn advance(&mut self, reduce_motion: bool) {
+        if reduce_motion {
+            self.current = self.target;
+            return;
+        }
+        let delta = self.target - self.current;
+        if delta.abs() < SMOOTH_SCROLL_SNAP {
+            self.current = self.target;
+        } else {
+            self.current += delta * SMOOTH_SCROLL_LERP;
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -278,5 +383,62 @@ mod tests {
             area,
         );
         assert!(still_running(&mut effect).is_none());
+    }
+
+    #[test]
+    fn smooth_scroll_converges_within_5_frames() {
+        // Within a typical single-page scroll (≤ ~3 rows), the 0.30 lerp
+        // + 0.5-row snap collapses the animation inside five ticks. That's
+        // the visual contract: a j/k press never leaves the eye waiting
+        // more than a handful of frames for the viewport to catch up.
+        //
+        // Distance per frame: d[n] = target * 0.7^n. For target=2,
+        // d[4] = 2 * 0.2401 = 0.480 < 0.5 → snap on frame 4.
+        let mut s = SmoothScroll::new();
+        s.set_target(2, /* reduce_motion */ false);
+        for frame in 1..=5 {
+            s.advance(false);
+            if s.offset() == 2 && (s.current() - s.target()).abs() < f32::EPSILON {
+                // Converged — test passes at or before the fifth tick.
+                assert!(
+                    frame <= 5,
+                    "smooth scroll converged on frame {frame} (expected ≤5)"
+                );
+                return;
+            }
+        }
+        panic!(
+            "smooth scroll did not converge within 5 frames: current={}, target={}",
+            s.current(),
+            s.target()
+        );
+    }
+
+    #[test]
+    fn smooth_scroll_snaps_immediately_when_reduce_motion() {
+        // A brand-new scroller with reduce_motion engaged must land on the
+        // target in a single operation — no advance() required.
+        let mut s = SmoothScroll::new();
+        s.set_target(42, /* reduce_motion */ true);
+        assert_eq!(s.offset(), 42);
+        assert_eq!(s.current(), s.target());
+
+        // And advancing with reduce_motion held high keeps it pinned even
+        // if the target moves again.
+        s.set_target(7, true);
+        s.advance(true);
+        assert_eq!(s.offset(), 7);
+    }
+
+    #[test]
+    fn smooth_scroll_mid_animation_reduce_motion_toggle_parks_at_target() {
+        // Start an animation with motion on …
+        let mut s = SmoothScroll::new();
+        s.set_target(30, false);
+        s.advance(false);
+        assert!(s.offset() < 30, "mid-animation should not yet be at target");
+        // … then flip the gate. The next tick must snap to `target`.
+        s.advance(true);
+        assert_eq!(s.offset(), 30);
     }
 }
