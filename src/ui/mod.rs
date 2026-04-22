@@ -21,6 +21,10 @@ pub mod fx;
 pub mod heatmap;
 pub mod help_overlay;
 pub mod hooks;
+// Session interesting-moments mini-timeline (feature #20): compute + render
+// a compact one-row strip marking cost spikes, tool bursts, long pauses,
+// and first/last user prompts across a session's turns.
+pub mod interesting_moments;
 pub mod layout;
 pub mod mcp;
 pub mod model_pill;

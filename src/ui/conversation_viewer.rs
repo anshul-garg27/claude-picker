@@ -31,6 +31,7 @@ use crate::data::transcript::{
 use crate::data::Session;
 use crate::events::Event;
 use crate::theme::{self, Theme};
+use crate::ui::interesting_moments::{compute_moments_with_tools, render_timeline, Moment};
 
 /// What the viewer wants the parent to do after handling an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -169,6 +170,12 @@ pub struct ViewerState {
 
     /// Window where `gg` collapses to top.
     pending_g: Option<Instant>,
+
+    /// Pre-computed interesting moments for the mini-timeline (feature #20).
+    /// Populated from the underlying [`Session`] when available; empty for
+    /// viewers opened via [`Self::open_with`] that don't carry session
+    /// rollup data.
+    moments: Vec<Moment>,
 }
 
 /// How long the "heatmap: cost" toast hangs around after a dimension
@@ -203,14 +210,19 @@ impl ViewerState {
         } else {
             format!("${:.2}", session.total_cost_usd)
         };
-        Self::open_with(
+        let mut state = Self::open_with(
             &session.id,
             session.display_label(),
             format!("{} msgs", session.message_count),
             tokens_label,
             cost_label,
             session.total_cost_usd,
-        )
+        );
+        // Pre-compute the interesting-moments mini-timeline from the session
+        // rollup + the freshly-parsed transcript. This runs once per viewer
+        // open — the same budget as the transcript parse itself.
+        state.moments = compute_moments_with_tools(session, &turn_tool_counts(&state.messages));
+        state
     }
 
     /// Same as [`Self::open`] but takes a bare session id + labels. Useful
@@ -248,6 +260,7 @@ impl ViewerState {
             heatmap_toast_until: None,
             last_editor_bytes: 0,
             pending_g: None,
+            moments: Vec::new(),
         };
 
         match jsonl_path_for_session(session_id) {
@@ -586,17 +599,11 @@ impl ViewerState {
     /// becomes editable text. Returns a toast describing the outcome.
     fn send_current_turn_to_editor(&mut self) -> ViewerAction {
         if self.messages.is_empty() {
-            return ViewerAction::Toast(
-                "no turn to send to editor".to_string(),
-                ToastKind::Info,
-            );
+            return ViewerAction::Toast("no turn to send to editor".to_string(), ToastKind::Info);
         }
         let idx = self.current_turn_index();
         let Some(msg) = self.messages.get(idx) else {
-            return ViewerAction::Toast(
-                "no turn to send to editor".to_string(),
-                ToastKind::Info,
-            );
+            return ViewerAction::Toast("no turn to send to editor".to_string(), ToastKind::Info);
         };
 
         let body = format_turn_for_editor(idx, msg, &self.title);
@@ -673,7 +680,11 @@ fn format_turn_for_editor(idx: usize, msg: &TranscriptMessage, session_title: &s
                 out.push_str("\n```\n\n");
             }
             ContentItem::ToolResult { content, is_error } => {
-                let tag = if *is_error { "tool_result (error)" } else { "tool_result" };
+                let tag = if *is_error {
+                    "tool_result (error)"
+                } else {
+                    "tool_result"
+                };
                 out.push_str(&format!("## {tag}\n\n"));
                 out.push_str("```\n");
                 out.push_str(content);
@@ -694,7 +705,24 @@ fn format_turn_for_editor(idx: usize, msg: &TranscriptMessage, session_title: &s
 
 /// Render the viewer across the entire `area`. Recomputes the flattened
 /// line cache if the width has changed.
+///
+/// Equivalent to [`render_with_zen`] with `zen = false`.
 pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut ViewerState, theme: &Theme) {
+    render_with_zen(f, area, state, theme, false);
+}
+
+/// Render variant that honors a "zen mode" toggle. When `zen == true`, the
+/// chrome-lite pass (no mini-timeline) renders instead — matches the
+/// existing behaviour before feature #20. When `zen == false` (default),
+/// the interesting-moments mini-timeline is prepended above the transcript
+/// body so the reader can see where the notable events are concentrated.
+pub fn render_with_zen(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &mut ViewerState,
+    theme: &Theme,
+    zen: bool,
+) {
     // Clear so we truly take over the whole screen — the viewer is
     // modal-on-top-of-picker and the underlying pane's border would
     // otherwise bleed through at the edges.
@@ -714,33 +742,78 @@ pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut ViewerState, theme: &Th
     let inner = block.inner(area);
     f.render_widget(block, area);
 
-    // Split inner vertically: body + footer (+ search bar if open).
-    let constraints: Vec<Constraint> = if state.search_open {
-        vec![
-            Constraint::Min(3),    // body
-            Constraint::Length(1), // search bar
-            Constraint::Length(1), // footer
-        ]
-    } else {
-        vec![
-            Constraint::Min(3),    // body
-            Constraint::Length(1), // footer
-        ]
-    };
+    // Mini-timeline renders only when we have moments and we're not in
+    // zen mode. Keep the preamble row to exactly ONE line so downstream
+    // splits below stay trivially mergeable with concurrent viewer work.
+    let show_timeline = !zen && !state.moments.is_empty();
+
+    // Split inner vertically: (optional timeline) + body + footer
+    // (+ search bar if open).
+    let mut constraints: Vec<Constraint> = Vec::with_capacity(4);
+    if show_timeline {
+        constraints.push(Constraint::Length(1));
+    }
+    constraints.push(Constraint::Min(3)); // body
+    if state.search_open {
+        constraints.push(Constraint::Length(1)); // search bar
+    }
+    constraints.push(Constraint::Length(1)); // footer
+
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints(constraints)
         .split(inner);
 
-    let body_area = chunks[0];
+    let mut idx = 0;
+    if show_timeline {
+        render_moments_timeline(f, chunks[idx], state, theme);
+        idx += 1;
+    }
+    let body_area = chunks[idx];
     render_body(f, body_area, state, theme);
+    idx += 1;
 
     if state.search_open {
-        render_search_bar(f, chunks[1], state, theme);
-        render_footer_hint(f, chunks[2], state, theme);
-    } else {
-        render_footer_hint(f, chunks[1], state, theme);
+        render_search_bar(f, chunks[idx], state, theme);
+        idx += 1;
     }
+    render_footer_hint(f, chunks[idx], state, theme);
+}
+
+/// Paint the mini-timeline preamble row. No-op when the row would be
+/// narrower than the timeline renderer can fit.
+fn render_moments_timeline(f: &mut Frame<'_>, area: Rect, state: &ViewerState, theme: &Theme) {
+    // Leave one leading space for the left margin so the bar doesn't
+    // collide with the outer rounded border glyph.
+    let inner_width = area.width.saturating_sub(3);
+    let spans = render_timeline(&state.moments, theme, inner_width);
+    if spans.is_empty() {
+        return;
+    }
+    let mut line_spans: Vec<Span<'static>> = Vec::with_capacity(spans.len() + 2);
+    line_spans.push(Span::raw("   "));
+    for span in spans {
+        // Convert to `'static` by cloning owned content — the renderer
+        // returned `Span<'a>` where `'a` is unbound; the spans carry
+        // `Cow::Owned` strings in practice.
+        line_spans.push(Span::styled(span.content.into_owned(), span.style));
+    }
+    let p = Paragraph::new(Line::from(line_spans));
+    f.render_widget(p, area);
+}
+
+/// Count tool_use items per message (turn). Returns a `Vec<usize>` aligned
+/// with the session's turn indices — used to feed [`compute_moments_with_tools`].
+fn turn_tool_counts(messages: &[TranscriptMessage]) -> Vec<usize> {
+    messages
+        .iter()
+        .map(|m| {
+            m.items
+                .iter()
+                .filter(|item| matches!(item, ContentItem::ToolUse { .. }))
+                .count()
+        })
+        .collect()
 }
 
 fn title_line<'a>(state: &'a ViewerState, theme: &'a Theme) -> Line<'a> {
@@ -1056,7 +1129,8 @@ fn rebuild_rendered_lines(state: &mut ViewerState, theme: &Theme, width: u16) {
     // Recompute the mini-heatmap values for the currently-selected
     // dimension. These stay on the state so `render_heatmap_gutter` can
     // index them by turn without re-walking the transcript every frame.
-    state.heatmap_values = compute_heatmap_values(&state.messages, state.cost_usd, state.heatmap_dim);
+    state.heatmap_values =
+        compute_heatmap_values(&state.messages, state.cost_usd, state.heatmap_dim);
 
     // If we have a search query, highlight matches in yellow and build the
     // match-line index.
@@ -1113,9 +1187,7 @@ fn compute_heatmap_values(
     let raw: Vec<f32> = messages
         .iter()
         .map(|m| match dim {
-            HeatmapDimension::Cost | HeatmapDimension::Tokens => {
-                turn_text_size(m) as f32
-            }
+            HeatmapDimension::Cost | HeatmapDimension::Tokens => turn_text_size(m) as f32,
             HeatmapDimension::Duration => turn_work_score(m) as f32,
         })
         .collect();
@@ -1746,7 +1818,10 @@ mod tests {
     fn compute_heatmap_values_sizes_with_content() {
         let msgs = vec![
             msg(Role::User, "short"),
-            msg(Role::Assistant, "a much longer assistant reply that should outweigh the user"),
+            msg(
+                Role::Assistant,
+                "a much longer assistant reply that should outweigh the user",
+            ),
         ];
         let v = compute_heatmap_values(&msgs, 0.0, HeatmapDimension::Tokens);
         assert_eq!(v.len(), 2);
