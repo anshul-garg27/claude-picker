@@ -374,21 +374,43 @@ fn catppuccin_mocha() -> Theme {
 /// visible tinted stripe instead of a darker shade. Good contrast check
 /// against the accent colors, which are deliberately brighter on Latte to
 /// stay legible on a white surface.
+///
+/// v0.6 AA polish (#35): stock Latte fails WCAG AA on several pairs —
+/// `overlay0` and `surface0` vs base both clock in under 3:1, and the stock
+/// sapphire/teal model pills sit around 2:1 on `surface0`. We override those
+/// fields with deeper hand-tuned values while keeping the "warm cream +
+/// muted accents" character. Every stock pair that already passes AA
+/// (`text`, `subtext1`, `mauve`, `peach`, `red`) is kept exactly as the
+/// `catppuccin` crate ships it.
 fn catppuccin_latte() -> Theme {
     let c = &PALETTE.latte.colors;
     // Latte is a light theme — the stock `yellow` (#DF8E1D) is borderline on
     // cream bg and the stock `green` (#40A02B) is OK. We darken/saturate the
     // accents for stats so numbers stay legible over the cream base.
-    let yellow = hex(0xB0, 0x6E, 0x00); // stock #DF8E1D → deeper gold, 5.1:1 vs base
-    let peach = hex(0xD2, 0x52, 0x10); // stock #FE640B → richer orange, AA-safe
-    let red = hex(0xD2, 0x0F, 0x39); // stock value — already punchy
-    let green = hex(0x28, 0x8D, 0x1F); // stock #40A02B darkened for 4.7:1 on cream
+    let yellow = hex(0xB0, 0x6E, 0x00); // stock #DF8E1D (2.3:1) → deeper gold, 3.66:1 vs base
+    let peach = hex(0xD2, 0x52, 0x10); // stock #FE640B → richer orange, 3.75:1 vs base
+    let red = hex(0xD2, 0x0F, 0x39); // stock value — 4.80:1 vs base, already punchy
+    // was #288D1F (3.77:1 base / 2.40:1 surface0), bumped to #1F7117 for
+    // 5.41:1 base and 3.44:1 on the new darker surface0 (selected-row fg).
+    let green = hex(0x1F, 0x71, 0x17);
+    // was stock #209FB5 (2.03:1 vs surface0), bumped to #066B7D for 3.46:1
+    // on the new surface0 — model_sonnet pill stays legible.
+    let sapphire = hex(0x06, 0x6B, 0x7D);
+    // was stock #179299 (2.43:1 vs surface0), bumped to #0A6C6E for 3.49:1
+    // on the new surface0 — model_haiku pill stays legible.
+    let teal = hex(0x0A, 0x6C, 0x6E);
+    // was stock #CCD0DA (1.37:1 vs base — selected-row stripe invisible),
+    // bumped to #BEC2CE for 1.57:1 so row-to-row separation is perceptible.
+    let surface0 = hex(0xBE, 0xC2, 0xCE);
+    // was stock #9CA0B0 (2.30:1 vs base — borders/dim text failed AA),
+    // bumped to #8489A0 for 3.06:1 — just clears AA large / muted text.
+    let overlay0 = hex(0x84, 0x89, 0xA0);
     Theme {
         name: ThemeName::CatppuccinLatte,
         crust: rgb(&c.crust),
         mantle: rgb(&c.mantle),
         base: rgb(&c.base),
-        surface0: rgb(&c.surface0),
+        surface0,
         surface1: rgb(&c.surface1),
         surface2: rgb(&c.surface2),
         text: rgb(&c.text),
@@ -396,13 +418,13 @@ fn catppuccin_latte() -> Theme {
         subtext0: rgb(&c.subtext0),
         overlay2: rgb(&c.overlay2),
         overlay1: rgb(&c.overlay1),
-        overlay0: rgb(&c.overlay0),
+        overlay0,
         mauve: rgb(&c.mauve),
         green,
         yellow,
         blue: rgb(&c.blue),
         peach,
-        teal: rgb(&c.teal),
+        teal,
         red,
         pink: rgb(&c.pink),
         sky: rgb(&c.sky),
@@ -416,9 +438,9 @@ fn catppuccin_latte() -> Theme {
         speed_medium: yellow,                 // gold
         speed_slow: peach,                    // orange
         speed_glacial: red,                   // crimson
-        model_opus: rgb(&c.mauve),            // latte mauve
-        model_sonnet: rgb(&c.sapphire),       // latte sapphire
-        model_haiku: rgb(&c.teal),            // latte teal
+        model_opus: rgb(&c.mauve),            // latte mauve — 3.04:1 on new surface0
+        model_sonnet: sapphire,               // deeper sapphire — 3.46:1 on new surface0
+        model_haiku: teal,                    // deeper teal — 3.49:1 on new surface0
     }
 }
 
@@ -805,7 +827,9 @@ fn high_contrast() -> Theme {
         crust: black,
         mantle: black,
         base: black,
-        surface0: hex(0x22, 0x22, 0x22),
+        // was #222222 (1.32:1 vs base — selected-row stripe too subtle),
+        // bumped to #2E2E2E for 1.55:1 so row-to-row separation is perceptible.
+        surface0: hex(0x2E, 0x2E, 0x2E),
         surface1: hex(0x44, 0x44, 0x44),
         surface2: hex(0x66, 0x66, 0x66),
         text: white,
@@ -1119,17 +1143,30 @@ fn parchment_dark() -> Theme {
 /// of pure black. All accents are deeper/darker than dark-theme equivalents so
 /// they retain AA+ contrast against the cream. Use for daytime coding,
 /// projectors, and blog-embed screenshots.
+///
+/// v0.6 AA polish (#35): the original surface ramp was too close to `base`
+/// (surface0 1.07:1 vs base — selected-row stripe invisible) and `overlay0`
+/// sat at 2.15:1 (dim text under AA). Ramp is shifted one step darker so
+/// every surface pair clears 1.5:1 and `overlay0` clears 3:1 — the warm
+/// cream character stays intact, but the panels now actually float.
 fn paperwhite_warm() -> Theme {
     let cream = hex(0xFA, 0xF4, 0xE6);
-    let surface0 = hex(0xF3, 0xED, 0xDC);
-    let surface1 = hex(0xE8, 0xE0, 0xC4);
-    let surface2 = hex(0xD9, 0xCF, 0xAA);
+    // Surface ramp shifted darker for AA:
+    //   was #F3EDDC (1.07:1 base) — too invisible for a selected-row stripe.
+    //   now #D4C9A0 (1.51:1 base) — clearly floats, keeps warm cream tint.
+    let surface0 = hex(0xD4, 0xC9, 0xA0);
+    // was #E8E0C4 (1.20:1) → #C2B587 (1.87:1) so panel borders stay readable
+    let surface1 = hex(0xC2, 0xB5, 0x87);
+    // was #D9CFAA (1.42:1) → #AE9F6E (2.40:1) — deeper rule / dim() helper
+    let surface2 = hex(0xAE, 0x9F, 0x6E);
     let indigo = hex(0x1A, 0x1A, 0x2E);
     let subtext1 = hex(0x2E, 0x2E, 0x45);
     let subtext0 = hex(0x4A, 0x4A, 0x5E);
     let overlay2 = hex(0x6B, 0x6B, 0x7A);
     let overlay1 = hex(0x8A, 0x8A, 0x96);
-    let overlay0 = hex(0xA8, 0xA8, 0xB0);
+    // was #A8A8B0 (2.15:1 vs base — dim text / borders fail AA large),
+    // bumped to #7A7A86 for 3.86:1 so borders and muted text clear 3:1.
+    let overlay0 = hex(0x7A, 0x7A, 0x86);
 
     let aubergine = hex(0x6B, 0x3F, 0xA0); // opus premium
     let forest = hex(0x3A, 0x7D, 0x44);
@@ -1730,6 +1767,120 @@ mod tests {
         let style = Style::default().add_modifier(Modifier::BOLD);
         let faded = age_fade_style(&t, style, Duration::from_secs(60 * 24 * 3_600));
         assert_eq!(faded.fg, None);
+    }
+
+    // ── WCAG AA contrast helpers for the light-theme audit (issue #35) ──
+
+    /// Relative luminance per WCAG 2.1
+    /// (<https://www.w3.org/WAI/GL/wiki/Relative_luminance>).
+    fn relative_luminance(color: Color) -> f64 {
+        let Color::Rgb(r, g, b) = color else {
+            panic!("light-theme audit requires explicit RGB, got {:?}", color);
+        };
+        fn channel(c: u8) -> f64 {
+            let v = c as f64 / 255.0;
+            if v <= 0.03928 {
+                v / 12.92
+            } else {
+                ((v + 0.055) / 1.055).powf(2.4)
+            }
+        }
+        0.2126 * channel(r) + 0.7152 * channel(g) + 0.0722 * channel(b)
+    }
+
+    /// WCAG contrast ratio per
+    /// <https://www.w3.org/WAI/GL/wiki/Contrast_ratio>: returns
+    /// `(lighter + 0.05) / (darker + 0.05)`. Both inputs must be
+    /// `Color::Rgb` — every shipped palette is explicit TrueColor so this
+    /// asserts rather than falls through.
+    fn contrast_ratio(fg: Color, bg: Color) -> f64 {
+        let lf = relative_luminance(fg);
+        let lb = relative_luminance(bg);
+        let lighter = lf.max(lb);
+        let darker = lf.min(lb);
+        (lighter + 0.05) / (darker + 0.05)
+    }
+
+    /// Assert a single contrast pair with a readable failure message.
+    fn assert_aa(label: &str, fg: Color, bg: Color, min: f64) {
+        let ratio = contrast_ratio(fg, bg);
+        assert!(
+            ratio >= min,
+            "{label}: {ratio:.2}:1 < {min}:1 required (fg={fg:?} bg={bg:?})"
+        );
+    }
+
+    /// Shared rubric for the three light-leaning themes. Every pair listed
+    /// below is audited against WCAG AA thresholds from the task brief:
+    ///
+    /// - `text` / `subtext1` vs `base` ≥ 4.5:1 (AA body)
+    /// - `subtext0` / `overlay0` vs `base` ≥ 3:1 (AA large / muted text)
+    /// - `green` / `red` / `yellow` vs `base` ≥ 3:1 (status colours)
+    /// - `model_*` pills vs `surface0` ≥ 3:1 (pill foregrounds)
+    /// - `surface0` vs `base` ≥ 1.5:1 (row-to-row separation)
+    fn assert_theme_meets_aa(theme: &Theme) {
+        assert_aa("text vs base", theme.text, theme.base, 4.5);
+        assert_aa("subtext1 vs base", theme.subtext1, theme.base, 4.5);
+        assert_aa("subtext0 vs base", theme.subtext0, theme.base, 3.0);
+        assert_aa("overlay0 vs base", theme.overlay0, theme.base, 3.0);
+        assert_aa("green vs base", theme.green, theme.base, 3.0);
+        assert_aa("red vs base", theme.red, theme.base, 3.0);
+        assert_aa("yellow vs base", theme.yellow, theme.base, 3.0);
+        assert_aa(
+            "model_opus vs surface0",
+            theme.model_opus,
+            theme.surface0,
+            3.0,
+        );
+        assert_aa(
+            "model_sonnet vs surface0",
+            theme.model_sonnet,
+            theme.surface0,
+            3.0,
+        );
+        assert_aa(
+            "model_haiku vs surface0",
+            theme.model_haiku,
+            theme.surface0,
+            3.0,
+        );
+        assert_aa(
+            "surface0 vs base (selected-row)",
+            theme.surface0,
+            theme.base,
+            1.5,
+        );
+    }
+
+    #[test]
+    fn catppuccin_latte_meets_aa_contrast() {
+        // Catppuccin Latte is the flagship light theme — every pair in the
+        // shared rubric must clear AA. Stock Latte fails on `overlay0`,
+        // `surface0`, and the sapphire/teal pills; the builder overrides
+        // those fields with deeper hand-tuned values.
+        let theme = Theme::from_name(ThemeName::CatppuccinLatte);
+        assert_theme_meets_aa(&theme);
+    }
+
+    #[test]
+    fn paperwhite_warm_meets_aa_contrast() {
+        // Paperwhite Warm — cream base + indigo ink + warm accents. Body
+        // text was already way past AA but the surface ramp and `overlay0`
+        // were too close to `base`. After the v0.6 polish the full audit
+        // rubric clears.
+        let theme = Theme::from_name(ThemeName::PaperwhiteWarm);
+        assert_theme_meets_aa(&theme);
+    }
+
+    #[test]
+    fn high_contrast_meets_aa_contrast() {
+        // High Contrast is a *dark* theme with saturated primaries — not
+        // strictly a "light" theme, but the accessibility audit applies
+        // regardless. Pure-black base pushes the fg pairs past 5:1 with
+        // room to spare; the only tune was bumping `surface0` so the
+        // selected-row stripe crosses the 1.5:1 separation threshold.
+        let theme = Theme::from_name(ThemeName::HighContrast);
+        assert_theme_meets_aa(&theme);
     }
 
     #[test]
