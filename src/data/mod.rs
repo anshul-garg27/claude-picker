@@ -12,6 +12,7 @@ pub mod clipboard;
 pub mod cost_audit;
 pub mod editor;
 pub mod file_index;
+pub mod marks;
 pub mod mcp_calls;
 pub mod path_resolver;
 pub mod pinned_projects;
@@ -23,6 +24,8 @@ pub mod session;
 pub mod session_rename;
 pub mod settings;
 pub mod task_queue;
+// Per-tool distribution for the cost-audit drill-in detail view (#16).
+pub mod tool_dist;
 pub mod transcript;
 
 pub use project::Project;

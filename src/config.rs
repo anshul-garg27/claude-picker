@@ -45,8 +45,9 @@ pub struct Config {
 /// `[ui]` — appearance + global display toggles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
-    /// One of: catppuccin-mocha, catppuccin-latte, dracula, tokyo-night,
-    /// gruvbox-dark, nord. Unknown values fall through to the next source.
+    /// One of: kanagawa (default), catppuccin-mocha, catppuccin-latte, dracula,
+    /// tokyo-night, gruvbox-dark, nord, finance-terminal, parchment-dark,
+    /// paperwhite-warm. Unknown values fall through to the next source.
     #[serde(default = "default_theme")]
     pub theme: String,
 
@@ -85,7 +86,9 @@ impl Default for UiConfig {
 }
 
 fn default_theme() -> String {
-    "catppuccin-mocha".to_string()
+    // v0.6 swapped the default from catppuccin-mocha → kanagawa for the long-
+    // term brand identity direction (see docs/design/theme-comparison.html).
+    "kanagawa".to_string()
 }
 
 /// `[picker]` — what gets shown in the default picker screen and how.
@@ -257,9 +260,10 @@ pub const DEFAULT_TEMPLATE: &str = r#"# claude-picker configuration
 #   4. Built-in default
 
 [ui]
-# Default theme. One of: catppuccin-mocha, catppuccin-latte, dracula,
-# tokyo-night, gruvbox-dark, nord.
-theme = "catppuccin-mocha"
+# Default theme. One of: kanagawa (default), catppuccin-mocha, catppuccin-latte,
+# dracula, tokyo-night, gruvbox-dark, nord, finance-terminal, parchment-dark,
+# paperwhite-warm.
+theme = "kanagawa"
 
 # When non-empty, overrides the subtitle timestamp format. Default uses
 # smart relative time (5m, 2h, yesterday, Apr 12). Use strftime syntax.
@@ -325,7 +329,7 @@ mod tests {
     #[test]
     fn defaults_are_sane() {
         let c = Config::default();
-        assert_eq!(c.ui.theme, "catppuccin-mocha");
+        assert_eq!(c.ui.theme, "kanagawa");
         assert!(!c.ui.reduce_motion, "animations should be on by default");
         assert_eq!(c.picker.sort, "bookmarked-first");
         assert_eq!(c.picker.min_messages, 2);

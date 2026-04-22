@@ -26,11 +26,15 @@ use crate::theme::Theme;
 
 /// Colour + label for the given family, exposed so other widgets can match
 /// the pill colour without hard-coding.
+///
+/// Uses dedicated `model_*` slots so the model palette can't collide with the
+/// money/accent palette (peach/teal/blue are reused elsewhere for cost and
+/// status cues; remapping them here would desync the rest of the UI).
 pub fn family_color(family: Family, theme: &Theme) -> ratatui::style::Color {
     match family {
-        Family::Opus => theme.peach,
-        Family::Sonnet => theme.teal,
-        Family::Haiku => theme.blue,
+        Family::Opus => theme.model_opus,
+        Family::Sonnet => theme.model_sonnet,
+        Family::Haiku => theme.model_haiku,
         Family::Unknown => theme.mauve,
     }
 }
@@ -138,15 +142,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn opus_chip_uses_peach_fg_over_surface0() {
-        // Chip-style: family colour in the fg (text + half-block rails),
-        // surface0 as the floating-chip bed.
+    fn opus_chip_uses_model_opus_fg_over_surface0() {
+        // Chip-style: model_opus colour in the fg (text + half-block rails),
+        // surface0 as the floating-chip bed. Dedicated model_* slot so it
+        // never collides with money/accent palette reused elsewhere.
         let t = Theme::mocha();
         let span = pill(Family::Opus, &t);
         assert!(span.content.contains("opus"));
         assert!(span.content.starts_with('\u{258C}'));
         assert!(span.content.ends_with('\u{2590}'));
-        assert_eq!(span.style.fg, Some(t.peach));
+        assert_eq!(span.style.fg, Some(t.model_opus));
         assert_eq!(span.style.bg, Some(t.surface0));
     }
 
@@ -155,7 +160,7 @@ mod tests {
         // Legacy flat variant still available for callers on a surface0 bg.
         let t = Theme::mocha();
         let span = flat_pill(Family::Opus, &t);
-        assert_eq!(span.style.bg, Some(t.peach));
+        assert_eq!(span.style.bg, Some(t.model_opus));
         assert_eq!(span.style.fg, Some(t.crust));
     }
 

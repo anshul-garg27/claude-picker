@@ -7,6 +7,10 @@
 
 pub mod actions;
 pub mod audit;
+// Drill-in detail overlay for the cost audit (#16).
+pub mod audit_detail;
+// Always-visible row-0 header shared by picker + viewer screens.
+pub mod breadcrumb;
 pub mod checkpoints;
 pub mod command_palette;
 pub mod conversation_viewer;
@@ -24,6 +28,8 @@ pub mod hooks;
 pub mod layout;
 pub mod mcp;
 pub mod model_pill;
+pub mod model_simulator;
+pub mod onboarding;
 pub mod picker;
 pub mod preview;
 pub mod project_list;

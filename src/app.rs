@@ -35,6 +35,8 @@ use crate::ui::command_palette::{self, CommandPalette};
 use crate::ui::conversation_viewer::{ToastKind as ViewerToastKind, ViewerAction, ViewerState};
 use crate::ui::filter_ribbon::{FilterRibbon, FilterScope};
 use crate::ui::help_overlay::{self, Screen as HelpScreen};
+use crate::ui::model_simulator::{self, ModelSimulatorState};
+use crate::ui::onboarding::{OnboardingState, Outcome as OnboardingOutcome};
 use crate::ui::project_list::ProjectList;
 use crate::ui::rename_modal::{self, RenameState};
 use crate::ui::replay::{ReplayAction, ReplayState, ToastKind as ReplayToastKind};
@@ -248,6 +250,10 @@ pub struct App {
     /// Full-screen time-travel replay — `Some` while the user is watching
     /// a session play back message-by-message.
     pub replay: Option<ReplayState>,
+    /// "What if" model cost simulator (#5).
+    pub model_simulator: Option<ModelSimulatorState>,
+    /// First-run onboarding tour (#13).
+    pub onboarding: Option<OnboardingState>,
     /// Session ids the user has multi-selected via Tab.
     pub multi_selected: HashSet<String>,
     /// True when multi-select mode is engaged. Distinct from
@@ -387,6 +393,8 @@ impl App {
             palette: None,
             viewer: None,
             replay: None,
+            model_simulator: None,
+            onboarding: None,
             multi_selected: HashSet::new(),
             multi_mode: false,
             pending_g: None,
@@ -420,22 +428,31 @@ impl App {
         s
     }
 
-    /// First-run splash: if `~/.config/claude-picker/.seen_tour` is missing,
-    /// seed a 3-second toast pointing at `?`, `space`, and `t`. Best-effort —
-    /// we always mark the tour seen so a writable-home-first-time user never
-    /// sees the tip twice.
+    /// First-run handling: construct the 3-step onboarding tour (#13) when
+    /// the `.seen_tour` marker is absent.
     fn maybe_show_first_run_splash(&mut self) {
         if !theme::is_first_run() {
             return;
         }
-        // Keep the copy terse — it lives over the main picker, so the
-        // absolute shortest summary wins. Brief says 3s dwell.
-        self.toast = Some(Toast::new_with_visible(
-            "tip: ? for shortcuts \u{2219} Space for commands \u{2219} t for themes",
-            ToastKind::Info,
-            Duration::from_millis(3_000),
-        ));
-        let _ = theme::mark_first_run_done();
+        let top = self.top_session_this_month();
+        self.onboarding = Some(OnboardingState::new().with_top_session(top));
+    }
+
+    /// Most expensive session this month — seeds onboarding step 1.
+    fn top_session_this_month(&self) -> Option<(String, f64)> {
+        use chrono::{Datelike, Utc};
+        if self.sessions.is_empty() {
+            return None;
+        }
+        let now = Utc::now();
+        let (y, m) = (now.year(), now.month());
+        let best = self
+            .sessions
+            .iter()
+            .filter(|s| s.last_timestamp.map(|t| t.year() == y && t.month() == m).unwrap_or(false))
+            .filter(|s| s.total_cost_usd > 0.0)
+            .max_by(|a, b| a.total_cost_usd.partial_cmp(&b.total_cost_usd).unwrap_or(std::cmp::Ordering::Equal))?;
+        Some((best.display_label().to_string(), best.total_cost_usd))
     }
 
     /// Cycle to the next theme in [`ThemeName::ALL`], replace the live
@@ -702,6 +719,14 @@ impl App {
 
     /// Dispatch a single [`Event`] against the state.
     pub fn handle_event(&mut self, ev: Event) -> anyhow::Result<()> {
+        // Onboarding tour (#13) consumes every key until dismissed.
+        if self.onboarding.is_some() {
+            return self.handle_onboarding(ev);
+        }
+        // Model simulator modal (#5) consumes `q`/`Esc`/`r`.
+        if self.model_simulator.is_some() {
+            return self.handle_model_simulator(ev);
+        }
         // Modal inputs take precedence, in reverse visual-stack order.
         if self.replay.is_some() {
             return self.handle_replay(ev);
@@ -910,6 +935,10 @@ impl App {
             // `o` launches `$EDITOR <project_path>` detached.
             Event::Key('o') if self.filter.is_empty() => self.open_editor_for_selection(),
             Event::Key(c) if c == 'q' && self.filter.is_empty() => self.should_quit = true,
+            // `m` opens the "what if" model cost simulator (#5).
+            Event::Key('m') if self.filter.is_empty() && self.mode == Mode::SessionList => {
+                self.open_model_simulator();
+            }
             // `t` cycles the theme when the filter is empty. If the user is
             // typing a filter (including searches with `t` in them) the letter
             // goes to the filter via the fallthrough branch below.
@@ -1411,6 +1440,47 @@ impl App {
                     ReplayToastKind::Error => ToastKind::Error,
                 };
                 self.toast = Some(Toast::new(message, app_kind));
+            }
+        }
+        Ok(())
+    }
+
+    /// Open the "what if" model simulator (#5).
+    pub fn open_model_simulator(&mut self) {
+        if self.mode != Mode::SessionList {
+            return;
+        }
+        let Some(session) = self.selected_session_ref().cloned() else {
+            return;
+        };
+        self.model_simulator = Some(ModelSimulatorState::from_session(&session));
+    }
+
+    /// Dispatch events to the open model simulator (#5).
+    fn handle_model_simulator(&mut self, ev: Event) -> anyhow::Result<()> {
+        match ev {
+            Event::Escape => self.model_simulator = None,
+            Event::Key(c) if model_simulator::is_dismiss_key(c) => self.model_simulator = None,
+            Event::Key('r') => {
+                if let Some(session) = self.selected_session_ref().cloned() {
+                    self.model_simulator = Some(ModelSimulatorState::from_session(&session));
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
+    /// Dispatch events to the onboarding tour (#13).
+    fn handle_onboarding(&mut self, ev: Event) -> anyhow::Result<()> {
+        let Some(state) = self.onboarding.as_mut() else {
+            return Ok(());
+        };
+        match state.handle_event(ev) {
+            OnboardingOutcome::Continue => {}
+            OnboardingOutcome::Dismiss => {
+                self.onboarding = None;
+                let _ = theme::mark_first_run_done();
             }
         }
         Ok(())
@@ -2215,7 +2285,19 @@ pub fn run(mut app: App) -> anyhow::Result<Option<(String, PathBuf)>> {
 
     let result: anyhow::Result<Option<(String, PathBuf)>> = (|| {
         while !app.should_quit {
-            terminal.draw(|f| crate::ui::picker::render(f, &mut app))?;
+            terminal.draw(|f| {
+                crate::ui::picker::render(f, &mut app);
+                if let Some(sim) = app.model_simulator.as_ref() {
+                    let theme = app.theme;
+                    let area = f.area();
+                    crate::ui::model_simulator::render(f, area, sim, &theme);
+                }
+                if let Some(state) = app.onboarding.as_ref() {
+                    let theme = app.theme;
+                    let area = f.area();
+                    crate::ui::onboarding::render(f, area, state, &theme);
+                }
+            })?;
             app.tick();
             if let Some(ev) = events::next()? {
                 app.handle_event(ev)?;

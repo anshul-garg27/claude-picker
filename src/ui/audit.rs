@@ -24,7 +24,9 @@ use ratatui::widgets::{Block, BorderType, Borders, Clear, Paragraph};
 use ratatui::Frame;
 
 use crate::data::cost_audit::{summary_by_kind, AuditFinding, FindingKind, Severity};
+use crate::data::tool_dist::{collect_tool_distribution, find_session_jsonl, ToolDistEntry};
 use crate::theme::Theme;
+use crate::ui::audit_detail;
 
 /// View state: the list of findings plus cursor/scroll position.
 pub struct AuditState {
@@ -38,12 +40,27 @@ pub struct AuditState {
     pub selection: Option<AuditSelection>,
     /// `?` help overlay visible.
     pub show_help: bool,
+    /// Drill-in overlay (#16): when `Some`, the detail view replaces the
+    /// findings list. Opened by Enter on a `ToolRatio` finding, closed by
+    /// another Enter press (since the outer event loop consumes Esc / q as
+    /// the audit-quit path).
+    pub detail: Option<AuditDetailView>,
 }
 
 /// What the user chose to open when exiting.
 pub struct AuditSelection {
     pub session_id: String,
     pub project_cwd: std::path::PathBuf,
+}
+
+/// Snapshot shown by the drill-in overlay.
+///
+/// Cached at open-time so repeated frames don't re-parse the JSONL. The
+/// `finding` is cloned from the selected row so the overlay keeps rendering
+/// even if the underlying list shifts (sort order, etc.).
+pub struct AuditDetailView {
+    pub finding: AuditFinding,
+    pub tool_dist: Vec<ToolDistEntry>,
 }
 
 impl AuditState {
@@ -55,6 +72,7 @@ impl AuditState {
             should_quit: false,
             selection: None,
             show_help: false,
+            detail: None,
         }
     }
 
@@ -68,14 +86,46 @@ impl AuditState {
         self.cursor = next as usize;
     }
 
+    /// Enter-key handler.
+    ///
+    /// - If the drill-in overlay is open → close it (Enter acts as "back").
+    /// - Else if the cursor is on a `ToolRatio` finding → open the drill-in
+    ///   detail view with a per-tool breakdown of the session's output.
+    /// - Else → record the selection so the command loop can resume the
+    ///   session after restoring the terminal (existing behaviour for
+    ///   cache-efficiency / model-mismatch findings, and as a fallback when
+    ///   the JSONL for a ToolRatio finding cannot be located).
     pub fn confirm(&mut self) {
-        if let Some(f) = self.findings.get(self.cursor) {
-            self.selection = Some(AuditSelection {
-                session_id: f.session_id.clone(),
-                project_cwd: f.project_cwd.clone(),
-            });
-            self.should_quit = true;
+        // Enter while detail is open = close detail. Cleanest "back" gesture
+        // available without touching the outer command loop.
+        if self.detail.is_some() {
+            self.detail = None;
+            return;
         }
+        let Some(f) = self.findings.get(self.cursor) else {
+            return;
+        };
+        let is_tool_ratio = f
+            .findings
+            .iter()
+            .any(|row| row.kind == FindingKind::ToolRatio);
+        if is_tool_ratio {
+            if let Some(path) = find_session_jsonl(&f.session_id) {
+                let tool_dist = collect_tool_distribution(&path);
+                self.detail = Some(AuditDetailView {
+                    finding: f.clone(),
+                    tool_dist,
+                });
+                return;
+            }
+            // Fall through to resume-semantics when the JSONL disappeared
+            // under us (e.g. the user wiped ~/.claude between runs).
+        }
+        self.selection = Some(AuditSelection {
+            session_id: f.session_id.clone(),
+            project_cwd: f.project_cwd.clone(),
+        });
+        self.should_quit = true;
     }
 }
 
@@ -89,7 +139,8 @@ pub fn total_savings(state: &AuditState) -> f64 {
 /// Layout (top to bottom):
 /// 1. Summary band (5 rows: top rule + 3 heuristic rows + bottom rule) —
 ///    always present so every run visibly proves all three heuristics ran.
-/// 2. Body — per-session findings list (the scrollable part).
+/// 2. Body — per-session findings list (the scrollable part) OR the
+///    drill-in detail overlay when [`AuditState::detail`] is `Some` (#16).
 /// 3. Footer — key hints + total savings (2 rows).
 pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut AuditState, theme: &Theme) {
     let summary = summary_by_kind(&state.findings);
@@ -102,7 +153,11 @@ pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut AuditState, theme: &The
         ])
         .split(area);
     render_summary_band(f, chunks[0], summary, theme);
-    render_body(f, chunks[1], state, theme);
+    if let Some(detail) = state.detail.as_ref() {
+        audit_detail::render(f, chunks[1], detail, theme);
+    } else {
+        render_body(f, chunks[1], state, theme);
+    }
     render_footer(f, chunks[2], state, theme);
 }
 
