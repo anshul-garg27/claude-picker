@@ -26,6 +26,10 @@ pub mod mcp;
 pub mod model_pill;
 pub mod picker;
 pub mod preview;
+// Project-cost 30-day heatmap panel: one row per project, 30 cells each
+// showing that project's daily spend over the last 30 days. Panel is
+// pure render — data grid lives on `StatsData::project_day_cost`.
+pub mod project_heatmap;
 pub mod project_list;
 pub mod rename_modal;
 pub mod replay;

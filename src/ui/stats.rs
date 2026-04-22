@@ -40,6 +40,7 @@ use ratatui::Frame;
 use crate::data::pricing::{Family, TokenCounts};
 use crate::theme::Theme;
 use crate::ui::heatmap::{self, MonthlyActivity};
+use crate::ui::project_heatmap;
 use crate::ui::text::{display_width, pad_to_width, truncate_to_width};
 
 // ── Data types ────────────────────────────────────────────────────────────
@@ -144,6 +145,15 @@ pub struct StatsData {
     pub monthly_tokens: Vec<u64>,
     /// Turn-duration histogram over the last 30 days.
     pub turn_durations: TurnDurationStats,
+    /// Per-project × per-day cost grid for the last 30 days. Each tuple
+    /// holds `(project_name, [cost; 30])` where index 0 is 29 days ago
+    /// and index 29 is today. Sorted by lifetime cost desc so the first
+    /// entries line up with the top rows of `by_project`.
+    ///
+    /// Drives the `project_heatmap` panel. Empty on the cache fast-path
+    /// (it has no per-day fidelity); populated by the full-scan
+    /// aggregator.
+    pub project_day_cost: Vec<(String, [f64; 30])>,
 }
 
 /// Timeline window mode — cycles through 4 modes on `t`.
@@ -251,6 +261,11 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     } else {
         0
     };
+    // FEAT-6: project-cost 30-day heatmap panel. Collapses to 0 rows
+    // when the cache fast-path is active (no per-day data) or no
+    // project has recent spend.
+    let project_heat_rows = view.data.project_day_cost.len();
+    let project_heat_h: u16 = project_heatmap::panel_height(project_heat_rows);
     // Per-model pill rows: up to 3, one per model family with non-zero
     // spend. When there are fewer than 2 models, nothing renders and the
     // band collapses.
@@ -270,31 +285,39 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(1),          // title
-            Constraint::Length(1),          // blank
-            Constraint::Length(8),          // kpi cards (rich)
-            Constraint::Length(1),          // blank
-            Constraint::Min(8),             // per-project + activity flex
-            Constraint::Length(hist_h),     // turn-duration histogram
-            Constraint::Length(budget_h),   // budget band
-            Constraint::Length(by_model_h), // by-model pills
-            Constraint::Length(1),          // footer
+            Constraint::Length(1),              // title
+            Constraint::Length(1),              // blank
+            Constraint::Length(8),              // kpi cards (rich)
+            Constraint::Length(1),              // blank
+            Constraint::Min(8),                 // per-project + activity flex
+            Constraint::Length(project_heat_h), // FEAT-6: project 30d heatmap
+            Constraint::Length(hist_h),         // turn-duration histogram
+            Constraint::Length(budget_h),       // budget band
+            Constraint::Length(by_model_h),     // by-model pills
+            Constraint::Length(1),              // footer
         ])
         .split(inner);
 
     render_title(frame, rows[0], view, theme);
     render_kpi_row(frame, rows[2], view, theme);
     render_body(frame, rows[4], view, theme);
+    if project_heat_h > 0 {
+        let input = project_heatmap::PanelInput {
+            by_project: &view.data.by_project,
+            project_day_cost: &view.data.project_day_cost,
+        };
+        project_heatmap::render(frame, rows[5], &input, theme);
+    }
     if hist_h > 0 {
-        render_turn_duration_hist(frame, rows[5], view, theme);
+        render_turn_duration_hist(frame, rows[6], view, theme);
     }
     if budget_h > 0 {
-        render_budget_band(frame, rows[6], view, theme);
+        render_budget_band(frame, rows[7], view, theme);
     }
     if by_model_h > 0 {
-        render_by_model(frame, rows[7], view, theme);
+        render_by_model(frame, rows[8], view, theme);
     }
-    render_footer(frame, rows[8], theme);
+    render_footer(frame, rows[9], theme);
 
     if let Some(msg) = view.toast {
         render_toast(frame, area, msg, view.toast_kind, theme);
