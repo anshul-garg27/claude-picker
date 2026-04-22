@@ -35,6 +35,7 @@ use ratatui::Frame;
 use tachyonfx::{Effect, Shader};
 
 use crate::app::App;
+use crate::data::chains::{self, Chain};
 use crate::data::Session;
 use crate::theme::{self, Theme};
 use crate::ui::fx as ui_fx;
@@ -312,6 +313,12 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let cursor = app.cursor.min(total.saturating_sub(1));
     let start = scroll_start(cursor, visible_rows, total);
 
+    // Chain detection: group sessions that look like the same feature
+    // continued across runs. Computed once per frame (O(N log N) sort + O(N)
+    // walk in `detect_chains`), then looked up per visible row. Members get a
+    // `⛓` badge prepended to their title in mauve.
+    let chains_list: Vec<Chain> = chains::detect_chains(&app.sessions);
+
     // Render visible rows one-by-one into vertically sliced rects so each
     // row can run its own column-layout pass. `f.buffer_mut()` is held only
     // for the painting call — no overlapping mutable borrows.
@@ -323,6 +330,7 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
         let is_bookmarked = app.bookmarks.contains(&s.id);
         let is_multi = app.is_multi_selected(sess_idx);
         let is_glide = app.is_glide_trail(display_idx);
+        let is_chained = chains::chain_for_session(&s.id, &chains_list).is_some();
         let row_area = Rect {
             x: area.x,
             y: area.y + offset as u16,
@@ -338,6 +346,7 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
             is_bookmarked,
             is_multi,
             is_glide,
+            is_chained,
             &plan,
         );
     }
@@ -480,6 +489,7 @@ fn render_row_into(
     bookmarked: bool,
     multi: bool,
     glide_trail: bool,
+    chained: bool,
     plan: &ColumnPlan,
 ) {
     // Age in seconds since the last activity timestamp — drives the row-fade.
@@ -606,14 +616,38 @@ fn render_row_into(
     } else {
         Span::raw("  ")
     };
-    let name_budget = NAME_COL_WIDTH.saturating_sub(2); // lead_span eats 2 cells
+    // Chain badge: `⛓ ` prepended in mauve when this session is part of a
+    // detected chain. The glyph + trailing space eats 2 display cells so we
+    // shrink the name budget by the same amount to keep the column lined up
+    // with its neighbours.
+    let chain_span = if chained {
+        Some(Span::styled(
+            "\u{26D3} ",
+            stamp_bg(maybe_fade(
+                Style::default().fg(theme.mauve),
+                theme,
+                age,
+                apply_fade,
+            )),
+        ))
+    } else {
+        None
+    };
+    let chain_cost = if chained { 2 } else { 0 };
+    let name_budget = NAME_COL_WIDTH.saturating_sub(2 + chain_cost); // lead + optional chain badge
     let primary_raw = s.display_label();
     let primary_text = if display_width(primary_raw) > name_budget {
         truncate_to_width(primary_raw, name_budget)
     } else {
         primary_raw.to_string()
     };
-    let name_line = Line::from(vec![lead_span, Span::styled(primary_text, name_style)]);
+    let mut name_spans: Vec<Span<'_>> = Vec::with_capacity(3);
+    name_spans.push(lead_span);
+    if let Some(chain) = chain_span {
+        name_spans.push(chain);
+    }
+    name_spans.push(Span::styled(primary_text, name_style));
+    let name_line = Line::from(name_spans);
     Paragraph::new(name_line)
         .style(stamp_bg(Style::default()))
         .render(name_rect, buf);
