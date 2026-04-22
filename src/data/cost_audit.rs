@@ -171,6 +171,33 @@ pub fn audit_session(
     project_name: String,
 ) -> Option<AuditFinding> {
     let stats = collect_session_stats(jsonl_path);
+    let (findings, total_savings) =
+        evaluate_heuristics(session, stats.total_tokens, stats.tool_tokens);
+    if findings.is_empty() {
+        return None;
+    }
+    Some(AuditFinding {
+        session_id: session.id.clone(),
+        project_name,
+        project_cwd: session.project_dir.clone(),
+        session_label: session.display_label().to_string(),
+        total_cost_usd: session.total_cost_usd,
+        model_summary: session.model_summary.clone(),
+        findings,
+        estimated_savings_usd: total_savings,
+    })
+}
+
+/// Pure heuristic evaluation — runs all three gates against already-computed
+/// stats and returns the findings plus their summed savings. Shared by
+/// [`audit_session`] (which reads JSONL) and [`audit_session_with_stats`]
+/// (which tests feed synthetic numbers) so there is a single source of truth
+/// for what each heuristic does.
+fn evaluate_heuristics(
+    session: &Session,
+    stats_total_tokens: u64,
+    stats_tool_tokens: u64,
+) -> (Vec<Finding>, f64) {
     let mut findings: Vec<Finding> = Vec::new();
     let mut total_savings = 0.0;
 
@@ -181,14 +208,14 @@ pub fn audit_session(
     // formula did) swamps the numerator — in the launch-corpus check, every
     // real session scored < 6 % tool-ratio under the old formula, even ones
     // that were genuinely tool-heavy.
-    if stats.total_tokens >= 1_000 && probe_ok && !session.model_summary.is_empty() {
+    if stats_total_tokens >= 1_000 && probe_ok && !session.model_summary.is_empty() {
         let output_tokens = session.tokens.output;
         let tool_ratio = if output_tokens == 0 {
             0.0
         } else {
-            // Cap at 1.0 — `stats.tool_tokens` sums output-of-tool-use plus
+            // Cap at 1.0 — `stats_tool_tokens` sums output-of-tool-use plus
             // input-of-next-turn, which can overshoot pure output.
-            (stats.tool_tokens as f64 / output_tokens as f64).min(1.0)
+            (stats_tool_tokens as f64 / output_tokens as f64).min(1.0)
         };
         if tool_ratio >= TOOL_RATIO_THRESHOLD && is_opus_or_sonnet(&session.model_summary) {
             let output_cost = output_tokens as f64 * output_rate_for(&session.model_summary);
@@ -254,19 +281,7 @@ pub fn audit_session(
         total_savings += savings;
     }
 
-    if findings.is_empty() {
-        return None;
-    }
-    Some(AuditFinding {
-        session_id: session.id.clone(),
-        project_name,
-        project_cwd: session.project_dir.clone(),
-        session_label: session.display_label().to_string(),
-        total_cost_usd: session.total_cost_usd,
-        model_summary: session.model_summary.clone(),
-        findings,
-        estimated_savings_usd: total_savings,
-    })
+    (findings, total_savings)
 }
 
 /// True for anything whose dominant model belongs to the Opus family. The
@@ -421,7 +436,9 @@ pub fn summary_by_kind(audit_findings: &[AuditFinding]) -> [(FindingKind, usize,
 }
 
 /// Exposed for testing — build a synthetic stats rollup and run the
-/// heuristic logic against it without touching the disk.
+/// heuristic logic against it without touching the disk. Delegates to the
+/// shared [`evaluate_heuristics`] helper so the disk-reading and test-fixture
+/// paths cannot drift apart.
 #[doc(hidden)]
 pub fn audit_session_with_stats(
     session: &Session,
@@ -429,76 +446,8 @@ pub fn audit_session_with_stats(
     stats_tool_tokens: u64,
     project_name: String,
 ) -> Option<AuditFinding> {
-    let mut findings: Vec<Finding> = Vec::new();
-    let mut total_savings = 0.0;
-
-    let probe_ok = session.message_count >= PROBE_SESSION_MIN_MESSAGES;
-
-    if stats_total_tokens >= 1_000 && probe_ok && !session.model_summary.is_empty() {
-        let output_tokens = session.tokens.output;
-        let tool_ratio = if output_tokens == 0 {
-            0.0
-        } else {
-            (stats_tool_tokens as f64 / output_tokens as f64).min(1.0)
-        };
-        if tool_ratio >= TOOL_RATIO_THRESHOLD && is_opus_or_sonnet(&session.model_summary) {
-            let output_cost = output_tokens as f64 * output_rate_for(&session.model_summary);
-            let haiku_ratio = haiku_output_ratio_to(&session.model_summary);
-            let savings = output_cost * tool_ratio * (1.0 - haiku_ratio);
-            let pct = (tool_ratio * 100.0).round() as i64;
-            let msg = format!(
-                "{pct}% tool_use tokens \u{2014} Haiku could save ~${:.2}",
-                savings
-            );
-            findings.push(Finding {
-                severity: Severity::Warn,
-                kind: FindingKind::ToolRatio,
-                message: msg,
-                savings_usd: savings,
-            });
-            total_savings += savings;
-        }
-    }
-
-    let cache_create = session.tokens.cache_write_5m + session.tokens.cache_write_1h;
-    let denom = cache_create + session.tokens.cache_read;
-    if denom >= 1_000 && probe_ok {
-        let ratio = session.tokens.cache_read as f64 / denom as f64;
-        if ratio < CACHE_EFFICIENCY_THRESHOLD {
-            let savings = session.total_cost_usd * CACHE_SAVINGS_FRACTION;
-            let pct = (ratio * 100.0).round() as i64;
-            let msg = format!("cache hit rate {pct}% \u{2014} consider session continuation");
-            findings.push(Finding {
-                severity: Severity::Info,
-                kind: FindingKind::CacheEfficiency,
-                message: msg,
-                savings_usd: savings,
-            });
-            total_savings += savings;
-        }
-    }
-
-    let total_tokens = session.tokens.total();
-    if is_opus_family(&session.model_summary)
-        && total_tokens < SMALL_SESSION_THRESHOLD_TOKENS
-        && session.total_cost_usd > 0.05
-        && probe_ok
-    {
-        let savings = session.total_cost_usd * (1.0 - SONNET_RATIO_OF_OPUS);
-        let msg = format!(
-            "model: opus \u{00B7} {}k tokens \u{2014} Sonnet would suffice (save ~${:.2})",
-            total_tokens / 1000,
-            savings,
-        );
-        findings.push(Finding {
-            severity: Severity::Info,
-            kind: FindingKind::ModelMismatch,
-            message: msg,
-            savings_usd: savings,
-        });
-        total_savings += savings;
-    }
-
+    let (findings, total_savings) =
+        evaluate_heuristics(session, stats_total_tokens, stats_tool_tokens);
     if findings.is_empty() {
         return None;
     }
