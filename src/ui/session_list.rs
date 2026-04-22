@@ -310,7 +310,11 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let visible_rows = area.height as usize;
     let total = app.filtered_indices.len();
     let cursor = app.cursor.min(total.saturating_sub(1));
-    let start = scroll_start(cursor, visible_rows, total);
+    // Pull the anchor from the App's smooth-scroll interpolator; it
+    // collapses to `scroll_start` when motion is reduced or the list
+    // already fits in view, so the visual contract stays identical.
+    let _ = cursor; // retained for clarity — the helper re-derives below
+    let start = app.session_scroll_start(visible_rows, total);
 
     // Render visible rows one-by-one into vertically sliced rects so each
     // row can run its own column-layout pass. `f.buffer_mut()` is held only
@@ -352,6 +356,12 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
 /// Viewport anchor for the list — matches ratatui's built-in `List` scroll
 /// behaviour. Top-anchored while the selection sits on the first page,
 /// bottom-anchored afterwards so the cursor never scrolls off-screen.
+///
+/// Retained as a local helper because the test suite exercises the pure
+/// semantics directly; the live render path now goes through
+/// [`App::session_scroll_start`] which wraps this formula in the smooth-
+/// scroll interpolator.
+#[allow(dead_code)]
 fn scroll_start(selected: usize, visible_rows: usize, total: usize) -> usize {
     if visible_rows == 0 || total <= visible_rows {
         return 0;
