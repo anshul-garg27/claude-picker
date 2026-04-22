@@ -32,9 +32,10 @@
 //! the one where the old formula was demonstrably misleading (see the
 //! Phase 0 audit notes).
 
+use std::collections::HashMap;
 use std::fs::File;
 use std::io::{BufRead, BufReader};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 
 use serde::Deserialize;
 
@@ -298,6 +299,30 @@ fn is_opus_or_sonnet(model: &str) -> bool {
     matches!(family(model), Family::Opus | Family::Sonnet)
 }
 
+/// Per-tool accounting used by the drill-in detail view (#16).
+///
+/// `call_count` is the number of `tool_use` blocks with this `name`.
+/// `output_tokens` is the *assistant* output tokens attributed to the message
+/// carrying the tool_use (same accounting as the tool-ratio heuristic).
+/// `input_tokens_after` is the input tokens on the assistant message
+/// immediately after the tool result — i.e. the cost of reading the tool's
+/// output back into context.
+#[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
+pub struct ToolUsage {
+    pub call_count: u32,
+    pub output_tokens: u64,
+    pub input_tokens_after: u64,
+}
+
+/// Row in the sorted `collect_tool_distribution` output. Keeping the tool
+/// name alongside [`ToolUsage`] makes the public API a flat `Vec<_>` ordered
+/// by output tokens desc, which is what the UI renders.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ToolDistEntry {
+    pub name: String,
+    pub usage: ToolUsage,
+}
+
 /// Per-session rollup used by the heuristics. We re-parse the JSONL here
 /// (rather than extend `Session`) so the audit stays a clearly bounded
 /// additional pass — no load-time overhead for users who never run it.
@@ -311,21 +336,26 @@ struct SessionStats {
     /// message (tool results are fed back as input). This is approximate but
     /// it beats trying to tokenise the raw JSON ourselves.
     tool_tokens: u64,
+    /// Per-tool breakdown keyed by `tool_use.name`. Consumed by
+    /// [`collect_tool_distribution`] for the drill-in detail view.
+    per_tool: HashMap<String, ToolUsage>,
 }
 
 /// Second-pass reader that counts which messages were "tool heavy" so the
-/// audit heuristic can answer "how much of this cost was tool traffic".
-fn collect_session_stats(path: &std::path::Path) -> SessionStats {
+/// audit heuristic can answer "how much of this cost was tool traffic", and
+/// also builds a per-tool breakdown for the drill-in detail view.
+fn collect_session_stats(path: &Path) -> SessionStats {
     let Ok(file) = File::open(path) else {
         return SessionStats::default();
     };
     let reader = BufReader::new(file);
 
     let mut stats = SessionStats::default();
-    // Track whether the *previous* assistant message contained a tool_use
-    // block — if so, the next assistant message's input tokens are
-    // "tool_result traffic" for our accounting.
-    let mut last_was_tool_use = false;
+    // Track the set of tool names seen on the *previous* assistant message —
+    // if any, the next assistant message's input tokens are "tool_result
+    // traffic" for our accounting, and we split them evenly across those
+    // tool names.
+    let mut last_tool_names: Vec<String> = Vec::new();
 
     for line in reader.lines() {
         let Ok(line) = line else { continue };
@@ -345,21 +375,85 @@ fn collect_session_stats(path: &std::path::Path) -> SessionStats {
         let per_msg = msg_total(&usage);
         stats.total_tokens = stats.total_tokens.saturating_add(per_msg);
 
-        let has_tool = msg.content.as_ref().is_some_and(has_tool_use);
+        let tool_names: Vec<String> = msg
+            .content
+            .as_ref()
+            .map(collect_tool_use_names)
+            .unwrap_or_default();
+        let has_tool = !tool_names.is_empty();
+
         if has_tool {
             // Output tokens on a tool-use message ≈ the tool call args; small
-            // but real, still tool-attributed traffic.
+            // but real, still tool-attributed traffic. Split evenly across
+            // every tool_use block on this message so a single row doesn't
+            // swallow the full output.
             stats.tool_tokens = stats.tool_tokens.saturating_add(usage.output_tokens);
-            last_was_tool_use = true;
-        } else if last_was_tool_use {
+            let n = tool_names.len() as u64;
+            let per_call_output = usage.output_tokens / n;
+            let remainder_output = usage.output_tokens % n;
+            for (idx, name) in tool_names.iter().enumerate() {
+                let slot = stats.per_tool.entry(name.clone()).or_default();
+                slot.call_count = slot.call_count.saturating_add(1);
+                // First tool carries the remainder so the sum across tools
+                // equals usage.output_tokens exactly.
+                let share = per_call_output + if idx == 0 { remainder_output } else { 0 };
+                slot.output_tokens = slot.output_tokens.saturating_add(share);
+            }
+            last_tool_names = tool_names;
+        } else if !last_tool_names.is_empty() {
             // This assistant message is the follow-up after a tool result —
             // the input tokens include the tool_result payload, which is
-            // exactly what we want to attribute to tool traffic.
+            // exactly what we want to attribute to tool traffic. Split the
+            // input tokens evenly across the tool names that fired last.
             stats.tool_tokens = stats.tool_tokens.saturating_add(usage.input_tokens);
-            last_was_tool_use = false;
+            let n = last_tool_names.len() as u64;
+            let per_call_input = usage.input_tokens / n;
+            let remainder_input = usage.input_tokens % n;
+            for (idx, name) in last_tool_names.iter().enumerate() {
+                let slot = stats.per_tool.entry(name.clone()).or_default();
+                let share = per_call_input + if idx == 0 { remainder_input } else { 0 };
+                slot.input_tokens_after = slot.input_tokens_after.saturating_add(share);
+            }
+            last_tool_names.clear();
         }
     }
     stats
+}
+
+/// Public drill-in helper (#16): return per-tool usage for one session's
+/// JSONL, sorted by `output_tokens` descending. Empty file / unreadable path
+/// returns an empty vector — callers render a placeholder row.
+pub fn collect_tool_distribution(jsonl_path: &Path) -> Vec<ToolDistEntry> {
+    let stats = collect_session_stats(jsonl_path);
+    let mut entries: Vec<ToolDistEntry> = stats
+        .per_tool
+        .into_iter()
+        .map(|(name, usage)| ToolDistEntry { name, usage })
+        .collect();
+    entries.sort_by(|a, b| {
+        b.usage
+            .output_tokens
+            .cmp(&a.usage.output_tokens)
+            .then_with(|| a.name.cmp(&b.name))
+    });
+    entries
+}
+
+/// Resolve the JSONL path for a session by walking every project directory
+/// and looking for `<session_id>.jsonl`. Returns the first match. Used by
+/// the audit drill-in to compute `collect_tool_distribution` on demand
+/// without bloating [`AuditFinding`] with an extra field.
+pub fn find_session_jsonl(session_id: &str) -> Option<PathBuf> {
+    let home = dirs::home_dir()?;
+    let projects_root = home.join(".claude").join("projects");
+    let entries = std::fs::read_dir(&projects_root).ok()?;
+    for entry in entries.flatten() {
+        let candidate = entry.path().join(format!("{session_id}.jsonl"));
+        if candidate.is_file() {
+            return Some(candidate);
+        }
+    }
+    None
 }
 
 #[derive(Debug, Deserialize, Default)]
@@ -397,13 +491,24 @@ fn msg_total(u: &RawUsage) -> u64 {
         .saturating_add(u.cache_creation_input_tokens)
 }
 
-fn has_tool_use(content: &serde_json::Value) -> bool {
+/// Extract the `name` field from every `tool_use` block in `content`.
+/// Empty / non-array content returns an empty vector. Anonymous blocks
+/// (missing or non-string `name`) are recorded as `"unknown"` so the
+/// caller's "any tool use present?" check still fires on them.
+fn collect_tool_use_names(content: &serde_json::Value) -> Vec<String> {
     let Some(blocks) = content.as_array() else {
-        return false;
+        return Vec::new();
     };
     blocks
         .iter()
-        .any(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+        .filter(|b| b.get("type").and_then(|v| v.as_str()) == Some("tool_use"))
+        .map(|b| {
+            b.get("name")
+                .and_then(|v| v.as_str())
+                .unwrap_or("unknown")
+                .to_string()
+        })
+        .collect()
 }
 
 /// Sum of `estimated_savings_usd` across every finding. Used for the

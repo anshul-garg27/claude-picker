@@ -165,7 +165,11 @@ enum Command {
     /// Browse file-history checkpoints per session.
     Checkpoints,
     /// Cost-optimization audit across every session.
-    Audit,
+    Audit {
+        /// Output format: `tui` (default, interactive), `json`, or `csv`.
+        #[arg(long, default_value = "tui", value_name = "FORMAT")]
+        format: String,
+    },
     /// Batch-title unnamed sessions via a Haiku summarizer.
     #[command(name = "ai-titles")]
     AiTitles,
@@ -345,7 +349,10 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Hooks) => commands::hooks_cmd::run(),
         Some(Command::Mcp) => commands::mcp_cmd::run(),
         Some(Command::Checkpoints) => commands::checkpoints_cmd::run(),
-        Some(Command::Audit) => commands::audit_cmd::run(),
+        Some(Command::Audit { format }) => {
+            let format = commands::audit_cmd::Format::parse(&format).unwrap_or_default();
+            commands::audit_cmd::run_with(commands::audit_cmd::Options { format })
+        }
         Some(Command::AiTitles) => commands::ai_titles_cmd::run(),
         Some(Command::Export {
             session_id,
