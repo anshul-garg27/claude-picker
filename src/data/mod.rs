@@ -8,6 +8,7 @@ pub mod ai_summarize;
 pub mod anomaly;
 pub mod bookmarks;
 pub mod budget;
+pub mod chains;
 pub mod checkpoints;
 pub mod claude_json_cache;
 pub mod clipboard;
