@@ -35,11 +35,6 @@
   <img src="assets/hero.gif" alt="claude-picker cold-start: Kanagawa-themed picker with fuzzy filter and model/permission pills; tabbing to the audit dashboard surfaces two tool-ratio findings worth $64 with an annual run-rate projection of ~$779/year; the stats dashboard lights up with 7×24 usage heatmap and per-project 30-day cost bars; finishing with a single-line `claude-picker prompt` suitable for shell-prompt integration" width="88%">
 </p>
 
-<p align="center"><sub>
-  Full-resolution: <a href="assets/hero.mp4">assets/hero.mp4</a> · 1920×1200 · 37 s · 559 KB (GIF is 1705×966 · 747 KB · 24 fps for inline preview).<br>
-  Want to regenerate against your own sandbox? See <a href="scripts/capture/tapes/01-hero-v06.tape"><code>scripts/capture/tapes/01-hero-v06.tape</code></a>.
-</sub></p>
-
 ---
 
 ## The 90-second pitch
@@ -55,7 +50,7 @@ Claude Code stores every conversation on disk, but the built-in `/resume` picker
 
 No projects. No preview. No names. No cost. No search. No way to find that one session from last Tuesday where you fixed the auth bug.
 
-**claude-picker** reads those same JSONL files and wires them into a tightly-designed two-pane picker with live preview, fork-aware tree, word-level diff, file-centric pivot, time-travel replay, 11-operator filter language, and a cost-optimization audit that — in our own dogfood — identified **$148.17 of spend** across findings like *"71% tool_use tokens, Haiku could save ~$73"*. Everything is local. Nothing is scraped. Nothing is sent anywhere unless you explicitly press the AI summary key.
+**claude-picker** reads those same JSONL files and gives you a two-pane picker with live preview, fork tree, word-level diff, file pivot, time-travel replay, an 11-operator filter language, and a cost-optimization audit. Run against this repo's own session history it surfaced $148 of avoidable spend. All reads are local; no telemetry, no network calls.
 
 ---
 
@@ -98,7 +93,7 @@ Type to fuzzy-filter. `?` pops a context-aware help overlay. `Enter` resumes the
 
 ## What's new in v0.6
 
-Fifteen themes (up from ten), five new headless subcommands, and a round of UI surfaces aimed at making the picker and conversation viewer feel lived-in rather than spreadsheet-y.
+Fifteen themes (up from ten), five new headless subcommands, UI polish across picker and conversation viewer.
 
 - **[Kanagawa is the new default](#themes)** — warm ink-wash palette replaces Catppuccin Mocha as the out-of-box theme. `finance-terminal`, `parchment-dark`, `paperwhite-warm`, and `terminal-classic` round the theme count up to 15.
 - **[Doctor, export, latest, prompt, completions](#scripting--shell-integration)** — five new subcommands for scripting and shell integration. `prompt` emits a PS1-friendly spend line. `export --redact` writes a Markdown transcript with secrets masked. `doctor --format json` surfaces orphans and top-cost sessions.
@@ -113,7 +108,7 @@ Fifteen themes (up from ten), five new headless subcommands, and a round of UI s
 
 ## Screens
 
-Fourteen first-class screens plus five headless subcommands. Every TUI screen has its own keyboard context and `?` help overlay.
+Fourteen screens plus five headless subcommands. Every TUI screen has its own keyboard context and `?` help overlay.
 
 | Screen | Launch | What it shows |
 |---|---|---|
@@ -216,21 +211,21 @@ Fifteen themes ship in the binary. Cycle live with `t`, list with `--list-themes
 
 | Theme | Mood |
 |---|---|
-| `kanagawa` *(default)* | Warm ink-wash on dusk blue — Fujiyama-in-a-terminal |
-| `finance-terminal` | Bloomberg-orange on graphite black, amber tickers, monospace discipline |
-| `parchment-dark` | Aged-paper cream on chocolate base, editorial serif feel |
-| `paperwhite-warm` | Cream paper with warm ochre accents — daylight desk mode |
-| `catppuccin-mocha` | Purple-forward dark, punchy accents (former default) |
+| `kanagawa` *(default)* | Warm ink-wash on dusk blue |
+| `finance-terminal` | Bloomberg orange on graphite black, amber tickers |
+| `parchment-dark` | Aged-paper cream on chocolate base |
+| `paperwhite-warm` | Cream paper with warm ochre accents |
+| `catppuccin-mocha` | Purple-forward dark (former default) |
 | `catppuccin-latte` | Cream-light sibling of mocha |
 | `dracula` | Mid-contrast dark, desaturated |
 | `tokyo-night` | Neon indigo on near-black |
 | `gruvbox-dark` | Warm retro, boosted greens |
-| `nord` | Slightly softer cousin of mocha |
-| `nord-aurora` | Cool polar-night base with brightened aurora accents |
+| `nord` | Softer cousin of mocha |
+| `nord-aurora` | Cool polar-night with aurora accents |
 | `rose-pine-moon` | Warm desaturated, WCAG-readable |
-| `high-contrast` | AAA (7:1) ratios everywhere, for low-vision use |
+| `high-contrast` | AAA 7:1 ratios everywhere |
 | `colorblind-safe` | Blue / orange diff pair — never red-green |
-| `terminal-classic` | Retro-CRT phosphor green on black (bonus) |
+| `terminal-classic` | Retro-CRT phosphor green on black |
 
 **Precedence**: `--theme` flag > `CLAUDE_PICKER_THEME` env > `config.toml` `[ui].theme` > default (`kanagawa`).
 
@@ -298,7 +293,7 @@ Cells are quantile-shaded (p25 / p50 / p75 / p90 over non-zero days). Press `p` 
 
 ## Scripting + shell integration
 
-Four primitives make claude-picker composable with everything else in a shell pipeline.
+Four headless primitives for shell pipelines.
 
 ### `latest` — jump to the most recent session
 
@@ -440,7 +435,7 @@ ids = []
 
 ### Accurate cost tracking
 
-Pricing is verified against the latest Anthropic rates:
+Current Anthropic rates:
 
 | Model | Input ($/MTok) | Output ($/MTok) |
 |---|---|---|
@@ -477,7 +472,7 @@ export CLAUDE_PICKER_FLAGS="--model sonnet"    # force sonnet
 <a id="ui-polish"></a>
 ## UI polish in v0.6
 
-A handful of small things that together make the picker feel alive instead of spreadsheet-y. Everything below respects `[ui] reduce_motion = true`.
+Everything below respects `[ui] reduce_motion = true`.
 
 - **Loading skeletons** — cold start shows pulsing grey placeholder rows for ~1.2s while session enumeration settles, instead of snapping from empty to full.
 - **Cursor memory** — re-enter a project and the cursor lands where you left it, not at the top.
@@ -555,19 +550,9 @@ RUSTUP_TOOLCHAIN=stable cargo build --release --bin claude-picker
 
 See [CHANGELOG.md](CHANGELOG.md) for the release history. See [BREW-TAP.md](BREW-TAP.md) for Homebrew tap maintenance.
 
-If claude-picker saves you time, [star the repo](https://github.com/anshul-garg27/claude-picker) — it helps others find it.
-
 ---
 
 ## Gallery
-
-Real TUI captures rendered via the bundled VHS tape:
-
-```bash
-# one-time: seed a PII-free demo $HOME (script lives in the workspace root, not this crate)
-# then render the 4-act flow — picker → audit → stats → prompt
-HOME=/tmp/claude-picker-demo vhs scripts/capture/tapes/01-hero-v06.tape
-```
 
 <details>
 <summary><strong>Session picker</strong> — filter, cost chips, model/permission pills, timestamps, live preview</summary>
@@ -599,8 +584,6 @@ HOME=/tmp/claude-picker-demo vhs scripts/capture/tapes/01-hero-v06.tape
 <p align="center">
   <img src="assets/prompt.png" alt="Terminal running `claude-picker prompt` and emitting a single-line summary formatted for embedding in a PS1 shell prompt." width="74%">
 </p>
-
-Example output (copied verbatim from the live binary):
 
 ```bash
 $ claude-picker prompt
