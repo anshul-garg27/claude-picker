@@ -933,6 +933,14 @@ impl App {
             Event::Key('Y') if self.filter.is_empty() => self.copy_project_path(),
             // `r` opens the rename modal for the selected session.
             Event::Key('r') if self.filter.is_empty() => self.request_rename(),
+            // `e` exports the current selection to a Markdown file in
+            // `~/Downloads/` (or every multi-selected session in sequence).
+            // Only on the session list — the project list has no session
+            // to export. The filter-empty guard keeps the letter available
+            // for fuzzy search when the user is typing.
+            Event::Key('e') if self.filter.is_empty() && self.mode == Mode::SessionList => {
+                self.export_session();
+            }
             // `R` (uppercase) opens the time-travel replay. Only on the
             // session list — project list has no session to replay.
             Event::Key('R') if self.filter.is_empty() && self.mode == Mode::SessionList => {
