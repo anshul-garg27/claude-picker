@@ -434,6 +434,11 @@ fn build_stats_data_from_cache(
         turn_durations: TurnDurationStats::default(),
         dow_hour_sessions: [[0u32; 24]; 7],
         dow_hour_cost: [[0.0f64; 24]; 7],
+        // Cache fast-path has no per-day fidelity. The project-heatmap
+        // panel treats an empty Vec as "no heatmap yet" and collapses to
+        // 0 height — hitting `r` triggers the full-scan aggregator which
+        // fills this in.
+        project_day_cost: Vec::new(),
     })
 }
 
@@ -508,6 +513,10 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
     let mut by_model: HashMap<String, f64> = HashMap::new();
     let mut by_project: HashMap<String, ProjectStats> = HashMap::new();
     let mut daily: HashMap<NaiveDate, DailyStats> = HashMap::new();
+    // FEAT-6: per-project × per-day cost grid for the 30-day heatmap.
+    // Index 0 = 29 days ago, index 29 = today_date. Populated lazily so
+    // projects with zero 30-day spend don't bloat the map.
+    let mut project_day_cost: HashMap<String, [f64; 30]> = HashMap::new();
 
     // v3.0 aggregates.
     let mut hourly_buckets = [0u32; 24];
@@ -579,6 +588,15 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
                     for &td in &s.turn_durations {
                         turn_durations.push(td);
                     }
+
+                    // FEAT-6: accumulate into the per-project × per-day
+                    // strip. `age` is 0..=29, so `idx = 29 - age` maps
+                    // today → 29 and 29-days-ago → 0 (oldest → newest).
+                    let idx = (29 - age) as usize;
+                    let row = project_day_cost
+                        .entry(project.name.clone())
+                        .or_insert([0.0f64; 30]);
+                    row[idx] += s.total_cost_usd;
                 }
 
                 // Month-to-date for the budget band.
@@ -629,6 +647,15 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
             .unwrap_or(std::cmp::Ordering::Equal)
     });
 
+    // Materialise the per-project heatmap grid in the same order as
+    // `by_project_vec` so the renderer can zip them row-for-row.
+    // Projects with zero 30-day spend drop out here (absent from the
+    // `project_day_cost` map).
+    let project_day_cost_vec: Vec<(String, [f64; 30])> = by_project_vec
+        .iter()
+        .filter_map(|p| project_day_cost.remove(&p.name).map(|row| (p.name.clone(), row)))
+        .collect();
+
     let mut by_model_vec: Vec<(String, f64)> = by_model.into_iter().collect();
     by_model_vec.sort_by(|a, b| b.1.partial_cmp(&a.1).unwrap_or(std::cmp::Ordering::Equal));
 
@@ -667,6 +694,7 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
         turn_durations,
         dow_hour_sessions,
         dow_hour_cost,
+        project_day_cost: project_day_cost_vec,
     }
 }
 
@@ -979,6 +1007,29 @@ mod tests {
         // avg_cost_per_day = total cost in 30d / 30.
         // All 3 sessions are inside the window, so it's total_cost / 30.
         assert!((data.totals.avg_cost_per_day - expected_cost / 30.0).abs() < 1e-9);
+
+        // FEAT-6: per-project × per-day grid. Both projects have
+        // sessions inside the 30-day window, so both must have a row.
+        // Rows are ordered to match `by_project` (cost desc).
+        assert_eq!(
+            data.project_day_cost.len(),
+            2,
+            "both projects must have heatmap rows"
+        );
+        assert_eq!(data.project_day_cost[0].0, "alpha");
+        assert_eq!(data.project_day_cost[1].0, "beta");
+        // alpha: today (idx 29) = 1.23, today-2 (idx 27) = 0.77. No
+        // other days touched.
+        let alpha_row = &data.project_day_cost[0].1;
+        assert!((alpha_row[29] - 1.23).abs() < 1e-9, "today cell for alpha");
+        assert!((alpha_row[27] - 0.77).abs() < 1e-9, "today-2 cell for alpha");
+        let alpha_sum: f64 = alpha_row.iter().sum();
+        assert!((alpha_sum - 2.0).abs() < 1e-9, "alpha row sum");
+        // beta: single session at today-10 → idx 19.
+        let beta_row = &data.project_day_cost[1].1;
+        assert!((beta_row[19] - 0.50).abs() < 1e-9, "today-10 cell for beta");
+        let beta_sum: f64 = beta_row.iter().sum();
+        assert!((beta_sum - 0.50).abs() < 1e-9, "beta row sum");
     }
 
     #[test]
