@@ -27,14 +27,18 @@
   <a href="#how-it-works">How it works</a>
 </p>
 
-<!-- TODO(capture): render via scripts/capture/render-master.sh (VHS tape)
-     — expected artifact: assets/hero.gif, ~1000×600, ≤4 MB.
-     Show: cold-start skeleton → picker with chain/anomaly badges → `v` into
-     conversation viewer with timestamps + subagent tree → `R` into replay →
-     back out to stats dashboard with 30-day heatmap. -->
 <p align="center">
-  <img src="assets/hero.gif" alt="claude-picker cold-start: loading skeletons resolve into the session picker; chain (⛓) and cost-anomaly (⚡) badges highlight; `v` opens the conversation viewer with per-message timestamps and a subagent tree; `R` enters time-travel replay; back out to the stats dashboard with the project-cost 30-day heatmap" width="82%">
+  <img src="assets/hero-marketing.png" alt="claude-picker key art — a Kanagawa-palette terminal window on a sumi-ink canvas showing three model-cost rows (opus $1,357.80, sonnet $128.44, haiku $12.18), set against a hand-painted moon and Japanese washi texture. Kanji on the right reads 選択はコストなり (selection is cost)." width="92%">
 </p>
+
+<p align="center">
+  <img src="assets/hero.gif" alt="claude-picker cold-start: Kanagawa-themed picker with fuzzy filter and model/permission pills; tabbing to the audit dashboard surfaces two tool-ratio findings worth $64 with an annual run-rate projection of ~$779/year; the stats dashboard lights up with 7×24 usage heatmap and per-project 30-day cost bars; finishing with a single-line `claude-picker prompt` suitable for shell-prompt integration" width="88%">
+</p>
+
+<p align="center"><sub>
+  Full-resolution: <a href="assets/hero.mp4">assets/hero.mp4</a> · 1920×1200 · 35 s · 563 KB.<br>
+  Want to regenerate against your own sandbox? See <a href="../scripts/capture/tapes/01-hero-v06.tape"><code>scripts/capture/tapes/01-hero-v06.tape</code></a>.
+</sub></p>
 
 ---
 
@@ -555,18 +559,73 @@ If claude-picker saves you time, [star the repo](https://github.com/anshul-garg2
 
 ---
 
-## Screenshots to render
+## Gallery
 
-These live TUI captures still need to be recorded. Paths the README references:
+Real TUI captures rendered against the `scripts/capture/seed-demo-home.sh` sandbox
+(`HOME=/tmp/claude-picker-demo vhs scripts/capture/tapes/01-hero-v06.tape`).
 
-- [ ] `assets/hero.gif` — cold-start skeleton → picker → viewer → replay → stats (~1000×600, ≤4 MB) *(placeholder currently in repo)*
-- [ ] `assets/picker.png` — session list with chain ⛓ + anomaly ⚡ badges and zebra rows
-- [ ] `assets/viewer.png` — conversation viewer with timestamps, mini-timeline, and subagent tree
+<details>
+<summary><strong>Session picker</strong> — filter, cost chips, model/permission pills, timestamps, live preview</summary>
+
+<p align="center">
+  <img src="assets/picker.png" alt="Left pane: session list inside a project with filter input at top, two sessions sorted by date, cost chips ($7.80 / $9.31), bookmark/pin indicators, and a running `today $0.00 · avg $0.57/day` cost counter. Right pane: live conversation preview with HH:MM timestamps and +Nm relative deltas, a `sonnet` model pill, and an `ACCEPT` permission badge. Footer key hints: ↑↓ navigate · Enter resume · v view · Tab multi · Ctrl-r scope · 1-9 pin." width="88%">
+</p>
+</details>
+
+<details>
+<summary><strong>Cost audit</strong> — 3-heuristic summary band, annual run-rate, per-project bar</summary>
+
+<p align="center">
+  <img src="assets/audit-tui.png" alt="Audit dashboard with top summary band listing three heuristics (tool-ratio 2 findings ~$64.00 in green; cache-efficiency 0 findings; model-mismatch 0 findings) followed by an `annual run-rate × 12.17 ~$778.88 avoidable/year` line. Below, two findings (data-pipeline / Optimize Redshift COPY command $76.85 and platform-infra / Debug terraform plan diff $56.47) each flagged with a ⚠ and a 'Haiku could save ~$36.40' / '~$27.60' narration. Bottom: a per-project horizontal bar split into purple (avoidable) and pink (other) segments." width="88%">
+</p>
+</details>
+
+<details>
+<summary><strong>Stats dashboard</strong> — KPI cards, 7×24 heatmap, project 30-day cost, budget, by-model</summary>
+
+<p align="center">
+  <img src="assets/stats.png" alt="Stats dashboard with three KPI cards (tokens 157.1M ▲203% vs prior · cost $458.38 ▲199% · sessions 19 ▲180%), a 7×24 day-of-week × hour-of-day pattern heatmap highlighting the Saturday-8pm peak, a project-heat 30-day grid for six projects sorted by cost ($203.17 down to $7.63), a month-to-date budget band at 73% of the month with a forecast of $625.07 at current burn, and a by-model breakdown (opus-4-7 76%, sonnet-4-5 23%, haiku-4-5 2%)." width="88%">
+</p>
+</details>
+
+<details>
+<summary><strong>Shell-prompt integration</strong> — single-line spend summary</summary>
+
+<p align="center">
+  <img src="assets/prompt.png" alt="Terminal running `claude-picker prompt` and emitting a single-line summary formatted for embedding in a PS1 shell prompt." width="74%">
+</p>
+
+Example output (copied verbatim from the live binary):
+
+```bash
+$ claude-picker prompt
+claude: $458.38 today · $1,257.84 month
+```
+</details>
+
+<details>
+<summary><strong>Alternative branding</strong> — light theme + social card (for folks who want to reuse the art)</summary>
+
+<p align="center">
+  <img src="assets/hero-square-light.png" alt="Light-theme editorial composition — a floating ink-black terminal window on warm ivory canvas with five sample sessions and their costs, topped by a small orange-seal accent next to the claude-picker wordmark, tagline 'cost-aware terminal session manager' below." width="52%">
+  <img src="assets/social-banner.png" alt="Wide GitHub social-share banner — sumi-ink background, Kanagawa accents, actual audit output with 3 heuristic rows in the right-side terminal pane, serif wordmark claude-picker on the left, vertical kanji 賢い選択 ('wise choice') on the far right edge." width="88%">
+</p>
+
+Both banners are generated art (Azure OpenAI `gpt-image-2`, `size=1792×1024 / 1024×1024`,
+`quality=high`) — drop-in material for blog posts, conference talks, or GitHub social
+preview cards.
+</details>
+
+### Still to capture
+
+The following still need a VHS tape or Playwright scene before the gallery is complete:
+
+- [ ] `assets/viewer.png` — conversation viewer with interesting-moments timeline, timestamps, and subagent tree
 - [ ] `assets/replay.png` — time-travel replay with 4-position comet trail
-- [ ] `assets/stats.png` — KPI hero cards + 30-day heatmap + per-project heatmap
-- [ ] `assets/audit-tui.png` — audit dashboard with summary band + drill-in overlay
 
-Render via VHS tapes / Playwright (to be committed under `scripts/capture/`).
+The VHS tape at [`scripts/capture/tapes/01-hero-v06.tape`](../scripts/capture/tapes/01-hero-v06.tape)
+is the live template for the other six above — duplicate it, swap the scene, and
+re-run with `HOME=/tmp/claude-picker-demo vhs …`.
 
 ---
 
