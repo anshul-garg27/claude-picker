@@ -130,7 +130,7 @@ fn install_panic_hook() {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::cost_audit::{AuditFinding, Finding, Severity};
+    use crate::data::cost_audit::{AuditFinding, Finding, FindingKind, Severity};
     use std::path::PathBuf;
 
     fn mk(id: &str, savings: f64) -> AuditFinding {
@@ -143,6 +143,7 @@ mod tests {
             model_summary: "claude-opus-4-7".into(),
             findings: vec![Finding {
                 severity: Severity::Warn,
+                kind: FindingKind::ToolRatio,
                 message: "msg".into(),
                 savings_usd: savings,
             }],

@@ -7,17 +7,30 @@
 //!
 //! Heuristics (from the spec):
 //!
-//! 1. **Tool-call ratio**: share of tokens that came from `tool_use` /
-//!    `tool_result` blocks rather than conversational assistant text. Anything
-//!    ≥ 70 % flags "could have used Haiku for the read-only parts".
+//! 1. **Tool-call ratio**: share of *output* tokens that were spent on
+//!    `tool_use` / `tool_result` traffic rather than conversational assistant
+//!    text. Anything ≥ 70 % flags "could have used Haiku for the read-only
+//!    parts". The ratio is computed against `session.tokens.output` (not the
+//!    total token bucket — including cache-reads in the denominator drowns
+//!    the signal on real sessions where 80–90 % of bytes are warm-cache
+//!    reads).
 //! 2. **Cache efficiency**: `cache_read / (cache_create + cache_read)` < 20 %
 //!    suggests the session was chopped into small pieces and never built up a
 //!    warm cache — flag "low cache hit rate".
 //! 3. **Model mismatch**: Opus 4.x session with fewer than 5 k total tokens —
 //!    Sonnet or Haiku would have done the same job at a fraction of the cost.
 //!
-//! Savings estimates are deliberately conservative; they assume the flagged
-//! portion of cost would have been paid at Haiku rates.
+//! Every heuristic requires `session.message_count >= 5` to suppress the
+//! probe-session noise (abort-on-boot runs with 1-2 messages that the user
+//! doesn't actually care about cost-optimising).
+//!
+//! Savings estimates are deliberately conservative. Tool-ratio savings are
+//! computed as `output_cost × tool_ratio × (1 − haiku_output_ratio)` — i.e.
+//! we assume only the output tokens attributable to tool traffic would be
+//! re-priced at Haiku's rate. Cache-efficiency and model-mismatch still use
+//! the cruder "fraction of total cost" approximation; the tool-ratio fix is
+//! the one where the old formula was demonstrably misleading (see the
+//! Phase 0 audit notes).
 
 use std::fs::File;
 use std::io::{BufRead, BufReader};
@@ -25,7 +38,9 @@ use std::path::PathBuf;
 
 use serde::Deserialize;
 
-use crate::data::pricing::{cost_for, family, Family, TokenCounts};
+use crate::data::pricing::{
+    cost_for, family, haiku_output_ratio_to, output_rate_for, Family, TokenCounts,
+};
 use crate::data::project::discover_projects;
 use crate::data::session::load_session_from_jsonl;
 use crate::data::Session;
@@ -44,10 +59,25 @@ pub struct AuditFinding {
     pub estimated_savings_usd: f64,
 }
 
+/// Which of the three heuristics produced a given [`Finding`]. Lets the UI
+/// group rows into per-heuristic sections and lets callers aggregate savings
+/// by category without string-matching the user-facing message.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
+pub enum FindingKind {
+    /// A session spent most of its output tokens on tool traffic — Haiku
+    /// could have produced the same output for less.
+    ToolRatio,
+    /// The warm-cache hit rate fell below [`CACHE_EFFICIENCY_THRESHOLD`].
+    CacheEfficiency,
+    /// A small Opus session — Sonnet would have sufficed.
+    ModelMismatch,
+}
+
 /// A single heuristic hit.
 #[derive(Debug, Clone)]
 pub struct Finding {
     pub severity: Severity,
+    pub kind: FindingKind,
     pub message: String,
     pub savings_usd: f64,
 }
@@ -60,9 +90,9 @@ pub enum Severity {
     Info,
 }
 
-/// Tool-call ratio threshold. Matches the spec: ≥ 70 % of tokens being
-/// tool-traffic means the session spent most of its money on Opus-priced
-/// tool output that Haiku could have produced.
+/// Tool-call ratio threshold. Matches the spec: ≥ 70 % of *output* tokens
+/// being tool-traffic means the session spent most of its output-billable
+/// money on Opus-priced tool output that Haiku could have produced.
 pub const TOOL_RATIO_THRESHOLD: f64 = 0.70;
 
 /// Cache efficiency threshold — sessions under this hit rate read as "low
@@ -73,12 +103,13 @@ pub const CACHE_EFFICIENCY_THRESHOLD: f64 = 0.20;
 /// Haiku would have done the job at a fraction of the price.
 pub const SMALL_SESSION_THRESHOLD_TOKENS: u64 = 5_000;
 
-/// Assumed cost ratio between Haiku 4.5 and Opus 4.7. Used for rough savings
-/// estimates — Haiku is ~$1/$5 vs Opus's $5/$25 so the blended rate is 5×
-/// cheaper. The UI shows "~$X" to signal approximation.
-const HAIKU_RATIO_OF_OPUS: f64 = 0.20;
+/// Below this message count, a session is considered a probe / abort-on-boot
+/// run. Not worth flagging: the user didn't actually do anything and the
+/// advice "use Haiku" is noise.
+const PROBE_SESSION_MIN_MESSAGES: u32 = 5;
 
-/// Assumed cost ratio between Sonnet 4.x and Opus 4.7.
+/// Assumed cost ratio between Sonnet 4.x and Opus 4.7. Used by the
+/// model-mismatch savings estimate.
 const SONNET_RATIO_OF_OPUS: f64 = 0.60;
 
 /// Public entrypoint — discovers every project, walks its sessions, returns
@@ -134,17 +165,26 @@ pub fn audit_session(
     let mut findings: Vec<Finding> = Vec::new();
     let mut total_savings = 0.0;
 
+    let probe_ok = session.message_count >= PROBE_SESSION_MIN_MESSAGES;
+
     // ── 1. Tool-call ratio ────────────────────────────────────────────────
-    if stats.total_tokens >= 1_000 {
-        let tool_ratio = if stats.total_tokens == 0 {
+    // Denominator is output tokens only. Including cache-reads (as the old
+    // formula did) swamps the numerator — in the launch-corpus check, every
+    // real session scored < 6 % tool-ratio under the old formula, even ones
+    // that were genuinely tool-heavy.
+    if stats.total_tokens >= 1_000 && probe_ok && !session.model_summary.is_empty() {
+        let output_tokens = session.tokens.output;
+        let tool_ratio = if output_tokens == 0 {
             0.0
         } else {
-            stats.tool_tokens as f64 / stats.total_tokens as f64
+            // Cap at 1.0 — `stats.tool_tokens` sums output-of-tool-use plus
+            // input-of-next-turn, which can overshoot pure output.
+            (stats.tool_tokens as f64 / output_tokens as f64).min(1.0)
         };
-        if tool_ratio >= TOOL_RATIO_THRESHOLD && is_opus_family(&session.model_summary) {
-            // Savings = the tool share of the cost × (1 - Haiku-ratio).
-            let tool_cost = session.total_cost_usd * tool_ratio;
-            let savings = tool_cost * (1.0 - HAIKU_RATIO_OF_OPUS);
+        if tool_ratio >= TOOL_RATIO_THRESHOLD && is_opus_or_sonnet(&session.model_summary) {
+            let output_cost = output_tokens as f64 * output_rate_for(&session.model_summary);
+            let haiku_ratio = haiku_output_ratio_to(&session.model_summary);
+            let savings = output_cost * tool_ratio * (1.0 - haiku_ratio);
             let pct = (tool_ratio * 100.0).round() as i64;
             let msg = format!(
                 "{pct}% tool_use tokens \u{2014} Haiku could save ~${:.2}",
@@ -152,6 +192,7 @@ pub fn audit_session(
             );
             findings.push(Finding {
                 severity: Severity::Warn,
+                kind: FindingKind::ToolRatio,
                 message: msg,
                 savings_usd: savings,
             });
@@ -162,7 +203,7 @@ pub fn audit_session(
     // ── 2. Cache efficiency ───────────────────────────────────────────────
     let cache_create = session.tokens.cache_write_5m + session.tokens.cache_write_1h;
     let denom = cache_create + session.tokens.cache_read;
-    if denom >= 1_000 {
+    if denom >= 1_000 && probe_ok {
         let ratio = session.tokens.cache_read as f64 / denom as f64;
         if ratio < CACHE_EFFICIENCY_THRESHOLD {
             // Savings is fuzzier here — a warm cache at Opus rates saves ~90 %
@@ -173,6 +214,7 @@ pub fn audit_session(
             let msg = format!("cache hit rate {pct}% \u{2014} consider session continuation");
             findings.push(Finding {
                 severity: Severity::Info,
+                kind: FindingKind::CacheEfficiency,
                 message: msg,
                 savings_usd: savings,
             });
@@ -185,6 +227,7 @@ pub fn audit_session(
     if is_opus_family(&session.model_summary)
         && total_tokens < SMALL_SESSION_THRESHOLD_TOKENS
         && session.total_cost_usd > 0.05
+        && probe_ok
     {
         // Small session on Opus → Sonnet or Haiku would suffice. We quote
         // Sonnet savings (the safer downgrade) rather than Haiku.
@@ -196,6 +239,7 @@ pub fn audit_session(
         );
         findings.push(Finding {
             severity: Severity::Info,
+            kind: FindingKind::ModelMismatch,
             message: msg,
             savings_usd: savings,
         });
@@ -222,6 +266,13 @@ pub fn audit_session(
 /// suggest "use Haiku" to someone already there.
 fn is_opus_family(model: &str) -> bool {
     matches!(family(model), Family::Opus)
+}
+
+/// Opus or Sonnet — the two families where recommending a Haiku downgrade
+/// on tool-heavy traffic makes economic sense. Haiku is already the cheapest
+/// and recommending it to a Haiku user would be noise.
+fn is_opus_or_sonnet(model: &str) -> bool {
+    matches!(family(model), Family::Opus | Family::Sonnet)
 }
 
 /// Per-session rollup used by the heuristics. We re-parse the JSONL here
@@ -338,6 +389,29 @@ pub fn total_potential_savings(findings: &[AuditFinding]) -> f64 {
     findings.iter().map(|f| f.estimated_savings_usd).sum()
 }
 
+/// Per-heuristic rollup across every [`AuditFinding`]. Returns
+/// `[(kind, count, sum_savings_usd); 3]` in a stable order suitable for the
+/// UI summary band. Missing categories appear with `count = 0, savings = 0`.
+pub fn summary_by_kind(audit_findings: &[AuditFinding]) -> [(FindingKind, usize, f64); 3] {
+    let mut totals: [(FindingKind, usize, f64); 3] = [
+        (FindingKind::ToolRatio, 0, 0.0),
+        (FindingKind::CacheEfficiency, 0, 0.0),
+        (FindingKind::ModelMismatch, 0, 0.0),
+    ];
+    for af in audit_findings {
+        for f in &af.findings {
+            let idx = match f.kind {
+                FindingKind::ToolRatio => 0,
+                FindingKind::CacheEfficiency => 1,
+                FindingKind::ModelMismatch => 2,
+            };
+            totals[idx].1 += 1;
+            totals[idx].2 += f.savings_usd;
+        }
+    }
+    totals
+}
+
 /// Exposed for testing — build a synthetic stats rollup and run the
 /// heuristic logic against it without touching the disk.
 #[doc(hidden)]
@@ -350,11 +424,19 @@ pub fn audit_session_with_stats(
     let mut findings: Vec<Finding> = Vec::new();
     let mut total_savings = 0.0;
 
-    if stats_total_tokens >= 1_000 {
-        let tool_ratio = stats_tool_tokens as f64 / stats_total_tokens as f64;
-        if tool_ratio >= TOOL_RATIO_THRESHOLD && is_opus_family(&session.model_summary) {
-            let tool_cost = session.total_cost_usd * tool_ratio;
-            let savings = tool_cost * (1.0 - HAIKU_RATIO_OF_OPUS);
+    let probe_ok = session.message_count >= PROBE_SESSION_MIN_MESSAGES;
+
+    if stats_total_tokens >= 1_000 && probe_ok && !session.model_summary.is_empty() {
+        let output_tokens = session.tokens.output;
+        let tool_ratio = if output_tokens == 0 {
+            0.0
+        } else {
+            (stats_tool_tokens as f64 / output_tokens as f64).min(1.0)
+        };
+        if tool_ratio >= TOOL_RATIO_THRESHOLD && is_opus_or_sonnet(&session.model_summary) {
+            let output_cost = output_tokens as f64 * output_rate_for(&session.model_summary);
+            let haiku_ratio = haiku_output_ratio_to(&session.model_summary);
+            let savings = output_cost * tool_ratio * (1.0 - haiku_ratio);
             let pct = (tool_ratio * 100.0).round() as i64;
             let msg = format!(
                 "{pct}% tool_use tokens \u{2014} Haiku could save ~${:.2}",
@@ -362,6 +444,7 @@ pub fn audit_session_with_stats(
             );
             findings.push(Finding {
                 severity: Severity::Warn,
+                kind: FindingKind::ToolRatio,
                 message: msg,
                 savings_usd: savings,
             });
@@ -371,7 +454,7 @@ pub fn audit_session_with_stats(
 
     let cache_create = session.tokens.cache_write_5m + session.tokens.cache_write_1h;
     let denom = cache_create + session.tokens.cache_read;
-    if denom >= 1_000 {
+    if denom >= 1_000 && probe_ok {
         let ratio = session.tokens.cache_read as f64 / denom as f64;
         if ratio < CACHE_EFFICIENCY_THRESHOLD {
             let savings = session.total_cost_usd * 0.20;
@@ -379,6 +462,7 @@ pub fn audit_session_with_stats(
             let msg = format!("cache hit rate {pct}% \u{2014} consider session continuation");
             findings.push(Finding {
                 severity: Severity::Info,
+                kind: FindingKind::CacheEfficiency,
                 message: msg,
                 savings_usd: savings,
             });
@@ -390,6 +474,7 @@ pub fn audit_session_with_stats(
     if is_opus_family(&session.model_summary)
         && total_tokens < SMALL_SESSION_THRESHOLD_TOKENS
         && session.total_cost_usd > 0.05
+        && probe_ok
     {
         let savings = session.total_cost_usd * (1.0 - SONNET_RATIO_OF_OPUS);
         let msg = format!(
@@ -399,6 +484,7 @@ pub fn audit_session_with_stats(
         );
         findings.push(Finding {
             severity: Severity::Info,
+            kind: FindingKind::ModelMismatch,
             message: msg,
             savings_usd: savings,
         });
@@ -455,18 +541,19 @@ mod tests {
 
     #[test]
     fn tool_heavy_opus_session_flagged_with_haiku_savings() {
+        // Output = 10_000, tool tokens = 8_000 → ratio 0.80 ≥ 0.70.
         let tokens = TokenCounts {
             input: 10_000,
             output: 10_000,
             ..Default::default()
         };
         let session = mk_session("a", "claude-opus-4-7", 10.0, tokens);
-        let finding =
-            audit_session_with_stats(&session, 20_000, 16_000, "proj".into()).expect("should flag");
+        let finding = audit_session_with_stats(&session, 20_000, 8_000, "proj".into())
+            .expect("should flag");
         assert!(finding
             .findings
             .iter()
-            .any(|f| f.message.contains("tool_use tokens")));
+            .any(|f| f.kind == FindingKind::ToolRatio));
         assert!(
             finding.estimated_savings_usd > 0.0,
             "positive savings expected"
@@ -481,17 +568,36 @@ mod tests {
             ..Default::default()
         };
         let session = mk_session("a", "claude-haiku-4-5", 1.0, tokens);
-        let finding = audit_session_with_stats(&session, 20_000, 16_000, "proj".into());
+        let finding = audit_session_with_stats(&session, 20_000, 8_000, "proj".into());
         // Haiku sessions might trip *other* rules but never the tool-ratio one,
         // since we'd be recommending the model they already use.
         if let Some(f) = finding {
             for item in &f.findings {
                 assert!(
-                    !item.message.contains("tool_use tokens"),
+                    item.kind != FindingKind::ToolRatio,
                     "Haiku sessions should never get the tool-ratio flag"
                 );
             }
         }
+    }
+
+    #[test]
+    fn sonnet_session_can_flag_for_tool_ratio() {
+        // New formula: Sonnet is downgradeable to Haiku too (5/15 output-
+        // cost ratio). Haiku ratio for Sonnet = 1/3 so savings = output_cost
+        // × 0.80 × (1 − 0.333…) ≈ output_cost × 0.533.
+        let tokens = TokenCounts {
+            input: 10_000,
+            output: 10_000,
+            ..Default::default()
+        };
+        let session = mk_session("s", "claude-sonnet-4-5", 0.50, tokens);
+        let finding = audit_session_with_stats(&session, 20_000, 8_000, "proj".into())
+            .expect("sonnet tool-heavy session should flag");
+        assert!(finding
+            .findings
+            .iter()
+            .any(|f| f.kind == FindingKind::ToolRatio));
     }
 
     #[test]
@@ -504,12 +610,12 @@ mod tests {
             cache_write_1h: 0,
         };
         let session = mk_session("a", "claude-opus-4-7", 5.0, tokens);
-        let finding =
-            audit_session_with_stats(&session, 2_000, 0, "proj".into()).expect("should flag");
+        let finding = audit_session_with_stats(&session, 2_000, 0, "proj".into())
+            .expect("should flag");
         assert!(finding
             .findings
             .iter()
-            .any(|f| f.message.contains("cache hit rate")));
+            .any(|f| f.kind == FindingKind::CacheEfficiency));
     }
 
     #[test]
@@ -520,12 +626,12 @@ mod tests {
             ..Default::default()
         };
         let session = mk_session("a", "claude-opus-4-7", 0.37, tokens);
-        let finding =
-            audit_session_with_stats(&session, 1_000, 0, "proj".into()).expect("should flag");
+        let finding = audit_session_with_stats(&session, 1_000, 0, "proj".into())
+            .expect("should flag");
         assert!(finding
             .findings
             .iter()
-            .any(|f| f.message.contains("Sonnet would suffice")));
+            .any(|f| f.kind == FindingKind::ModelMismatch));
     }
 
     #[test]
@@ -541,6 +647,48 @@ mod tests {
         // Not tool-heavy (0 tool tokens), good cache ratio, big session.
         let finding = audit_session_with_stats(&session, 200_000, 0, "proj".into());
         assert!(finding.is_none());
+    }
+
+    #[test]
+    fn probe_session_never_flagged() {
+        // 2 messages and otherwise tool-heavy — the probe floor kills it.
+        let tokens = TokenCounts {
+            input: 10_000,
+            output: 10_000,
+            ..Default::default()
+        };
+        let mut session = mk_session("probe", "claude-opus-4-7", 10.0, tokens);
+        session.message_count = 2;
+        let finding = audit_session_with_stats(&session, 20_000, 8_000, "proj".into());
+        assert!(
+            finding.is_none(),
+            "abort-on-boot probe sessions should be silent"
+        );
+    }
+
+    #[test]
+    fn tool_ratio_is_capped_at_one() {
+        // stats_tool_tokens > output → would raw-compute to > 100 %. The cap
+        // prevents the UI rendering "113 % tool_use tokens".
+        let tokens = TokenCounts {
+            input: 0,
+            output: 10_000,
+            ..Default::default()
+        };
+        let session = mk_session("over", "claude-opus-4-7", 5.0, tokens);
+        let finding = audit_session_with_stats(&session, 50_000, 50_000, "proj".into())
+            .expect("still flags");
+        let tool = finding
+            .findings
+            .iter()
+            .find(|f| f.kind == FindingKind::ToolRatio)
+            .expect("tool-ratio finding present");
+        // Message prefix rounds to 100 % when ratio is capped at 1.0.
+        assert!(
+            tool.message.starts_with("100%"),
+            "expected capped 100% prefix, got: {}",
+            tool.message
+        );
     }
 
     #[test]
@@ -567,5 +715,83 @@ mod tests {
         };
         // Opus 4 input = $5 / 1M = 5.0 on 1M.
         assert!((recompute_cost("claude-opus-4-7", tokens) - 5.00).abs() < 1e-9);
+    }
+
+    #[test]
+    fn summary_by_kind_orders_and_sums_correctly() {
+        let findings = vec![
+            AuditFinding {
+                session_id: "a".into(),
+                project_name: "p".into(),
+                project_cwd: PathBuf::new(),
+                session_label: "t".into(),
+                total_cost_usd: 1.0,
+                model_summary: "claude-opus-4-7".into(),
+                findings: vec![
+                    Finding {
+                        severity: Severity::Warn,
+                        kind: FindingKind::ToolRatio,
+                        message: "tool".into(),
+                        savings_usd: 2.0,
+                    },
+                    Finding {
+                        severity: Severity::Info,
+                        kind: FindingKind::CacheEfficiency,
+                        message: "cache".into(),
+                        savings_usd: 0.5,
+                    },
+                ],
+                estimated_savings_usd: 2.5,
+            },
+            AuditFinding {
+                session_id: "b".into(),
+                project_name: "p".into(),
+                project_cwd: PathBuf::new(),
+                session_label: "t".into(),
+                total_cost_usd: 1.0,
+                model_summary: "claude-opus-4-7".into(),
+                findings: vec![Finding {
+                    severity: Severity::Warn,
+                    kind: FindingKind::ToolRatio,
+                    message: "tool2".into(),
+                    savings_usd: 1.0,
+                }],
+                estimated_savings_usd: 1.0,
+            },
+        ];
+        let s = summary_by_kind(&findings);
+        assert_eq!(s[0].0, FindingKind::ToolRatio);
+        assert_eq!(s[0].1, 2);
+        assert!((s[0].2 - 3.0).abs() < 1e-9);
+        assert_eq!(s[1].0, FindingKind::CacheEfficiency);
+        assert_eq!(s[1].1, 1);
+        assert!((s[1].2 - 0.5).abs() < 1e-9);
+        assert_eq!(s[2].0, FindingKind::ModelMismatch);
+        assert_eq!(s[2].1, 0);
+        assert!(s[2].2.abs() < 1e-9);
+    }
+
+    #[test]
+    fn empty_model_summary_does_not_panic_and_skips_gated_heuristics() {
+        // Mixed-model sessions that never got a scorable assistant message
+        // end up with an empty model_summary. Tool-ratio + model-mismatch
+        // are gated on family() so they silently skip; cache-efficiency may
+        // still fire.
+        let tokens = TokenCounts {
+            input: 0,
+            output: 0,
+            cache_read: 100,
+            cache_write_5m: 10_000,
+            cache_write_1h: 0,
+        };
+        let session = mk_session("empty", "", 1.0, tokens);
+        // Should not panic.
+        let finding = audit_session_with_stats(&session, 20_000, 8_000, "proj".into());
+        if let Some(af) = finding {
+            for f in &af.findings {
+                // Tool-ratio must be suppressed when model_summary is empty.
+                assert!(f.kind != FindingKind::ToolRatio);
+            }
+        }
     }
 }

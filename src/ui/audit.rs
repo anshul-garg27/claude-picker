@@ -273,7 +273,7 @@ fn render_footer(f: &mut Frame<'_>, area: Rect, state: &AuditState, theme: &Them
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::data::cost_audit::Finding;
+    use crate::data::cost_audit::{Finding, FindingKind};
 
     fn mk_finding(id: &str, cost: f64, savings: f64) -> AuditFinding {
         AuditFinding {
@@ -285,6 +285,7 @@ mod tests {
             model_summary: "claude-opus-4-7".into(),
             findings: vec![Finding {
                 severity: Severity::Warn,
+                kind: FindingKind::ToolRatio,
                 message: "big savings available".into(),
                 savings_usd: savings,
             }],
