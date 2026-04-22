@@ -37,7 +37,7 @@
 
 <p align="center"><sub>
   Full-resolution: <a href="assets/hero.mp4">assets/hero.mp4</a> · 1920×1200 · 35 s · 563 KB.<br>
-  Want to regenerate against your own sandbox? See <a href="../scripts/capture/tapes/01-hero-v06.tape"><code>scripts/capture/tapes/01-hero-v06.tape</code></a>.
+  Want to regenerate against your own sandbox? See <a href="scripts/capture/tapes/01-hero-v06.tape"><code>scripts/capture/tapes/01-hero-v06.tape</code></a>.
 </sub></p>
 
 ---
@@ -561,8 +561,13 @@ If claude-picker saves you time, [star the repo](https://github.com/anshul-garg2
 
 ## Gallery
 
-Real TUI captures rendered against the `scripts/capture/seed-demo-home.sh` sandbox
-(`HOME=/tmp/claude-picker-demo vhs scripts/capture/tapes/01-hero-v06.tape`).
+Real TUI captures rendered via the bundled VHS tape:
+
+```bash
+# one-time: seed a PII-free demo $HOME (script lives in the workspace root, not this crate)
+# then render the 4-act flow — picker → audit → stats → prompt
+HOME=/tmp/claude-picker-demo vhs scripts/capture/tapes/01-hero-v06.tape
+```
 
 <details>
 <summary><strong>Session picker</strong> — filter, cost chips, model/permission pills, timestamps, live preview</summary>
@@ -623,7 +628,7 @@ The following still need a VHS tape or Playwright scene before the gallery is co
 - [ ] `assets/viewer.png` — conversation viewer with interesting-moments timeline, timestamps, and subagent tree
 - [ ] `assets/replay.png` — time-travel replay with 4-position comet trail
 
-The VHS tape at [`scripts/capture/tapes/01-hero-v06.tape`](../scripts/capture/tapes/01-hero-v06.tape)
+The VHS tape at [`scripts/capture/tapes/01-hero-v06.tape`](scripts/capture/tapes/01-hero-v06.tape)
 is the live template for the other six above — duplicate it, swap the scene, and
 re-run with `HOME=/tmp/claude-picker-demo vhs …`.
 
