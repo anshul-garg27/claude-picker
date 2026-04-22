@@ -10,7 +10,7 @@
   <a href="https://github.com/anshul-garg27/claude-picker/releases"><img src="https://img.shields.io/github/v/release/anshul-garg27/claude-picker.svg?style=flat-square" alt="releases"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="MIT"></a>
   <img src="https://img.shields.io/badge/rust-1.86%2B-orange.svg?style=flat-square" alt="Rust 1.86+">
-  <img src="https://img.shields.io/badge/tests-568-brightgreen.svg?style=flat-square" alt="568 tests">
+  <img src="https://img.shields.io/badge/tests-500+-brightgreen.svg?style=flat-square" alt="500+ tests">
 </p>
 
 <p align="center">
@@ -172,11 +172,11 @@ Ten themes ship in the binary. Cycle live with `t`, list with `--list-themes`.
 | Theme | Mood |
 |---|---|
 | `catppuccin-mocha` *(default)* | Purple-forward dark, punchy accents |
-| `catppuccin-macchiato` | Slightly softer cousin of mocha |
-| `catppuccin-frappe` | Mid-contrast dark, desaturated |
+| `nord` | Slightly softer cousin of mocha |
+| `dracula` | Mid-contrast dark, desaturated |
 | `catppuccin-latte` | Cream-light for daylight desks |
-| `tokyonight` | Neon indigo on near-black |
-| `gruvbox` | Warm retro, boosted greens |
+| `tokyo-night` | Neon indigo on near-black |
+| `gruvbox-dark` | Warm retro, boosted greens |
 | `nord-aurora` | Cool polar-night base with brightened aurora accents |
 | `rose-pine-moon` | Warm desaturated, WCAG-readable |
 | `high-contrast` | AAA (7:1) ratios everywhere, for low-vision use |
@@ -185,7 +185,7 @@ Ten themes ship in the binary. Cycle live with `t`, list with `--list-themes`.
 **Precedence**: `--theme` flag > `CLAUDE_PICKER_THEME` env > `config.toml` `[ui].theme` > default.
 
 ```bash
-claude-picker --theme tokyonight          # highest priority
+claude-picker --theme tokyo-night          # highest priority
 export CLAUDE_PICKER_THEME=nord-aurora    # next
 # config.toml: [ui] theme = "rose-pine-moon"
 ```
@@ -326,7 +326,7 @@ Nothing leaves your machine unless you explicitly call an AI feature (`Ctrl+A` s
 ## Project stats
 
 - **74** Rust files · **42 k** LOC
-- **568** tests (unit + integration)
+- **500+** tests (unit + integration)
 - **~2.5 MB** release binary
 - **18** direct dependencies
 - **Rust 1.86+** MSRV
