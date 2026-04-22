@@ -1,0 +1,37 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 720 140" role="img" aria-label="claude-picker audit summary band">
+  <title>Audit summary band: tool-ratio, cache-efficiency, model-mismatch</title>
+  <style>
+    .bg { fill: #1F1F28; }
+    .panel { stroke: #2A2A37; stroke-width: 1; }
+    .label { fill: #DCD7BA; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 13px; font-weight: 600; }
+    .count { fill: #C8C093; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 12px; }
+    .savings { fill: #FFFFFF; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 14px; font-weight: 700; }
+    .heading { fill: #7FB4CA; font-family: 'JetBrains Mono', ui-monospace, Menlo, monospace; font-size: 11px; letter-spacing: 1px; }
+    .chip-warn { fill: #DCA561; }
+    .chip-info { fill: #7FB4CA; }
+    .chip-ok { fill: #76946A; }
+  </style>
+  <rect class="bg" width="720" height="140" rx="6"/>
+  <text x="16" y="22" class="heading">AUDIT · 3 HEURISTICS · RUN-RATE $1,778.14/yr</text>
+
+  <!-- tool-ratio -->
+  <rect x="16" y="36" width="224" height="88" rx="4" fill="#2A241C" class="panel"/>
+  <rect x="16" y="36" width="6"   height="88" class="chip-warn"/>
+  <text x="32" y="58" class="label">tool-ratio</text>
+  <text x="32" y="80" class="count">6 findings · warn</text>
+  <text x="32" y="108" class="savings">~$110.40 savings</text>
+
+  <!-- cache-efficiency -->
+  <rect x="248" y="36" width="224" height="88" rx="4" fill="#1C2430" class="panel"/>
+  <rect x="248" y="36" width="6"   height="88" class="chip-info"/>
+  <text x="264" y="58" class="label">cache-efficiency</text>
+  <text x="264" y="80" class="count">1 finding · info</text>
+  <text x="264" y="108" class="savings">~$0.11 savings</text>
+
+  <!-- model-mismatch -->
+  <rect x="480" y="36" width="224" height="88" rx="4" fill="#1E2A1E" class="panel"/>
+  <rect x="480" y="36" width="6"   height="88" class="chip-ok"/>
+  <text x="496" y="58" class="label">model-mismatch</text>
+  <text x="496" y="80" class="count">0 findings · ok</text>
+  <text x="496" y="108" class="savings">$0.00 savings</text>
+</svg>

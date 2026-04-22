@@ -2,7 +2,7 @@
 
 <p align="center">
   <strong>A terminal session manager for Claude Code.</strong><br>
-  Thirteen screens. Ten themes. One Rust binary. Zero runtime dependencies.
+  Fifteen themes. Seventeen commands. One 3.7 MB Rust binary. Zero runtime dependencies.
 </p>
 
 <p align="center">
@@ -10,24 +10,37 @@
   <a href="https://github.com/anshul-garg27/claude-picker/releases"><img src="https://img.shields.io/github/v/release/anshul-garg27/claude-picker.svg?style=flat-square" alt="releases"></a>
   <a href="https://opensource.org/licenses/MIT"><img src="https://img.shields.io/badge/license-MIT-blue.svg?style=flat-square" alt="MIT"></a>
   <img src="https://img.shields.io/badge/rust-1.86%2B-orange.svg?style=flat-square" alt="Rust 1.86+">
-  <img src="https://img.shields.io/badge/tests-500+-brightgreen.svg?style=flat-square" alt="500+ tests">
+  <img src="https://img.shields.io/badge/edition-2021-blue.svg?style=flat-square" alt="Rust edition 2021">
+  <img src="https://img.shields.io/badge/tests-714%20passing-brightgreen.svg?style=flat-square" alt="714 tests">
 </p>
 
 <p align="center">
   <a href="#install">Install</a> ·
-  <a href="#the-headline-features">Features</a> ·
+  <a href="#first-run">First run</a> ·
+  <a href="#whats-new-in-v06">v0.6</a> ·
   <a href="#screens">Screens</a> ·
   <a href="#keyboard">Keyboard</a> ·
   <a href="#themes">Themes</a> ·
+  <a href="#audit--stats-deep-dive">Audit</a> ·
+  <a href="#scripting--shell-integration">Scripting</a> ·
   <a href="#configuration">Config</a> ·
   <a href="#how-it-works">How it works</a>
 </p>
 
+<!-- TODO(capture): render via scripts/capture/render-master.sh (VHS tape)
+     — expected artifact: assets/hero.gif, ~1000×600, ≤4 MB.
+     Show: cold-start skeleton → picker with chain/anomaly badges → `v` into
+     conversation viewer with timestamps + subagent tree → `R` into replay →
+     back out to stats dashboard with 30-day heatmap. -->
+<p align="center">
+  <img src="assets/hero.gif" alt="claude-picker cold-start: loading skeletons resolve into the session picker; chain (⛓) and cost-anomaly (⚡) badges highlight; `v` opens the conversation viewer with per-message timestamps and a subagent tree; `R` enters time-travel replay; back out to the stats dashboard with the project-cost 30-day heatmap" width="82%">
+</p>
+
 ---
 
-## The problem
+## The 90-second pitch
 
-Claude Code writes every conversation to disk, but the built-in `/resume` is a flat list of UUIDs:
+Claude Code stores every conversation on disk, but the built-in `/resume` picker is a flat list of UUIDs:
 
 ```
 ? Pick a conversation to resume
@@ -38,22 +51,25 @@ Claude Code writes every conversation to disk, but the built-in `/resume` is a f
 
 No projects. No preview. No names. No cost. No search. No way to find that one session from last Tuesday where you fixed the auth bug.
 
-**claude-picker** reads those same JSONL files and turns them into thirteen tightly-wired screens: two-pane project/session browser with live preview, fork-aware tree view, word-level diff, file-centric pivot ("which sessions touched `auth.rs`?"), time-travel replay, 11-operator filter language, one-key AI summaries, cost-optimization audit, and a stats dashboard with per-model spend and a GitHub-style activity heatmap.
+**claude-picker** reads those same JSONL files and wires them into a tightly-designed two-pane picker with live preview, fork-aware tree, word-level diff, file-centric pivot, time-travel replay, 11-operator filter language, and a cost-optimization audit that — in our own dogfood — identified **$148.17 of spend** across findings like *"71% tool_use tokens, Haiku could save ~$73"*. Everything is local. Nothing is scraped. Nothing is sent anywhere unless you explicitly press the AI summary key.
 
 ---
 
 ## Install
 
-Three ways. The binary is identical everywhere.
+Four ways. The binary is identical everywhere.
 
 ```bash
 # 1. Cargo (always-latest from crates.io — no cache lag)
 cargo install claude-picker
 
-# 2. Homebrew (macOS + Linux)
+# 2. Cargo from source (this repo)
+cargo install --path .
+
+# 3. Homebrew (macOS + Linux)
 brew install anshul-garg27/tap/claude-picker
 
-# 3. Shell installer (curl a prebuilt binary from GitHub Releases)
+# 4. Shell installer (curl a prebuilt binary from GitHub Releases)
 curl -LsSf https://github.com/anshul-garg27/claude-picker/releases/latest/download/claude-picker-installer.sh | sh
 ```
 
@@ -62,51 +78,66 @@ Prebuilt binaries for every platform live on the [Releases page](https://github.
 **Requirements**
 - [Claude Code](https://claude.ai/code) on your `PATH`
 - macOS, Linux, or Windows (no runtime deps)
-- Rust 1.86+ if building from source
+- Rust 1.86+ if building from source — `rust-toolchain.toml` pins the `stable` channel, so `RUSTUP_TOOLCHAIN=stable cargo install --path .` works even if your default toolchain is nightly
 
 ---
 
-## The headline features
+## First run
 
-### Three pivots no other Claude TUI has
+```bash
+claude-picker
+```
 
-| | What it does | How you get there |
-|---|---|---|
-| **File-centric pivot** | Every file Claude has ever touched, with a reverse pivot from file → sessions. Answers *"which chats edited `src/auth/middleware.ts`?"* in one keystroke. Cached at `~/.config/claude-picker/file-index.json`. | `claude-picker files` / `--files` |
-| **Time-travel replay** | Scrub any session as a timeline. Gap-capping compresses long idle stretches so playback stays watchable. Comet-trail scrubber so you can see where you were. | `R` on any session |
-| **One-key AI summary** | Claude Haiku 4.5 produces a TL;DR of the highlighted session. Cost-gated, cached to disk at `~/.config/claude-picker/summaries.json`, so re-press is free. | `Ctrl+A` |
+Type to fuzzy-filter. `?` pops a context-aware help overlay. `Enter` resumes the highlighted session by exec'ing `claude --resume …`. That's the whole muscle memory — everything else is discoverable from the help key.
 
-### Five more you'll reach for daily
+---
 
-- **Cost audit** (`--audit`) flags sessions that could have been cheaper with three heuristics: tool-ratio, cache-efficiency, and model-mismatch.
-- **Pinned project slots** (`u` pins, `1`–`9` jumps, `0` clears) — `k9s`-style favorites for the projects you touch every day.
-- **Filter ribbon** (`Ctrl-r`) cycles `[ALL] [REPO] [7D] [RUNNING] [FORKED]`. Auto-activates `REPO` when you launch from inside a project directory, `atuin`-style.
-- **11-operator filter language** — `project:web cost:>1 model:opus mode:acceptEdits bookmarked sub:1 has:tools after:2026-04-01 tokens:>50k`. Parser in `src/data/search_filters.rs`.
-- **Which-key popup** — press `Space` or `g` and wait 250ms; a helix-style grid pops up showing every follow-up key with a description. Nothing to memorize.
+## What's new in v0.6
+
+Fifteen themes (up from ten), five new headless subcommands, and a round of UI surfaces aimed at making the picker and conversation viewer feel lived-in rather than spreadsheet-y.
+
+- **[Kanagawa is the new default](#themes)** — warm ink-wash palette replaces Catppuccin Mocha as the out-of-box theme. `finance-terminal`, `parchment-dark`, `paperwhite-warm`, and `terminal-classic` round the theme count up to 15.
+- **[Doctor, export, latest, prompt, completions](#scripting--shell-integration)** — five new subcommands for scripting and shell integration. `prompt` emits a PS1-friendly spend line. `export --redact` writes a Markdown transcript with secrets masked. `doctor --format json` surfaces orphans and top-cost sessions.
+- **[Audit JSON/CSV output](#audit--stats-deep-dive)** — `audit --format json` pipes straight into `jq`, Datadog, or your spreadsheet of choice. The TUI now always shows a 3-heuristic summary band and an **annual-savings run-rate** (monthly × 12.17).
+- **[Chain and anomaly badges](#screens) in the session list** — `⛓` marks sessions in the same project opened within 24h with similar titles. `⚡` marks sessions whose cost is ≥2× the project median.
+- **[Zebra rows + loading skeletons + cursor memory + smooth scroll](#ui-polish)** — tabular lists alternate shades on dark themes. Cold start shows pulsing grey placeholders for ~1.2s until enumeration settles. Cursor position restores per-project. Scroll interpolates instead of jumping. Every animation respects `reduce_motion`.
+- **[Conversation viewer rework](#keyboard)** — every message gets a `HH:MM · +Nm ·` timestamp. `z` toggles **zen mode** (drop breadcrumb, footer, search bar). Subagent Task tool calls render as a tree with `├─` / `└─` / `│ ` connectors. An **interesting-moments mini-timeline** at the top marks cost spikes, tool bursts, long pauses, and the first+last prompts.
+- **[Stats dashboard extras](#audit--stats-deep-dive)** — burn-rate alert vs prior month, 7×24 day-of-week × hour-of-day heatmap (`p` cycles metric), optional quota progress bar gated on `[ui] plan_tier`, per-project 30-day cost heatmap.
+- **[Auto-redact in preview](#privacy)** — `sk-ant-…`, `AKIA…`, `ghp_…`, `eyJ….….…` JWTs, and `Bearer …` headers are masked as `****<last4>` before rendering. Opt out via `[ui] redact_preview = false`.
 
 ---
 
 ## Screens
 
-Thirteen of them. Each has its own screen, keyboard context, and help overlay.
+Fourteen first-class screens plus five headless subcommands. Every TUI screen has its own keyboard context and `?` help overlay.
 
 | Screen | Launch | What it shows |
 |---|---|---|
-| **Picker** (default) | `claude-picker` | Two-pane projects → sessions with live preview, filter ribbon, pinned slots |
-| **Stats** | `stats` / `--stats` | KPI hero cards (tokens, cost, sessions) with delta chips + inline sparklines, rank-badged per-project table with model-colored stacked bars, GitHub-style 30-day activity heatmap, speed-colored turn-duration histogram with p50/p95/p99 markers, traffic-light budget with per-model pill breakdown |
+| **Picker** (default) | `claude-picker` | Two-pane projects → sessions with live preview, filter ribbon, pinned slots, zebra rows, chain/anomaly badges |
+| **Stats** | `stats` / `--stats` | KPI hero cards (tokens, cost, sessions) + burn-rate alert, rank-badged per-project table with model-colored stacked bars, GitHub-style 30-day activity heatmap, project-cost 30-day heatmap, 7×24 day-of-week × hour-of-day heatmap (`p` cycles metric), speed-colored turn-duration histogram with p50/p95/p99 markers, traffic-light budget, optional quota panel (`plan_tier`) |
 | **Tree** | `tree` / `--tree` | Session fork tree with jless-style collapsed-node summaries `{3 branches · 127 turns · $4.21}`; `e` / `E` expand / collapse subtree |
-| **Diff** | `diff` / `--diff` | Side-by-side session compare; `d` toggles word-level inline diff; `n` / `N` jump between hunks |
-| **Search** | `search` / `--search` / `-s` | Full-text plus the 11-operator filter language |
-| **Conversation viewer** | `v` on a session | Full-screen transcript with right-edge heatmap gutter colored by cost / duration / tokens (`c` cycles); `Ctrl-e` pipes the current turn to `$EDITOR` |
+| **Diff** | `diff` / `--diff` | Side-by-side session compare with cost delta header; `d` toggles word-level inline diff; `n` / `N` jump between hunks |
+| **Search** | `search` / `--search` / `-s` | Full-text plus the 11-operator filter language, with context excerpts around matches |
+| **Conversation viewer** | `v` on a session | Full-screen transcript with per-message `HH:MM · +Nm ·` timestamps, interesting-moments mini-timeline, subagent tree, right-edge heatmap gutter (`c` cycles cost / duration / tokens), `z` zen toggle, `Ctrl-e` pipes the current turn to `$EDITOR` |
 | **Time-travel replay** | `R` on a session | Timeline scrubber with gap-capping and a 4-position comet trail |
 | **Files** | `files` / `--files` | The file-centric pivot. Add `--project NAME` to scope |
 | **Hooks** | `hooks` / `--hooks` | Every configured Claude Code hook + execution history |
 | **MCP** | `mcp` / `--mcp` | Installed MCP servers + tool-call usage rolled up across sessions |
 | **Checkpoints** | `checkpoints` / `--checkpoints` | File-history checkpoints per session |
-| **Audit** | `audit` / `--audit` | Cost-optimization report |
+| **Audit** | `audit` / `--audit` | Cost-optimization report with always-visible 3-heuristic summary band, annual-savings run-rate, per-project cost bars, drill-in per-finding overlay (`--format tui` \| `json` \| `csv`) |
+| **AI titles** | `ai-titles` / `--ai-titles` | Batch-name every unnamed session via Haiku 4.5 (cost-gated, cached to `summaries.json`) |
 | **Task drawer** | `w` (overlay, any screen) | Background jobs with progress bars; `j` / `k` navigate, `x` cancels the focused task |
 
-Plus two scripting modes: `pipe` / `--pipe` / `-p` writes the selected session ID to stdout, and `ai-titles` / `--ai-titles` batch-names every unnamed session via Haiku 4.5 (cost-gated).
+### Headless subcommands
+
+| Command | One-line purpose |
+|---|---|
+| `pipe` | Print selected session ID to stdout (for `claude --resume $(...)` ) |
+| `export <sid> [--out PATH] [--redact]` | Export transcript to Markdown; `--redact` masks `sk-ant-…` / `AKIA…` / `ghp_…` / JWTs / `Bearer …` |
+| `doctor [--cleanup --yes --format plain\|json\|csv]` | Diagnostic scan of `~/.claude/projects/` — sizes, top sessions, orphan stubs |
+| `latest [--project NAME --count N]` | Print the most-recent session id(s) for scripting |
+| `prompt [--format PS1\|JSON --no-color]` | Single-line spend summary for embedding in your shell prompt |
+| `completions <bash\|zsh\|fish\|elvish\|powershell>` | Emit a shell-completion script |
 
 ---
 
@@ -114,7 +145,7 @@ Plus two scripting modes: `pipe` / `--pipe` / `-p` writes the selected session I
 
 Every screen shares the same core map. Press `?` for a context-aware help overlay. Hold any leader key (`Space`, `g`) for 250ms and a helix-style which-key popup appears with every follow-up.
 
-### Navigation
+### Navigation (all screens)
 
 | Key | Action |
 |---|---|
@@ -125,18 +156,19 @@ Every screen shares the same core map. Press `?` for a context-aware help overla
 | `Tab` | Multi-select toggle |
 | `q` / `Esc` | Back out or quit |
 
-### Action
+### Session list
 
 | Key | Action |
 |---|---|
-| `Enter` | Exec `claude` on the selected session (replaces this process) |
+| `Enter` | Exec `claude --resume` on the selected session (replaces this process) |
 | `v` | Full-screen conversation viewer |
 | `R` | Time-travel replay |
 | `r` | Rename session (writes `custom-title` back into JSONL) |
+| `e` | Export session transcript to Markdown |
 | `o` | Open raw JSONL in `$EDITOR` |
-| `y` / `Y` | Copy session ID / full content to clipboard |
+| `y` / `Y` | Copy session ID / project path to clipboard |
 | `Ctrl+A` | AI summarize via Haiku 4.5 (cached) |
-| `Ctrl-e` | Send current turn (in viewer) to `$EDITOR` |
+| `m` | Mark / unmark for bulk action |
 | `*` / `b` | Toggle bookmark / filter to bookmarks-only |
 | `z` / `Z` | Undo / redo (rename today; delete coming) |
 
@@ -151,14 +183,23 @@ Every screen shares the same core map. Press `?` for a context-aware help overla
 | `/` | Filter within current view |
 | `Space` | Command palette (leader) |
 
-### Special (viewer / tree / stats)
+### Conversation viewer
 
 | Key | Action |
 |---|---|
-| `c` (viewer) | Cycle heatmap dimension (cost / duration / tokens) |
-| `n` / `N` (viewer) | Jump to next / previous turn boundary |
+| `c` | Cycle heatmap gutter dimension (cost / duration / tokens) |
+| `n` / `N` | Jump to next / previous turn boundary |
+| `z` | Toggle **zen mode** — drop breadcrumb, footer, search chrome |
+| `Ctrl-e` | Send current turn to `$EDITOR` |
+
+### Diff / tree / stats / task drawer
+
+| Key | Action |
+|---|---|
 | `n` / `N` (diff) | Jump to next / previous hunk |
+| `d` (diff) | Toggle word-level inline diff |
 | `e` / `E` (tree) | Expand / collapse subtree recursively |
+| `p` (stats) | Cycle heatmap metric (cost / tokens / sessions) |
 | `w` / `x` | Toggle task drawer / cancel focused task |
 | `t` | Cycle theme live |
 | `?` | Help overlay |
@@ -167,34 +208,233 @@ Every screen shares the same core map. Press `?` for a context-aware help overla
 
 ## Themes
 
-Ten themes ship in the binary. Cycle live with `t`, list with `--list-themes`.
+Fifteen themes ship in the binary. Cycle live with `t`, list with `--list-themes`. A side-by-side comparison renders at `docs/design/theme-comparison.html` in the workspace root.
 
 | Theme | Mood |
 |---|---|
-| `catppuccin-mocha` *(default)* | Purple-forward dark, punchy accents |
-| `nord` | Slightly softer cousin of mocha |
+| `kanagawa` *(default)* | Warm ink-wash on dusk blue — Fujiyama-in-a-terminal |
+| `finance-terminal` | Bloomberg-orange on graphite black, amber tickers, monospace discipline |
+| `parchment-dark` | Aged-paper cream on chocolate base, editorial serif feel |
+| `paperwhite-warm` | Cream paper with warm ochre accents — daylight desk mode |
+| `catppuccin-mocha` | Purple-forward dark, punchy accents (former default) |
+| `catppuccin-latte` | Cream-light sibling of mocha |
 | `dracula` | Mid-contrast dark, desaturated |
-| `catppuccin-latte` | Cream-light for daylight desks |
 | `tokyo-night` | Neon indigo on near-black |
 | `gruvbox-dark` | Warm retro, boosted greens |
+| `nord` | Slightly softer cousin of mocha |
 | `nord-aurora` | Cool polar-night base with brightened aurora accents |
 | `rose-pine-moon` | Warm desaturated, WCAG-readable |
 | `high-contrast` | AAA (7:1) ratios everywhere, for low-vision use |
 | `colorblind-safe` | Blue / orange diff pair — never red-green |
+| `terminal-classic` | Retro-CRT phosphor green on black (bonus) |
 
-**Precedence**: `--theme` flag > `CLAUDE_PICKER_THEME` env > `config.toml` `[ui].theme` > default.
+**Precedence**: `--theme` flag > `CLAUDE_PICKER_THEME` env > `config.toml` `[ui].theme` > default (`kanagawa`).
 
 ```bash
-claude-picker --theme tokyo-night          # highest priority
+claude-picker --theme tokyo-night         # highest priority
 export CLAUDE_PICKER_THEME=nord-aurora    # next
-# config.toml: [ui] theme = "rose-pine-moon"
+# config.toml: [ui] theme = "parchment-dark"
 ```
 
 Every theme carries the same 12 semantic tokens (`cost_green/yellow/amber/red/critical`, `speed_fast/medium/slow/glacial`, `model_opus/sonnet/haiku`) so stats render with consistent meaning across palettes. `colorblind-safe` deliberately maps `cost_green = blue` and `cost_red = orange` — no red-green pairs anywhere.
 
 ---
 
-## Accurate cost tracking
+## Audit + stats deep-dive
+
+`claude-picker audit` scores every session in `~/.claude/projects/` against three heuristics and produces a run-rate-aware savings estimate. The TUI has always shown findings — v0.6 adds an always-visible 3-heuristic summary band and a drill-in per-finding overlay with per-tool distribution.
+
+<p align="center">
+  <img src="assets/audit-summary-band.svg" alt="Always-visible summary band on the audit dashboard, split into three labeled rectangles: tool-ratio (warn-yellow, 6 findings, ~$110.40), cache-efficiency (info-blue, 1 finding, ~$0.11), model-mismatch (ok-green, 0 findings, $0.00)" width="72%">
+</p>
+
+### The three heuristics
+
+- **Tool-ratio** — sessions where `tool_use` tokens dominate the output budget. The ratio is computed as `tool_use / (output + cache-create)`, and anything over 50% is flagged as *"could have been a Haiku call"*.
+- **Cache-efficiency** — weak `cache_read` vs `cache_creation` ratio. Sessions that regenerate the same 5-minute ephemeral context over and over get flagged; typical savings from prompt-caching that input.
+- **Model-mismatch** — Opus on throwaway work (all-cheap tool calls), or Haiku on heavy reasoning (long free-form plans). Direction-aware so you don't get warned about *"your Opus session should be on Opus"*.
+
+### JSON output (sample from this repo)
+
+```bash
+claude-picker audit --format json | jq '.total_savings_usd, .annual_run_rate_usd, (.findings | length)'
+```
+
+```json
+{
+  "total_savings_usd": 148.18,
+  "annual_run_rate_usd": 1778.14,
+  "findings": [
+    {
+      "session_id": "1402ab4e-a256-468d-8c66-858c0ddcccb6",
+      "project": "architex",
+      "session_label": "testing1",
+      "total_cost_usd": 1357.81,
+      "model_summary": "claude-opus-4-7",
+      "kind": "ToolRatio",
+      "severity": "warn",
+      "message": "71% tool_use tokens — Haiku could save ~$73.00",
+      "savings_usd": 72.99
+    }
+  ]
+}
+```
+
+### Stats dashboard — project-cost 30-day heatmap
+
+The stats dashboard renders a per-project 30-day heatmap so you can see at a glance which projects eat budget and when.
+
+<p align="center">
+  <img src="assets/heatmap-row.svg" alt="One row of the stats project-cost heatmap: project name on the left, 30 daily cells shaded from empty grey through yellow to red based on that day's cost, a total cost in the right margin" width="78%">
+</p>
+
+Cells are quantile-shaded (p25 / p50 / p75 / p90 over non-zero days). Press `p` on the stats screen to cycle between cost, tokens, and sessions.
+
+---
+
+## Scripting + shell integration
+
+Four primitives make claude-picker composable with everything else in a shell pipeline.
+
+### `latest` — jump to the most recent session
+
+```bash
+$ claude-picker latest --count 3
+dc218c2f-b469-40ad-aacd-72aacb18b203
+ca0d1766-8eed-4d08-b324-b00e733727a3
+f424a1b2-4aef-4bd7-8d8d-f3daa6313a4a
+
+# one-shot resume of the last session in a specific project
+claude --resume $(claude-picker latest --project claude-picker)
+```
+
+### `prompt` — spend in your PS1
+
+```bash
+$ claude-picker prompt
+claude: $2343.93 today · $5927.40 month
+
+$ claude-picker prompt --format json
+{"today": 2343.93, "month": 5927.40}
+```
+
+Add to your shell prompt:
+
+```bash
+# bash / zsh
+PS1='$(claude-picker prompt --no-color) \$ '
+
+# fish
+function fish_prompt
+    echo -n (claude-picker prompt --no-color) ' $ '
+end
+```
+
+### `export --redact` — share a session safely
+
+```bash
+claude-picker export 1402ab4e-a256-468d-8c66-858c0ddcccb6 \
+  --out ~/Desktop/session.md \
+  --redact
+```
+
+Writes Markdown with `sk-ant-…` / `AKIA…` / `ghp_…` / JWTs / `Bearer …` masked as `sk-ant-****<last4>` etc.
+
+### `completions` — shell auto-complete
+
+```bash
+# zsh
+claude-picker completions zsh > ~/.zsh/_claude-picker
+
+# bash
+claude-picker completions bash > /usr/local/etc/bash_completion.d/claude-picker
+
+# fish
+claude-picker completions fish > ~/.config/fish/completions/claude-picker.fish
+```
+
+### Pipe into `claude --resume`
+
+```bash
+# interactive pick, then resume
+claude --resume $(claude-picker pipe)
+
+# file-pivot: jump to the last session that touched auth.rs
+claude --resume $(claude-picker files --project my-api --pipe auth.rs)
+```
+
+### `audit --format json` into your tooling
+
+```bash
+claude-picker audit --format json | jq '.findings | group_by(.project) | map({project: .[0].project, savings: map(.savings_usd) | add})'
+claude-picker audit --format csv > audit.csv
+```
+
+---
+
+## Configuration
+
+Everything lives under `~/.config/claude-picker/`. Generate a starter with `claude-picker --generate-config`.
+
+| File | Purpose |
+|---|---|
+| `config.toml` | `[ui]` / `[picker]` / `[actions]` / `[keys]` / `[bookmarks]` preferences |
+| `bookmarks.json` | Pinned session IDs |
+| `summaries.json` | Cached AI summaries keyed by session ID |
+| `file-index.json` | `--files` pivot index |
+| `budget.toml` | Monthly budget for the stats forecast |
+| `pinned.toml` | `u`-pinned project slots (1–9) |
+
+### Full `config.toml` example
+
+```toml
+[ui]
+# Theme name — one of `--list-themes` output. Default: "kanagawa".
+theme = "kanagawa"
+
+# Disable every animation (fork reveal, pulse HUD, replay comet trail,
+# peek fade, cursor glide, toast slide). Respects screen-reader and
+# accessibility preferences. Default: false.
+reduce_motion = false
+
+# Alternating row shades on tabular lists. Default: true on dark themes.
+zebra_rows = true
+
+# Subscription tier for the stats quota panel. One of:
+#   "none" (panel hidden, default), "pro" ($20), "max" ($100),
+#   "max20" ($200), "team" ($30/user), "enterprise" (no cap).
+plan_tier = "none"
+
+# Auto-redact secret shapes (sk-ant-…, AKIA…, ghp_…, JWTs, Bearer …) in
+# preview + viewer. Flip off if you're debugging a token yourself.
+redact_preview = true
+
+# Stats column cap. 0 = use full terminal width.
+stats_width = 0
+
+# Custom date format (strftime). Empty = auto.
+date_format = ""
+
+[picker]
+# One of: "recent", "cost", "msgs", "name", "bookmarked-first".
+sort = "bookmarked-first"
+include_hidden_projects = true
+min_messages = 2          # sessions below this are hidden
+model_filter = ""         # "", "opus", "sonnet", "haiku"
+
+[actions]
+# Flags forwarded to `claude --resume`. Env CLAUDE_PICKER_FLAGS wins if set.
+claude_flags = "--dangerously-skip-permissions"
+
+# Editor override for `o`. Empty = $EDITOR → code → cursor → nvim → vim.
+editor = ""
+
+[bookmarks]
+# Session IDs that should always float to the top.
+ids = []
+```
+
+### Accurate cost tracking
 
 Pricing is verified against the latest Anthropic rates:
 
@@ -206,32 +446,6 @@ Pricing is verified against the latest Anthropic rates:
 | Opus 3 (legacy) | $15 | $75 |
 
 Cache pricing: `write_5m = 1.25×` input, `write_1h = 2×` input, `read = 0.1×` input. Tokens come from every `message.usage` block, including `cache_creation.ephemeral_5m_input_tokens`, `cache_creation.ephemeral_1h_input_tokens`, and `cache_read_input_tokens`.
-
-Set a monthly budget in `~/.config/claude-picker/budget.toml`; the stats dashboard flashes the budget band at >95% of forecast.
-
----
-
-## Configuration
-
-Everything lives under `~/.config/claude-picker/`. Generate a starter with `claude-picker --generate-config`.
-
-| File | Purpose |
-|---|---|
-| `config.toml` | `[ui]` theme, `reduce_motion` toggle, other preferences |
-| `bookmarks.json` | Pinned session IDs |
-| `summaries.json` | Cached AI summaries keyed by session ID |
-| `file-index.json` | `--files` pivot index |
-| `budget.toml` | Monthly budget for the stats forecast |
-| `pinned.toml` | `u`-pinned project slots (1–9) |
-
-### `reduce_motion`
-
-```toml
-[ui]
-reduce_motion = true
-```
-
-Disables every animation — fork-tree reveal, pulsing HUD dot, replay comet trail, peek-mode fade, cursor glide, toast slide. Respects screen-reader and accessibility preferences.
 
 ### Claude flags
 
@@ -256,52 +470,30 @@ export CLAUDE_PICKER_FLAGS="--model sonnet"    # force sonnet
 
 ---
 
-## Usage
+<a id="ui-polish"></a>
+## UI polish in v0.6
 
-### Find a session by content
+A handful of small things that together make the picker feel alive instead of spreadsheet-y. Everything below respects `[ui] reduce_motion = true`.
 
-```bash
-claude-picker search
-```
+- **Loading skeletons** — cold start shows pulsing grey placeholder rows for ~1.2s while session enumeration settles, instead of snapping from empty to full.
+- **Cursor memory** — re-enter a project and the cursor lands where you left it, not at the top.
+- **Smooth scroll** — scroll interpolates over a few frames instead of jumping a page.
+- **Chain badge (⛓)** — session list surfaces sessions that appear to continue each other: same project, opened within 24h, similar titles.
+- **Cost anomaly badge (⚡)** — sessions whose cost is ≥2× the project median get a lightning chip so you spot runaway runs without opening the audit.
+- **Zebra rows** — tabular lists alternate `base` and `surface0` on dark themes. Auto-off on light themes where the delta would flip contrast.
+- **Interesting-moments timeline** in the conversation viewer — a compact top strip marks cost spikes, tool bursts, long pauses, and the first+last user prompts. One glance tells you where the session's weight sits.
+- **Subagent tree** — Task tool calls render as nested children with `├─` / `└─` / `│ ` connectors, so multi-agent runs read as a tree instead of a flat log.
 
-Free text, or the operator language:
+---
 
-```text
-kubernetes project:web-app cost:>1 model:opus after:2026-04-01 bookmarked
-```
+## Privacy
 
-### Pivot from a file
-
-```bash
-claude-picker files                        # every file, ever
-claude-picker files --project my-api       # scoped
-```
-
-Drill in and it flips to "sessions that touched this file". Index at `~/.config/claude-picker/file-index.json`.
-
-### Audit what's costing you money
-
-```bash
-claude-picker audit
-```
-
-- **Tool-ratio** — sessions dominated by tool calls that a cheaper model could've handled
-- **Cache-efficiency** — weak cache reads that could be prompt-cached
-- **Model-mismatch** — Opus on throwaway work, Haiku on reasoning-heavy work
-
-### Scrub a long session
-
-Highlight a session, press `R`. Gap-capping compresses long idle stretches. Every tool call, file edit, and assistant turn becomes a timeline frame.
-
-### Pipe into other tools
-
-```bash
-# resume a specific session from a script
-claude --resume $(claude-picker pipe)
-
-# one-shot: jump to the last session that touched auth.rs
-claude --resume $(claude-picker files --project my-api --pipe auth.rs)
-```
+- **Nothing leaves your machine** except two explicit opt-in AI features:
+  - `Ctrl+A` — AI summarize the highlighted session via Claude Haiku 4.5 (cached to `summaries.json`).
+  - `ai-titles` — batch-name unnamed sessions via Haiku 4.5 (prompts for confirmation, runs cost-gated).
+- **No telemetry.** No analytics. No background sync. No phone-home on startup.
+- **Auto-redact in preview** — known secret shapes are masked before rendering. `sk-ant-…`, `sk-proj-…`, `AKIA…`, `ASIA…`, `ghp_…`, `gho_…`, `ghu_…`, `ghs_…`, `eyJ….….…` JWTs, `Bearer …` headers all get replaced with `****<last4>`. Opt out via `[ui] redact_preview = false`.
+- **Export with `--redact`** — transcripts you share go through the same secret-masking pass before they hit disk.
 
 ---
 
@@ -314,37 +506,37 @@ claude-picker reads these directly to:
 1. **Discover projects** — scans encoded directories, resolves real paths via a three-layer decoder (session-metadata lookup → JSONL `cwd` scan → naive decode fallback)
 2. **Extract session info** — names from `custom-title` entries, message counts, permission modes, subagent counts, last user prompt
 3. **Compute cost** — parses `message.usage` including cache-creation and cache-read fields against the pricing table above
-4. **Detect forks** — follows `forkedFrom` to build parent/child trees with drill-down expansion
+4. **Detect forks and chains** — follows `forkedFrom` to build parent/child trees; heuristically detects cross-session chains by project + recency + title similarity
 5. **Index files** — walks tool-use events to build the reverse `file → sessions` map
 6. **Filter noise** — skips SDK-entrypoint sessions and strips system messages from previews
-7. **Render** — `ratatui` + `crossterm` with 24-bit color, unicode-correct rendering, ~6× faster fuzzy than skim, LCS word-diff, clipboard via `arboard`, Kitty/iTerm2/halfblock identicon thumbnails, `tachyonfx` animations (all respecting `reduce_motion`)
+7. **Redact secrets** — runs every preview and export through a shape-based secret masker
+8. **Render** — `ratatui` + `crossterm` with 24-bit color, unicode-correct rendering, `nucleo` fuzzy (~6× faster than skim), LCS word-diff, clipboard via `arboard`, Kitty/iTerm2/halfblock identicon thumbnails, `tachyonfx` animations (all respecting `reduce_motion`)
 
-Nothing leaves your machine unless you explicitly call an AI feature (`Ctrl+A` summarize, `ai-titles`). Everything else is local file IO.
+Pure Rust, no daemon, ~3.7 MB release binary.
 
 ---
 
 ## Project stats
 
-- **74** Rust files · **42 k** LOC
-- **500+** tests (unit + integration)
-- **~2.5 MB** release binary
-- **18** direct dependencies
-- **Rust 1.86+** MSRV
+- **93** Rust source files · **53 k** LOC
+- **714** unit tests passing (0.07s via `cargo test --release --lib`)
+- **~3.7 MB** release binary (stripped)
+- **Rust 1.86+** MSRV · edition 2021
 
 ### Tech stack
 
 - `ratatui` + `crossterm` — TUI engine
 - `nucleo` — fuzzy matcher (~6× faster than `skim`)
-- `catppuccin` — palette source for 4 of the 10 themes
+- `catppuccin` — palette source for the Catppuccin pair
 - `tachyonfx` — shader-style animations (fork reveal, comet trail, peek fade, pulse HUD) — all gated by `reduce_motion`
 - `image` — pure-Rust pixel buffer for identicon thumbnails (halfblock rendering, works in every terminal)
-- `clap` (derive) — CLI parsing
+- `clap` (derive) + `clap_complete` — CLI parsing + completions emitter
 - `serde` + `serde_json` — JSONL parsing
 - `unicode-width` + `unicode-segmentation` — grapheme-safe rendering for CJK and emoji
 - `arboard` — cross-platform clipboard
 - `similar` — LCS diff (word + line)
-- `toml` — config + budget
-- `chrono`, `anyhow`, `thiserror` — utilities
+- `regex` — secret-redaction patterns
+- `toml`, `chrono`, `anyhow`, `thiserror` — utilities
 
 ---
 
@@ -352,9 +544,29 @@ Nothing leaves your machine unless you explicitly call an AI feature (`Ctrl+A` s
 
 Open an issue or PR — contributions welcome.
 
+```bash
+RUSTUP_TOOLCHAIN=stable cargo test --release --lib
+RUSTUP_TOOLCHAIN=stable cargo build --release --bin claude-picker
+```
+
 See [CHANGELOG.md](CHANGELOG.md) for the release history. See [BREW-TAP.md](BREW-TAP.md) for Homebrew tap maintenance.
 
 If claude-picker saves you time, [star the repo](https://github.com/anshul-garg27/claude-picker) — it helps others find it.
+
+---
+
+## Screenshots to render
+
+These live TUI captures still need to be recorded. Paths the README references:
+
+- [ ] `assets/hero.gif` — cold-start skeleton → picker → viewer → replay → stats (~1000×600, ≤4 MB) *(placeholder currently in repo)*
+- [ ] `assets/picker.png` — session list with chain ⛓ + anomaly ⚡ badges and zebra rows
+- [ ] `assets/viewer.png` — conversation viewer with timestamps, mini-timeline, and subagent tree
+- [ ] `assets/replay.png` — time-travel replay with 4-position comet trail
+- [ ] `assets/stats.png` — KPI hero cards + 30-day heatmap + per-project heatmap
+- [ ] `assets/audit-tui.png` — audit dashboard with summary band + drill-in overlay
+
+Render via VHS tapes / Playwright (to be committed under `scripts/capture/`).
 
 ---
 
