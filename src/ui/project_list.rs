@@ -17,6 +17,7 @@
 //! mutating methods on `ProjectList` from `app.rs`.
 
 use std::cell::RefCell;
+use std::time::{Duration, Instant};
 
 use chrono::{DateTime, Utc};
 use ratatui::buffer::Buffer;
@@ -31,7 +32,7 @@ use ratatui::Frame;
 use crate::app::App;
 use crate::data::pinned_projects::{PinnedProjects, ToggleResult};
 use crate::data::Project;
-use crate::theme::Theme;
+use crate::theme::{self, Theme};
 use crate::ui::text::{display_width, truncate_to_width};
 use crate::ui::thumbnail::{
     self, PinnedSlot, ThumbnailRenderer, MIN_STRIP_WIDTH as THUMB_MIN_STRIP_WIDTH,
@@ -466,6 +467,15 @@ impl ProjectColumnPlan {
 fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     let theme = &app.theme;
 
+    // Cold-start skeleton: no projects loaded yet AND still within the
+    // init window means the project enumerator is probably in flight.
+    // Paint pulsing bars so the pane reads as "loading" rather than
+    // "empty". See session_list::render_skeleton_rows for the sibling.
+    if app.projects.is_empty() && is_within_skeleton_window(app.init_instant) {
+        render_skeleton_rows(f, area, theme);
+        return;
+    }
+
     if app.projects.is_empty() {
         let glyph_style = Style::default()
             .fg(theme.surface2)
@@ -869,6 +879,143 @@ pub fn render_pinned_strip_with_thumbnails(
     thumbnail::render_pinned_strip_with_thumbnails(f, area, &slot_refs, theme, renderer);
 }
 
+// ── Cold-start loading skeletons ─────────────────────────────────────────
+//
+// Mirrors `session_list::render_skeleton_rows`. See that module for the
+// design rationale. Short version: while the enumeration that populates
+// `app.projects` is still in flight, paint eight pulsing bars so the
+// pane reads as "loading" rather than the "no projects yet" empty state.
+
+/// How long we show the skeleton rows on a cold start.
+pub(crate) const SKELETON_WINDOW: Duration = Duration::from_millis(1200);
+
+/// Number of skeleton rows painted on the project list.
+pub(crate) const SKELETON_ROW_COUNT: usize = 8;
+
+/// True when `init_instant` is recent enough that we should paint
+/// skeletons instead of the empty-state copy.
+pub(crate) fn is_within_skeleton_window(init_instant: Instant) -> bool {
+    Instant::now().saturating_duration_since(init_instant) < SKELETON_WINDOW
+}
+
+/// Render eight pulsing skeleton bars that approximate the (pin, name,
+/// sessions, cost) shape of a real project row. Reduce-motion users
+/// (`CLAUDE_PICKER_NO_ANIM=1`) get a static `surface1` wash.
+fn render_skeleton_rows(f: &mut Frame<'_>, area: Rect, theme: &Theme) {
+    let reduce_motion = theme::animations_disabled();
+    paint_skeleton_rows(f.buffer_mut(), area, theme, reduce_motion, Instant::now());
+
+    let row_count = SKELETON_ROW_COUNT.min(area.height as usize);
+    if row_count > 2 {
+        let label_y = area.y.saturating_add(2);
+        let label_x = area.x.saturating_add(2);
+        let label_area = Rect {
+            x: label_x,
+            y: label_y,
+            width: area.width.saturating_sub(2),
+            height: 1,
+        };
+        let para = Paragraph::new(Line::from(Span::styled(
+            "loading\u{2026}",
+            Style::default()
+                .fg(theme.overlay0)
+                .add_modifier(Modifier::ITALIC),
+        )));
+        f.render_widget(para, label_area);
+    }
+}
+
+/// Buffer-only skeleton paint — the testable core of [`render_skeleton_rows`].
+/// Paints exactly [`SKELETON_ROW_COUNT`] rows (clamped to area height).
+/// Returns the actual number of rows painted so tests can assert
+/// emission without needing a [`Frame`].
+pub(crate) fn paint_skeleton_rows(
+    buf: &mut Buffer,
+    area: Rect,
+    theme: &Theme,
+    reduce_motion: bool,
+    now: Instant,
+) -> usize {
+    if area.height == 0 || area.width == 0 {
+        return 0;
+    }
+
+    let bar_color = if reduce_motion {
+        theme.surface1
+    } else {
+        skeleton_pulse_color(theme, now)
+    };
+
+    let row_count = SKELETON_ROW_COUNT.min(area.height as usize);
+    for row_ix in 0..row_count {
+        let row_y = area.y.saturating_add(row_ix as u16);
+        if row_y >= area.y.saturating_add(area.height) {
+            break;
+        }
+
+        let jitter = (row_ix * 7 + 3) % 6;
+        let name_w = (22 + jitter).min(area.width.saturating_sub(2) as usize / 2) as u16;
+        let cost_w = 6u16;
+        let age_w = 4u16;
+
+        paint_bar(buf, area, row_y, 2, name_w, bar_color);
+        if area.width > (name_w + cost_w + age_w + 6) {
+            let cost_x = area
+                .x
+                .saturating_add(area.width.saturating_sub(cost_w + age_w + 3));
+            paint_bar(buf, area, row_y, cost_x - area.x, cost_w, bar_color);
+        }
+        if area.width > (age_w + 3) {
+            let age_x = area.x.saturating_add(area.width.saturating_sub(age_w + 1));
+            paint_bar(buf, area, row_y, age_x - area.x, age_w, bar_color);
+        }
+    }
+    row_count
+}
+
+/// Triangular-wave pulse between `theme.surface0` and `theme.surface1`
+/// on a 1.8 s loop. Keeps a thread-local anchor so phase is stable
+/// across frames.
+fn skeleton_pulse_color(theme: &Theme, now: Instant) -> ratatui::style::Color {
+    thread_local! {
+        static ANCHOR: std::cell::OnceCell<Instant> = const { std::cell::OnceCell::new() };
+    }
+    let anchor = ANCHOR.with(|c| *c.get_or_init(Instant::now));
+    let elapsed_ms = now.saturating_duration_since(anchor).as_millis() as u64;
+    let period_ms: u64 = 1800;
+    let phase_u = elapsed_ms % period_ms;
+    let half = period_ms / 2;
+    let t = if phase_u <= half {
+        phase_u as f32 / half as f32
+    } else {
+        1.0 - ((phase_u - half) as f32 / half as f32)
+    };
+    theme::lerp_color(theme.surface0, theme.surface1, t.clamp(0.0, 1.0))
+}
+
+/// Paint a horizontal bar of `width` cells starting at
+/// `(area.x + offset_x, row_y)`. Clips at the area boundary.
+fn paint_bar(
+    buf: &mut Buffer,
+    area: Rect,
+    row_y: u16,
+    offset_x: u16,
+    width: u16,
+    color: ratatui::style::Color,
+) {
+    let start_x = area.x.saturating_add(offset_x);
+    let end_x = start_x
+        .saturating_add(width)
+        .min(area.x.saturating_add(area.width));
+    if row_y < area.y || row_y >= area.y.saturating_add(area.height) {
+        return;
+    }
+    let style = Style::default().bg(color);
+    for x in start_x..end_x {
+        buf[(x, row_y)].set_style(style);
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -931,5 +1078,45 @@ mod tests {
         assert_eq!(scroll_start(49, 10, 50), 40);
         // Short list — never scrolls.
         assert_eq!(scroll_start(2, 10, 3), 0);
+    }
+
+    // ── Skeleton rendering ───────────────────────────────────────────────
+
+    #[test]
+    fn skeleton_rows_emit_8_rows_on_cold_empty_list() {
+        let theme = crate::theme::Theme::from_name(crate::theme::ThemeName::default());
+        let area = Rect::new(0, 0, 80, 20);
+        let mut buf = Buffer::empty(area);
+        let row_count = paint_skeleton_rows(
+            &mut buf,
+            area,
+            &theme,
+            /* reduce_motion = */ true,
+            Instant::now(),
+        );
+        assert_eq!(row_count, SKELETON_ROW_COUNT);
+        assert_eq!(SKELETON_ROW_COUNT, 8);
+
+        let bar_cells = (0..SKELETON_ROW_COUNT as u16)
+            .filter(|y| buf[(2_u16, *y)].bg == theme.surface1)
+            .count();
+        assert_eq!(bar_cells, SKELETON_ROW_COUNT);
+    }
+
+    #[test]
+    fn skeleton_hides_once_data_arrives() {
+        let long_ago = Instant::now()
+            .checked_sub(SKELETON_WINDOW + Duration::from_millis(100))
+            .expect("Instant subtraction");
+        assert!(
+            !is_within_skeleton_window(long_ago),
+            "skeleton window must close after SKELETON_WINDOW elapses"
+        );
+
+        let fresh = Instant::now();
+        assert!(
+            is_within_skeleton_window(fresh),
+            "skeleton window must be open on fresh construction"
+        );
     }
 }
