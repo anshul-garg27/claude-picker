@@ -32,6 +32,7 @@ pub mod replay;
 pub mod search;
 pub mod session_list;
 pub mod stats;
+pub mod subagent_tree;
 pub mod task_drawer;
 pub mod text;
 // F2/E17 project thumbnails: identicon renderer + in-memory LRU cache. The

@@ -1216,9 +1216,14 @@ fn render_message(
 
     // Concatenate text items on the same "header" row.
     let mut first_text = true;
+    // Track whether the immediately preceding ToolUse was a `Task`
+    // (subagent dispatch) so the following ToolResult can be rendered as an
+    // indented sub-conversation tree instead of the flat tool_result box.
+    let mut prev_was_task = false;
     for item in &msg.items {
         match item {
             ContentItem::Text(text) => {
+                prev_was_task = false;
                 if first_text {
                     // Pull the first line of the text onto the role-label line.
                     let mut lines_iter = split_text_into_blocks(text, wrap_width);
@@ -1264,6 +1269,7 @@ fn render_message(
                 out.push(Line::raw(""));
                 tool_use_indices.push(out.len());
                 push_tool_use_box(name, input, theme, content_width, out);
+                prev_was_task = name.eq_ignore_ascii_case("Task");
             }
             ContentItem::ToolResult { content, is_error } => {
                 if first_text {
@@ -1274,9 +1280,23 @@ fn render_message(
                     first_text = false;
                 }
                 out.push(Line::raw(""));
-                push_tool_result_box(content, *is_error, theme, content_width, out);
+                if prev_was_task && !*is_error {
+                    // Subagent dispatch result — render as a nested tree so
+                    // the sub-conversation visually lives under the parent
+                    // Task call instead of being dumped flat.
+                    let tree_lines = crate::ui::subagent_tree::render_subagent_block(
+                        content,
+                        theme,
+                        content_width,
+                    );
+                    out.extend(tree_lines);
+                } else {
+                    push_tool_result_box(content, *is_error, theme, content_width, out);
+                }
+                prev_was_task = false;
             }
             ContentItem::Thinking { text } => {
+                prev_was_task = false;
                 if first_text {
                     out.push(Line::from(vec![
                         Span::raw(" "),
@@ -1288,6 +1308,7 @@ fn render_message(
                 push_thinking_box(text, theme, content_width, out);
             }
             ContentItem::Other(kind) => {
+                prev_was_task = false;
                 if first_text {
                     out.push(Line::from(vec![
                         Span::raw(" "),
