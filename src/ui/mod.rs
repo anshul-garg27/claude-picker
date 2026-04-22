@@ -26,6 +26,8 @@ pub mod heatmap;
 pub mod help_overlay;
 pub mod hooks;
 pub mod layout;
+// ASCII masthead rendered on `--help` and first-run onboarding (#48, POOL-6).
+pub mod masthead;
 pub mod mcp;
 pub mod model_pill;
 pub mod model_simulator;
@@ -40,6 +42,8 @@ pub mod session_list;
 pub mod stats;
 pub mod task_drawer;
 pub mod text;
+// Shared timestamp formatter used by preview + conversation viewer (#9, FEAT-7).
+pub mod timestamp_fmt;
 // F2/E17 project thumbnails: identicon renderer + in-memory LRU cache. The
 // cache lives next to the renderer so `project_list` only needs one import
 // path. The renderer emits Unicode halfblocks on every terminal — no

@@ -4,6 +4,8 @@
 //! user-visible label, number, and list starts life in this module.
 
 pub mod ai_summarize;
+// Deterministic cost-anomaly detector for the session list (#29 + POOL-4).
+pub mod anomaly;
 pub mod bookmarks;
 pub mod budget;
 pub mod checkpoints;
@@ -18,6 +20,8 @@ pub mod path_resolver;
 pub mod pinned_projects;
 pub mod pricing;
 pub mod project;
+// Secret/PII redaction for preview pane + export (#53, POOL-1).
+pub mod redact;
 pub mod replay;
 pub mod search_filters;
 pub mod session;

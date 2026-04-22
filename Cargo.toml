@@ -46,6 +46,10 @@ nucleo = "0.5"
 catppuccin = { version = "2.4", features = ["ratatui"] }
 # CLI
 clap = { version = "4.5", features = ["derive"] }
+# Shell completion script generation — fed by the clap `Command` built by the
+# derive layer. Only exercised by `completions <shell>`, so no runtime cost
+# on normal invocations.
+clap_complete = "4.5"
 # Data
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"

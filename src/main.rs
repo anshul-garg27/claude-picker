@@ -16,6 +16,7 @@ use clap::{Parser, Subcommand};
 
 use claude_picker::config::Config;
 use claude_picker::theme::{self, ThemeName};
+use claude_picker::ui::masthead;
 use claude_picker::{commands, resume};
 
 #[derive(Parser, Debug)]
@@ -168,9 +169,71 @@ enum Command {
     /// Batch-title unnamed sessions via a Haiku summarizer.
     #[command(name = "ai-titles")]
     AiTitles,
+    /// Export a session transcript to a Markdown file.
+    Export {
+        /// Session id (matches the `.jsonl` stem under `~/.claude/projects/`).
+        session_id: String,
+        /// Output path. Defaults to
+        /// `~/Downloads/claude-picker-{sid}-{YYYY-MM-DD}.md`.
+        #[arg(long, value_name = "PATH")]
+        out: Option<PathBuf>,
+        /// Mask Anthropic / OpenAI / AWS / GitHub / Bearer tokens before writing.
+        #[arg(long)]
+        redact: bool,
+    },
+    /// Diagnostic scan of `~/.claude/projects/` — sizes, top sessions, orphans.
+    Doctor {
+        /// Delete orphan metadata + empty stub sessions listed in the report.
+        #[arg(long)]
+        cleanup: bool,
+        /// Required confirmation when combined with `--cleanup`. Without it
+        /// the cleanup phase runs as a dry-run.
+        #[arg(long)]
+        yes: bool,
+        /// Output format: `plain` (default), `json`, or `csv`.
+        #[arg(long, default_value = "plain", value_name = "FORMAT")]
+        format: String,
+    },
+    /// Print the most-recent session id(s) for scripting.
+    Latest {
+        /// Filter to a single project (by basename).
+        #[arg(long, value_name = "NAME")]
+        project: Option<String>,
+        /// How many ids to print.
+        #[arg(long, default_value_t = 1)]
+        count: usize,
+        /// Only include sessions within the last N (e.g. `7d`, `12h`, `30m`).
+        #[arg(long, value_name = "WINDOW")]
+        since: Option<String>,
+        /// Output format: `id` (one per line) or `json` (structured array).
+        #[arg(long, default_value = "id", value_name = "FORMAT")]
+        format: String,
+    },
+    /// Single-line spend summary for embedding in your shell prompt.
+    Prompt {
+        /// `PS1` (human) or `JSON` (structured).
+        #[arg(long, default_value = "PS1", value_name = "FORMAT")]
+        format: String,
+        /// Suppress ANSI color for prompts that can't render it.
+        #[arg(long)]
+        no_color: bool,
+    },
+    /// Emit a shell-completion script (bash / zsh / fish / elvish / powershell).
+    Completions {
+        /// Shell name. Use `bash`, `zsh`, `fish`, `elvish`, or `powershell`.
+        shell: String,
+    },
 }
 
 fn main() -> anyhow::Result<()> {
+    // Branding pass — print the ASCII masthead above clap's help output,
+    // but only for the **top-level** `claude-picker --help` / `-h` and only
+    // when stdout is a real TTY. Subcommand help stays un-banner'd so focused
+    // sub-docs read cleanly.
+    if masthead::wants_top_level_help(std::env::args().skip(1)) {
+        masthead::print_if_tty();
+    }
+
     let cli = Cli::parse();
 
     if cli.list_themes {
@@ -284,6 +347,66 @@ fn main() -> anyhow::Result<()> {
         Some(Command::Checkpoints) => commands::checkpoints_cmd::run(),
         Some(Command::Audit) => commands::audit_cmd::run(),
         Some(Command::AiTitles) => commands::ai_titles_cmd::run(),
+        Some(Command::Export {
+            session_id,
+            out,
+            redact,
+        }) => commands::export_cmd::run(&session_id, out, redact),
+        Some(Command::Doctor {
+            cleanup,
+            yes,
+            format,
+        }) => {
+            let format = commands::doctor_cmd::Format::parse(&format).unwrap_or_default();
+            commands::doctor_cmd::run(commands::doctor_cmd::Options {
+                cleanup,
+                yes,
+                format,
+            })
+        }
+        Some(Command::Latest {
+            project,
+            count,
+            since,
+            format,
+        }) => {
+            let since = match since.as_deref() {
+                Some(raw) => match commands::latest_cmd::parse_since(raw) {
+                    Some(d) => Some(d),
+                    None => {
+                        eprintln!(
+                            "claude-picker: invalid --since value {raw:?} (use e.g. 7d / 12h / 30m)"
+                        );
+                        std::process::exit(2);
+                    }
+                },
+                None => None,
+            };
+            let format = commands::latest_cmd::Format::parse(&format).unwrap_or_default();
+            commands::latest_cmd::run(commands::latest_cmd::Options {
+                project,
+                count,
+                since,
+                format,
+            })
+        }
+        Some(Command::Prompt { format, no_color }) => {
+            let format = commands::prompt_cmd::Format::parse(&format).unwrap_or_default();
+            commands::prompt_cmd::run(commands::prompt_cmd::Options { format, no_color })
+        }
+        Some(Command::Completions { shell }) => {
+            use claude_picker::completions;
+            let parsed = completions::CompletionShell::parse(&shell).unwrap_or_else(|| {
+                eprintln!(
+                    "claude-picker: unknown shell {shell:?} — \
+                     expected bash | zsh | fish | elvish | powershell"
+                );
+                std::process::exit(2);
+            });
+            let mut cmd = <Cli as clap::CommandFactory>::command();
+            completions::emit_to_stdout(parsed, &mut cmd)?;
+            Ok(())
+        }
     }
 }
 

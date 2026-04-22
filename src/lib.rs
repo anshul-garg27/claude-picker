@@ -18,6 +18,8 @@
 
 pub mod app;
 pub mod commands;
+// Shell-completion generator for `claude-picker completions <shell>` (#31).
+pub mod completions;
 pub mod config;
 pub mod data;
 pub mod error;
