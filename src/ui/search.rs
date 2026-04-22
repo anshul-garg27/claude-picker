@@ -44,7 +44,16 @@ pub struct SearchMatch {
     /// What the user sees — usually `Session::display_label()`.
     pub session_name: String,
     /// ~80-char context window around the first hit inside the session body.
+    /// The UI pass prefers [`body_excerpt`] when it's non-empty (wider
+    /// window sized to the actual terminal width); this field is kept as
+    /// the narrow-pane fallback and for tests that don't supply a body.
     pub snippet: String,
+    /// Wider raw excerpt (up to ~240 chars) centred on the same hit. The
+    /// renderer re-truncates this to the live `area.width` so a 120-col
+    /// terminal shows ~120 cols of context instead of the old ~70 cols.
+    /// Defaults to empty when the caller didn't populate it — the old
+    /// `snippet` path still works for any pre-existing callers.
+    pub body_excerpt: String,
     /// Nucleo score; higher is better.
     pub score: u32,
 }
@@ -424,6 +433,16 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &T
     let window_start = cursor.saturating_sub(visible.saturating_sub(1));
     let window_end = (window_start + visible).min(state.filtered_indices.len());
 
+    // The snippet column begins at the 6-space indent inside the rendered
+    // row, so its available width is `area.width - 6`. Further subtract 3
+    // to reserve room for a trailing "…" when we do end up truncating,
+    // matching the "truncate at available_width - 3" contract in the
+    // task brief.
+    let snippet_budget = (area.width as usize)
+        .saturating_sub(6)
+        .saturating_sub(3)
+        .max(20);
+
     let mut lines: Vec<Line<'_>> = Vec::with_capacity((window_end - window_start) * 3);
     for (display_i, global_i) in (window_start..window_end).enumerate() {
         let idx = state.filtered_indices[global_i];
@@ -432,7 +451,7 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, state: &SearchState, theme: &T
         };
         let is_cursor = global_i == cursor;
         lines.push(build_title_line(m, is_cursor, theme));
-        lines.push(build_snippet_line(m, &state.query, theme));
+        lines.push(build_snippet_line(m, &state.query, snippet_budget, theme));
         // Blank spacer between entries — gives the 2-line-per-hit feel in the
         // mockup without drawing separators.
         if display_i + 1 < window_end - window_start {
@@ -474,19 +493,36 @@ fn build_title_line<'a>(m: &'a SearchMatch, is_cursor: bool, theme: &Theme) -> L
     ])
 }
 
-fn build_snippet_line<'a>(m: &'a SearchMatch, query: &str, theme: &Theme) -> Line<'a> {
-    let mut spans: Vec<Span<'a>> = Vec::with_capacity(6);
+fn build_snippet_line(
+    m: &SearchMatch,
+    query: &str,
+    available_width: usize,
+    theme: &Theme,
+) -> Line<'static> {
+    let mut spans: Vec<Span<'static>> = Vec::with_capacity(6);
     spans.push(Span::raw("      ")); // 6 spaces of indent (4 past the pointer column)
 
     // Highlight every case-insensitive occurrence of `query` (or its longest
     // word if query is multi-word).
     let needle = dominant_word(query);
+
+    // Prefer the wider `body_excerpt` when the command layer populated it,
+    // so a 120-col terminal gets a 120-col snippet (re-extracted to the
+    // live budget) instead of the fixed ~80-col `snippet` fallback. If
+    // the excerpt is empty (older callers / tests), keep the historical
+    // path and render the narrow snippet verbatim.
+    let owned_snippet;
+    let snippet: &str = if !m.body_excerpt.is_empty() {
+        owned_snippet = extract_snippet_with_width(&m.body_excerpt, &needle, available_width);
+        &owned_snippet
+    } else {
+        &m.snippet
+    };
+
     if needle.is_empty() {
-        spans.push(Span::styled(m.snippet.clone(), theme.body()));
+        spans.push(Span::styled(snippet.to_string(), theme.body()));
         return Line::from(spans);
     }
-
-    let snippet = &m.snippet;
     let hay_lower = snippet.to_lowercase();
     let needle_lower = needle.to_lowercase();
 
@@ -799,9 +835,25 @@ pub fn dominant_word(query: &str) -> String {
 /// `needle` inside `body`. Falls back to the head of `body` if the needle is
 /// absent. Newlines collapse to spaces; ellipses mark truncation on either
 /// side.
+///
+/// Kept at 80 chars for backwards compatibility with existing callers /
+/// tests. The renderer calls [`extract_snippet_with_width`] directly with
+/// the live column budget so wide terminals (≥120 cols) stop wasting space.
 pub fn extract_snippet(body: &str, needle: &str) -> String {
-    const AROUND: usize = 40;
-    const MAX_LEN: usize = 80;
+    extract_snippet_with_width(body, needle, 80)
+}
+
+/// Width-aware variant of [`extract_snippet`]. `max_cols` is the column
+/// budget the caller wants the snippet to occupy (excluding the two
+/// ellipsis markers). The window grows symmetrically around the hit so
+/// a 130-col terminal gets a 130-col snippet, not the old 80-col cap.
+///
+/// `max_cols` is clamped at a lower bound of 30 so pathologically narrow
+/// callers don't get an unreadable snippet, and at an upper bound of 240
+/// so a very wide terminal doesn't pull in a whole paragraph.
+pub fn extract_snippet_with_width(body: &str, needle: &str, max_cols: usize) -> String {
+    let max_len = max_cols.clamp(30, 240);
+    let around = max_len / 2;
 
     // Flatten newlines first so the window doesn't contain hard breaks.
     let flat: String = body
@@ -815,7 +867,7 @@ pub fn extract_snippet(body: &str, needle: &str) -> String {
 
     let needle_trim = needle.trim();
     if needle_trim.is_empty() {
-        return window_from_head(flat, MAX_LEN);
+        return window_from_head(flat, max_len);
     }
 
     let flat_lower = flat.to_lowercase();
@@ -824,18 +876,18 @@ pub fn extract_snippet(body: &str, needle: &str) -> String {
     // Find the first occurrence, measured in chars (not bytes) so the window
     // arithmetic is Unicode-safe.
     let Some(byte_pos) = flat_lower.find(&needle_lower) else {
-        return window_from_head(flat, MAX_LEN);
+        return window_from_head(flat, max_len);
     };
     // Convert byte index → char index by counting chars up to `byte_pos`.
     let char_pos = flat[..byte_pos].chars().count();
     let total_chars = flat.chars().count();
 
-    let start_char = char_pos.saturating_sub(AROUND);
+    let start_char = char_pos.saturating_sub(around);
     let needle_chars = needle_trim.chars().count();
-    let end_char = (char_pos + needle_chars + AROUND).min(total_chars);
+    let end_char = (char_pos + needle_chars + around).min(total_chars);
 
     // Slice by char index, not byte index.
-    let mut slice = String::with_capacity(MAX_LEN * 4);
+    let mut slice = String::with_capacity(max_len * 4);
     for (i, ch) in flat.chars().enumerate() {
         if i < start_char {
             continue;
@@ -857,9 +909,9 @@ pub fn extract_snippet(body: &str, needle: &str) -> String {
         out.push('…');
     }
 
-    // If the result is still longer than MAX_LEN + ellipses slack, hard-cap
+    // If the result is still longer than max_len + ellipses slack, hard-cap
     // it. Keeps a pathological no-space haystack from blowing up the row.
-    enforce_max_chars(&out, MAX_LEN + 2)
+    enforce_max_chars(&out, max_len + 2)
 }
 
 fn window_from_head(flat: &str, max_cols: usize) -> String {

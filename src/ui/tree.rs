@@ -921,8 +921,17 @@ fn render_project_header(
     let used = 2 + display_width(&label) + display_width(&meta);
     let pad = width.saturating_sub(used).max(1);
 
+    // Left-edge wisteria accent bar — the tree group-header analogue of the
+    // session-list cursor bar. Anchors each project's block so group headers
+    // visually "own" the rows beneath them without requiring a full-row
+    // background wash. Pairs with the v0.6.1 Kanagawa depth pass, where the
+    // panel interior now sits a clear step above the canvas.
     Line::from(vec![
-        Span::raw("  "),
+        Span::styled(
+            "\u{258E}",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::raw(" "),
         Span::styled(
             label,
             Style::default().fg(theme.blue).add_modifier(Modifier::BOLD),

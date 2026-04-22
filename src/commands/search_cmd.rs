@@ -118,6 +118,7 @@ pub fn run() -> anyhow::Result<()> {
                             project_cwd: ix.project_cwd.clone(),
                             session_name: ix.session_name.clone(),
                             snippet: String::new(),
+                            body_excerpt: String::new(),
                             score: 0,
                         })
                         .collect();
@@ -542,6 +543,7 @@ fn recompute_matches(
                 project_cwd: ix.project_cwd.clone(),
                 session_name: ix.session_name.clone(),
                 snippet: String::new(),
+                body_excerpt: String::new(),
                 score: 0,
             })
             .collect();
@@ -590,6 +592,13 @@ fn recompute_matches(
                 project_cwd: ix.project_cwd.clone(),
                 session_name: ix.session_name.clone(),
                 snippet: extract_snippet(&ix.body, &needle),
+                // Wider excerpt (~240 chars) — the renderer re-truncates to
+                // the live terminal width so a 130-col terminal fills all
+                // 130 cols instead of the old 80-col cap. Kept to a bounded
+                // size so memory per-match stays O(const), not O(body).
+                body_excerpt: search_ui::extract_snippet_with_width(
+                    &ix.body, &needle, 240,
+                ),
                 score: *score,
             }
         })

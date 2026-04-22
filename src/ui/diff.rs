@@ -33,7 +33,7 @@ pub const MAX_WIDTH: u16 = 140;
 /// Below this width the diff is unusable; we prompt for a resize.
 pub const MIN_WIDTH: u16 = 80;
 /// Below this height the diff is unusable; we prompt for a resize.
-pub const MIN_HEIGHT: u16 = 22;
+pub const MIN_HEIGHT: u16 = 23;
 
 /// One exchange in the conversation preview.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -173,11 +173,15 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, data: &DiffData, theme: &Theme)
     let inner = block.inner(centered);
     frame.render_widget(block, centered);
 
-    // Vertical layout: top header (3 rows), common topics (2), unique topics (4),
-    // rule (1), conversation preview (flex), footer (1).
+    // Vertical layout: cost delta strip (1), header (3 rows), common topics (2),
+    // unique topics (4), rule (1), conversation preview (flex), footer (1).
+    // The cost strip is the FEAT-2 addition — a one-line headline that pins
+    // the money delta to the top so the user can see how much a refactor
+    // (or a shorter prompt, or a model swap) saved at a glance.
     let chunks = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
+            Constraint::Length(1), // cost delta strip
             Constraint::Length(3), // title band
             Constraint::Length(3), // common topics
             Constraint::Length(5), // unique topics (two cols)
@@ -187,12 +191,93 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, data: &DiffData, theme: &Theme)
         ])
         .split(inner);
 
-    render_title_band(frame, chunks[0], data, theme);
-    render_common_topics(frame, chunks[1], data, theme);
-    render_unique_topics(frame, chunks[2], data, theme);
-    render_hrule(frame, chunks[3], theme);
-    render_previews(frame, chunks[4], data, theme);
-    render_footer(frame, chunks[5], data, theme);
+    render_cost_delta_strip(frame, chunks[0], data, theme);
+    render_title_band(frame, chunks[1], data, theme);
+    render_common_topics(frame, chunks[2], data, theme);
+    render_unique_topics(frame, chunks[3], data, theme);
+    render_hrule(frame, chunks[4], theme);
+    render_previews(frame, chunks[5], data, theme);
+    render_footer(frame, chunks[6], data, theme);
+}
+
+/// Top-strip cost headline: `$76.85 vs $32.12   −57%, saved $44.73`.
+///
+/// The delta is the signed percentage change from A → B. When B is cheaper,
+/// we tint the `−N%` and the trailing `saved $X` clause with `theme.cost_green`
+/// — the refactor/prompt-compression story reads as a win at first glance.
+/// When B is more expensive, the same slot shows `+N%, extra $X` in
+/// `theme.cost_red`. Zero-cost diffs collapse to a neutral `$0 vs $0` line
+/// so the strip never lies about equality.
+fn render_cost_delta_strip(frame: &mut Frame<'_>, area: Rect, data: &DiffData, theme: &Theme) {
+    let cost_a = data.session_a.total_cost_usd;
+    let cost_b = data.session_b.total_cost_usd;
+    let delta_usd = cost_b - cost_a;
+    // Percentage change from A to B. Guard against the A = 0 edge: we can't
+    // compute a percent change off a zero baseline, so fall through to
+    // a neutral "new spend" label.
+    let pct_spans: Vec<Span<'_>> = if cost_a > 0.0 {
+        let pct = (delta_usd / cost_a) * 100.0;
+        let rounded = pct.round() as i64;
+        if rounded < 0 {
+            // B is cheaper than A — saving.
+            let abs_saved = (-delta_usd).abs();
+            let style = Style::default()
+                .fg(theme.cost_green)
+                .add_modifier(Modifier::BOLD);
+            vec![
+                Span::styled(format!("\u{2212}{}%", rounded.unsigned_abs()), style),
+                Span::styled(", ", theme.dim()),
+                Span::styled(format!("saved ${abs_saved:.2}"), style),
+            ]
+        } else if rounded > 0 {
+            // B is more expensive than A — overshoot.
+            let style = Style::default()
+                .fg(theme.cost_red)
+                .add_modifier(Modifier::BOLD);
+            vec![
+                Span::styled(format!("+{rounded}%"), style),
+                Span::styled(", ", theme.dim()),
+                Span::styled(format!("extra ${delta_usd:.2}"), style),
+            ]
+        } else {
+            // Rounded to 0 % but still non-zero deltas are possible — show
+            // the signed dollar figure without a percentage.
+            vec![Span::styled(
+                "no change".to_string(),
+                theme.muted(),
+            )]
+        }
+    } else if cost_b > 0.0 {
+        // A had no cost, B has some — percent is undefined.
+        vec![Span::styled(
+            format!("+${cost_b:.2} (no baseline)"),
+            Style::default()
+                .fg(theme.cost_red)
+                .add_modifier(Modifier::BOLD),
+        )]
+    } else {
+        vec![Span::styled("no change".to_string(), theme.muted())]
+    };
+
+    let mut spans = vec![
+        Span::raw("  "),
+        Span::styled(
+            format!("${cost_a:.2}"),
+            Style::default()
+                .fg(theme.green)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  vs  ", theme.dim()),
+        Span::styled(
+            format!("${cost_b:.2}"),
+            Style::default()
+                .fg(theme.yellow)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("   ", theme.dim()),
+    ];
+    spans.extend(pct_spans);
+    frame.render_widget(Paragraph::new(Line::from(spans)), area);
 }
 
 /// Center `area` horizontally to `max_width`. Returns a rect no wider than

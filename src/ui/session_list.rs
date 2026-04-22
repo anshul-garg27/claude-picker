@@ -22,7 +22,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 use std::time::{Duration, Instant};
 
-use chrono::{DateTime, Local, TimeZone, Utc};
+use chrono::{DateTime, Datelike, Local, TimeZone, Utc};
 use ratatui::buffer::Buffer;
 use ratatui::layout::{Alignment, Constraint, Direction, Layout, Margin, Rect};
 use ratatui::style::{Modifier, Style};
@@ -34,7 +34,10 @@ use ratatui::Frame;
 
 use tachyonfx::{Effect, Shader};
 
+use ratatui::style::Color;
+
 use crate::app::App;
+use crate::config::Config;
 use crate::data::Session;
 use crate::theme::{self, Theme};
 use crate::ui::fx as ui_fx;
@@ -273,6 +276,90 @@ fn render_filter(f: &mut Frame<'_>, area: Rect, app: &App) {
     f.render_widget(p, area);
 }
 
+/// Resolve the `zebra_rows` UI toggle without plumbing `Config` through
+/// `App`. Follows the same pattern as `hud_reduce_motion` / the HUD's
+/// `budget.toml` read: lazy load + memoise so we hit disk at most once per
+/// process, and fall back to the default (`true`) if the file can't be parsed.
+///
+/// Kept as its own function so the call sites stay readable and so a test
+/// can pin the default semantics without spinning up an `App`.
+fn zebra_rows_enabled() -> bool {
+    use std::sync::OnceLock;
+    static CACHED: OnceLock<bool> = OnceLock::new();
+    *CACHED.get_or_init(|| Config::load().map(|c| c.ui.zebra_rows).unwrap_or(true))
+}
+
+/// Should the zebra stripe render at all for this theme? We only stripe when
+/// `base` and `surface0` have meaningful separation — on near-flat light
+/// themes (e.g. Paperwhite Warm) a "+3%" stripe would invert contrast or
+/// simply not be visible. The threshold of 12 sum-of-channels keeps Kanagawa
+/// (ΔRGB ≈ 42) striping while Paperwhite (ΔRGB ≈ 6) stays flat.
+///
+/// Extracted so both the helper and the test suite key off the same rule.
+fn theme_supports_zebra(theme: &Theme) -> bool {
+    let (Color::Rgb(br, bg, bb), Color::Rgb(sr, sg, sb)) = (theme.base, theme.surface0) else {
+        return false;
+    };
+    let dr = (br as i32 - sr as i32).unsigned_abs();
+    let dg = (bg as i32 - sg as i32).unsigned_abs();
+    let db = (bb as i32 - sb as i32).unsigned_abs();
+    dr + dg + db >= 12
+}
+
+/// Background wash for an alternate-stripe row. Sits ~30% of the way from
+/// `base` toward `surface0` — subtle enough that the eye reads "group of
+/// rows" rather than "checkerboard", but high enough to anchor the grid.
+/// Callers layer this below the cursor / multi-select wash so those always
+/// win.
+fn zebra_bg_color(theme: &Theme) -> Color {
+    theme::lerp_color(theme.base, theme.surface0, 0.30)
+}
+
+/// Half-strength cursor wash. Paints over the zebra stripe so the cursor
+/// row is still visually distinct, but the lift is gentler than the old
+/// full `surface0` tint — the vertical accent bar (`▎`) in the prefix
+/// column now does the bulk of "here's the cursor" work, so the row
+/// background only needs to support it.
+fn cursor_wash_color(theme: &Theme) -> Color {
+    theme::lerp_color(theme.base, theme.surface1, 0.5)
+}
+
+/// Background colour for row `idx` in a tabular list, honouring the
+/// cursor / multi-select / zebra precedence:
+///
+///   1. Multi-selected rows keep the peach-wash semantics caller applies.
+///      We return `None` so the caller's existing peach-bg tint wins.
+///   2. Selected rows get [`cursor_wash_color`] — a 50 % mix toward
+///      `surface1`.
+///   3. Every other row on a zebra-capable theme gets [`zebra_bg_color`]
+///      when `idx` is odd AND the config toggle is on.
+///   4. Otherwise no background wash.
+///
+/// Exposed as `pub(crate)` so the `tree` + `files` tabular views can opt in
+/// from the same single source of truth.
+pub(crate) fn row_bg_for_index(
+    idx: usize,
+    is_selected: bool,
+    is_multi: bool,
+    theme: &Theme,
+    zebra_enabled: bool,
+) -> Option<Color> {
+    if is_multi {
+        // Multi-select callers apply their own peach-tinted wash; returning
+        // None keeps that path intact.
+        return None;
+    }
+    if is_selected {
+        return Some(cursor_wash_color(theme));
+    }
+    if zebra_enabled && theme_supports_zebra(theme) && idx % 2 == 0 {
+        // Every other row (0-indexed, even rows strip) — small enough that
+        // an odd/even flip doesn't change the visual reading.
+        return Some(zebra_bg_color(theme));
+    }
+    None
+}
+
 /// Render the list of sessions.
 ///
 /// Replaces the previous `List<ListItem>` pipeline with a direct per-row
@@ -315,6 +402,7 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
     // Render visible rows one-by-one into vertically sliced rects so each
     // row can run its own column-layout pass. `f.buffer_mut()` is held only
     // for the painting call — no overlapping mutable borrows.
+    let zebra_on = zebra_rows_enabled();
     let buf = f.buffer_mut();
     for (offset, display_idx) in (start..total.min(start + visible_rows)).enumerate() {
         let sess_idx = app.filtered_indices[display_idx];
@@ -339,6 +427,8 @@ fn render_list(f: &mut Frame<'_>, area: Rect, app: &App) {
             is_multi,
             is_glide,
             &plan,
+            display_idx,
+            zebra_on,
         );
     }
 
@@ -481,6 +571,8 @@ fn render_row_into(
     multi: bool,
     glide_trail: bool,
     plan: &ColumnPlan,
+    display_idx: usize,
+    zebra_enabled: bool,
 ) {
     // Age in seconds since the last activity timestamp — drives the row-fade.
     // Missing timestamps fade fully (treat as "very old").
@@ -493,10 +585,17 @@ fn render_row_into(
 
     // Full-row background wash. Painted first so every column rect (including
     // the gutter sliver and any padding inside `Paragraph::render`) carries
-    // the highlight. Non-selected / non-glide rows leave the wash empty so
-    // downstream styles keep their original `None` background.
-    if selected || glide_trail {
-        let wash_style = Style::default().bg(theme.surface0);
+    // the highlight. Precedence matches `row_bg_for_index`:
+    //   1. Selected → 50 % `surface1` wash (gentler than the old full
+    //      `surface0` tint — the left-edge accent bar carries the weight).
+    //   2. Multi-select → caller's peach tint wins (we paint nothing here).
+    //   3. Glide trail → the fading `surface0` ghost behind a just-moved
+    //      cursor, kept subtle.
+    //   4. Zebra odd-row on a dark theme → ~30 % mix toward `surface0`.
+    let row_bg = row_bg_for_index(display_idx, selected, multi, theme, zebra_enabled)
+        .or_else(|| glide_trail.then_some(theme.surface0));
+    if let Some(bg_color) = row_bg {
+        let wash_style = Style::default().bg(bg_color);
         for x in row_area.x..row_area.x.saturating_add(row_area.width) {
             for y in row_area.y..row_area.y.saturating_add(row_area.height) {
                 buf[(x, y)].set_style(wash_style);
@@ -521,8 +620,18 @@ fn render_row_into(
     let age_rect = rects[8];
     let gutter_rect = rects[9];
 
-    let bg = if selected || glide_trail {
+    // Carry the actual row-wash colour forward so child columns can reason
+    // about "am I sitting on a highlighted row?" without re-running the
+    // precedence logic. Glide trail keeps the historical `surface0` so the
+    // cost / model pills still swap to `surface1` correctly over it.
+    let bg: Option<Color> = if selected {
+        Some(cursor_wash_color(theme))
+    } else if multi {
+        None // caller draws peach tint per-span; row-wash is invisible
+    } else if glide_trail {
         Some(theme.surface0)
+    } else if zebra_enabled && theme_supports_zebra(theme) && display_idx % 2 == 0 {
+        Some(zebra_bg_color(theme))
     } else {
         None
     };
@@ -534,9 +643,24 @@ fn render_row_into(
     };
 
     // ── Col 1: prefix ────────────────────────────────────────────────────
-    // `✓` takes the pointer slot when the row is multi-selected (whether or
-    // not the cursor is on it). The cursor row without multi-selection keeps
-    // the `▸` pointer so the active row is still clear at a glance.
+    // Layout inside the 2-cell prefix column:
+    //   col 0: 1-cell left-edge accent bar (`▎`) for the cursor row only;
+    //          blank otherwise. Painted in `mauve` so it anchors the row
+    //          against the surrounding zebra / plain rows.
+    //   col 1: pointer glyph — `✓` for multi-selected, `▸` for the cursor
+    //          row, blank otherwise. Unchanged from v0.5.
+    //
+    // The accent bar is ADDITIVE to the pointer: a cursor row shows both
+    // `▎` and `▸` so the row pops without relying on background alone.
+    let bar_span = if selected {
+        Span::styled(
+            "\u{258E}",
+            stamp_bg(Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD)),
+        )
+    } else {
+        Span::styled(" ", stamp_bg(Style::default()))
+    };
+
     let pointer_style_base = if multi {
         // Tick mark styled peach so it reads as "you picked me".
         Style::default()
@@ -557,9 +681,7 @@ fn render_row_into(
     } else {
         " "
     };
-    let prefix_line = Line::from(vec![
-        Span::styled(format!(" {pointer}"), pointer_style),
-    ]);
+    let prefix_line = Line::from(vec![bar_span, Span::styled(pointer.to_string(), pointer_style)]);
     Paragraph::new(prefix_line)
         .style(stamp_bg(Style::default()))
         .render(prefix_rect, buf);
@@ -1293,15 +1415,36 @@ pub struct HudStats {
     /// Number of sessions that landed in "today" — shown as the trailing
     /// `9h` hint on row 1 (hours contributed).
     pub today_session_count: usize,
+    /// Sum of costs in the last 30 days divided by 30 — matches the stats
+    /// dashboard's `Totals::avg_cost_per_day` so the two surfaces agree.
+    pub avg_cost_per_day_usd: f64,
+    /// Sum of costs for sessions whose `last_timestamp` falls in the
+    /// current calendar month.
+    pub month_to_date_cost_usd: f64,
+    /// User-configured monthly cap from `budget.toml`. `None` when no
+    /// limit is set — gates the "Z% month" segment on the HUD.
+    pub monthly_limit_usd: Option<f64>,
 }
 
 impl HudStats {
     /// Compute the HUD stats from the currently-loaded sessions. `now` is
     /// accepted as a parameter so tests can pin a deterministic wall
-    /// clock.
+    /// clock. Delegates to [`compute_with_budget`] with no monthly cap so
+    /// the "Z% month" HUD segment is hidden by default.
     pub fn compute<'a, I: IntoIterator<Item = &'a Session>>(
         sessions: I,
         now: DateTime<Utc>,
+    ) -> Self {
+        Self::compute_with_budget(sessions, now, None)
+    }
+
+    /// Like [`compute`] but also folds in the user's monthly cap from
+    /// `budget.toml`. `monthly_limit_usd == Some(0.0)` or `None` both
+    /// mean "no cap" — the "Z% month" segment is hidden in that case.
+    pub fn compute_with_budget<'a, I: IntoIterator<Item = &'a Session>>(
+        sessions: I,
+        now: DateTime<Utc>,
+        monthly_limit_usd: Option<f64>,
     ) -> Self {
         // Resolve today's local-midnight in UTC. The chain is:
         //   1. Convert `now` (UTC) to the user's local time zone.
@@ -1324,12 +1467,36 @@ impl HudStats {
             .map(|dt| dt.with_timezone(&Utc))
             .unwrap_or(now);
 
+        // Lower bound of the 30-day rolling window for avg/day.
+        // Matches the stats dashboard's `avg_cost_per_day` — last-30-days
+        // cost / 30 — so users see the same number in both surfaces.
+        let today_local_date = now_local.date_naive();
+        let thirty_days_ago_local_date = today_local_date - chrono::Duration::days(29);
+        // Calendar-month boundaries for the "Z% month" segment.
+        let current_year = today_local_date.year();
+        let current_month = today_local_date.month();
+
         let mut today_cost = 0.0f64;
         let mut spark = [0.0f64; 8];
         let mut today_count = 0usize;
+        let mut last_30_cost = 0.0f64;
+        let mut month_to_date_cost = 0.0f64;
 
         for s in sessions {
             let Some(ts) = s.last_timestamp else { continue };
+
+            // Rolling 30-day + calendar-month accumulators keyed by the
+            // session's LOCAL date so the HUD agrees with the stats
+            // dashboard (which also rolls up in local-date space).
+            let ts_date = ts.with_timezone(&Local).date_naive();
+            if ts_date >= thirty_days_ago_local_date && ts_date <= today_local_date {
+                last_30_cost += s.total_cost_usd;
+            }
+            if ts_date.year() == current_year && ts_date.month() == current_month {
+                month_to_date_cost += s.total_cost_usd;
+            }
+
+            // Today-only fields (sparkline + today cost).
             if ts < today_start_local {
                 continue;
             }
@@ -1351,6 +1518,11 @@ impl HudStats {
             0.0
         };
         let projected = rate * 24.0;
+        let avg_cost_per_day = last_30_cost / 30.0;
+
+        // Normalise the budget input — a missing file OR an explicit zero
+        // both mean "no cap" and should hide the "Z% month" segment.
+        let monthly_limit = monthly_limit_usd.filter(|cap| *cap > 0.0);
 
         Self {
             today_cost_usd: today_cost,
@@ -1359,7 +1531,23 @@ impl HudStats {
             hours_elapsed,
             spark_buckets: spark,
             today_session_count: today_count,
+            avg_cost_per_day_usd: avg_cost_per_day,
+            month_to_date_cost_usd: month_to_date_cost,
+            monthly_limit_usd: monthly_limit,
         }
+    }
+
+    /// Month-to-date spend as a percentage of the user's configured cap,
+    /// or `None` when no cap is set. Values above 100% are clamped so the
+    /// label doesn't overflow the HUD, but the caller can style the tint
+    /// based on the raw ratio if needed.
+    pub fn month_percent(&self) -> Option<u32> {
+        let cap = self.monthly_limit_usd?;
+        if cap <= 0.0 {
+            return None;
+        }
+        let pct = (self.month_to_date_cost_usd / cap) * 100.0;
+        Some(pct.round().clamp(0.0, 999.0) as u32)
     }
 
     /// Render the sparkline string from the buckets. Picks a glyph from
@@ -1423,14 +1611,31 @@ fn render_pulse_hud(f: &mut Frame<'_>, area: Rect, app: &App) {
     if area.height < 8 {
         return;
     }
-    // HUD width — 26 cols fits the three rows without feeling chipmunk'd.
-    let hud_w: u16 = 26;
+
+    // Load the user's monthly cap from `budget.toml`. A missing / malformed
+    // file falls through to `Budget::default()` (no cap) so the HUD always
+    // renders — the "Z% month" segment just hides in that case. This read
+    // happens every frame but is cheap: ~0.1 ms from the user's home dir,
+    // and `Budget::load()` tolerates a missing file without allocating.
+    let monthly_limit = {
+        let b = crate::data::budget::Budget::load();
+        if b.monthly_limit_usd > 0.0 {
+            Some(b.monthly_limit_usd)
+        } else {
+            None
+        }
+    };
+    let stats = HudStats::compute_with_budget(app.sessions.iter(), Utc::now(), monthly_limit);
+    let theme = &app.theme;
+
+    // HUD width adapts to whether we're rendering the month-% segment. With
+    // the richer "today $X.XX · avg $Y.YY/day · Z% month" line the HUD needs
+    // up to 47 cols; without the Z% tail, 36 cols is plenty. Both stay under
+    // the 48-column brief cap.
+    let hud_w: u16 = if stats.monthly_limit_usd.is_some() { 47 } else { 36 };
     if area.width < hud_w + 4 {
         return;
     }
-
-    let stats = HudStats::compute(app.sessions.iter(), Utc::now());
-    let theme = &app.theme;
 
     let rect = Rect {
         x: area.x + area.width.saturating_sub(hud_w + 1),
@@ -1517,32 +1722,53 @@ fn paint_hud(
     let inner = block.inner(rect);
     f.render_widget(block, rect);
 
-    // Row 1: `today  $X.XX  sparkline  Nh`
-    let spark = stats.sparkline();
-    let hours_label = if stats.today_session_count == 0 {
-        "0h".to_string()
+    // Row 1 — richer status strip:
+    //   `today $X.XX · avg $Y.YY/day · Z% month`
+    // The "Z% month" tail drops entirely when no monthly cap is configured
+    // in `budget.toml`, keeping the line compact on fresh installs. The
+    // old sparkline lives on as the mental model for row 3's projection —
+    // we trade one ASCII motif for two honest numbers here per the brief.
+    let today_color = if stats.today_cost_usd > DEFAULT_DAILY_BUDGET_USD * 0.95 {
+        theme.red
+    } else if stats.today_cost_usd > DEFAULT_DAILY_BUDGET_USD * 0.5 {
+        theme.yellow
     } else {
-        format!("{}h", stats.hours_elapsed.round() as i64)
+        theme.green
     };
-    let row_today = Line::from(vec![
-        Span::styled("today  ", theme.muted()),
+    let mut row_today_spans: Vec<Span<'_>> = vec![
+        Span::styled("today ", theme.muted()),
         Span::styled(
             format_budget_cost(stats.today_cost_usd),
+            Style::default().fg(today_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled("  \u{00B7}  ", theme.dim()),
+        Span::styled("avg ", theme.muted()),
+        Span::styled(
+            format!("{}/day", format_budget_cost(stats.avg_cost_per_day_usd)),
             Style::default()
-                .fg(if stats.today_cost_usd > DEFAULT_DAILY_BUDGET_USD * 0.95 {
-                    theme.red
-                } else if stats.today_cost_usd > DEFAULT_DAILY_BUDGET_USD * 0.5 {
-                    theme.yellow
-                } else {
-                    theme.green
-                })
+                .fg(theme.subtext1)
                 .add_modifier(Modifier::BOLD),
         ),
-        Span::raw(" "),
-        Span::styled(spark, Style::default().fg(theme.teal)),
-        Span::raw(" "),
-        Span::styled(hours_label, theme.muted()),
-    ]);
+    ];
+    if let Some(pct) = stats.month_percent() {
+        // Colour-code the month progress so the user sees at a glance
+        // whether the cap is in danger: red at ≥90%, yellow at ≥70%,
+        // subtext1 otherwise. Matches the today-cost tinting cadence
+        // so the row reads as one coherent "traffic-light" strip.
+        let pct_color = if pct >= 90 {
+            theme.red
+        } else if pct >= 70 {
+            theme.yellow
+        } else {
+            theme.subtext1
+        };
+        row_today_spans.push(Span::styled("  \u{00B7}  ", theme.dim()));
+        row_today_spans.push(Span::styled(
+            format!("{pct}% month"),
+            Style::default().fg(pct_color).add_modifier(Modifier::BOLD),
+        ));
+    }
+    let row_today = Line::from(row_today_spans);
 
     // Row 2: `rate   $X.XX/h      ●`
     // The live-dot is drawn here as solid; tachyonfx then modulates its
@@ -1830,6 +2056,51 @@ mod tests {
     }
 
     #[test]
+    fn hud_stats_month_percent_hidden_without_cap() {
+        // The "Z% month" HUD segment must hide when no cap is set — a
+        // `Budget::default()` ships with `monthly_limit_usd = 0.0`, which
+        // normalises to `None` inside `compute_with_budget` and is what
+        // users on a fresh install see.
+        let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
+        let sessions = [mk_session_at("a", 12.0, now - chrono::Duration::hours(1))];
+        let stats = HudStats::compute_with_budget(sessions.iter(), now, None);
+        assert!(stats.monthly_limit_usd.is_none());
+        assert!(stats.month_percent().is_none());
+
+        let stats_zero = HudStats::compute_with_budget(sessions.iter(), now, Some(0.0));
+        assert!(stats_zero.monthly_limit_usd.is_none(),
+            "0.0 cap must normalise to None");
+        assert!(stats_zero.month_percent().is_none());
+    }
+
+    #[test]
+    fn hud_stats_month_percent_reports_share_of_cap() {
+        // A $30 MTD with a $300 cap should read as 10% month.
+        let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
+        let sessions = [mk_session_at("a", 30.0, now - chrono::Duration::hours(1))];
+        let stats = HudStats::compute_with_budget(sessions.iter(), now, Some(300.0));
+        assert_eq!(stats.monthly_limit_usd, Some(300.0));
+        assert_eq!(stats.month_percent(), Some(10));
+    }
+
+    #[test]
+    fn hud_stats_avg_per_day_matches_last_30_over_30() {
+        // Three sessions worth of cost inside the 30-day window should
+        // average out to `sum / 30`. Picking a local-midday timestamp so
+        // DST edge cases on the runner can't flip a session out of the
+        // window.
+        let now = Utc.with_ymd_and_hms(2026, 4, 17, 12, 0, 0).unwrap();
+        let sessions = [
+            mk_session_at("a", 3.0, now - chrono::Duration::hours(2)),
+            mk_session_at("b", 6.0, now - chrono::Duration::days(5)),
+            mk_session_at("c", 21.0, now - chrono::Duration::days(15)),
+        ];
+        let stats = HudStats::compute(sessions.iter(), now);
+        assert!((stats.avg_cost_per_day_usd - 1.0).abs() < 1e-9,
+            "expected 30 / 30 = 1.0, got {}", stats.avg_cost_per_day_usd);
+    }
+
+    #[test]
     fn cost_burn_buckets_ramp_green_to_red() {
         let t = Theme::mocha();
         assert_eq!(cost_burn_color(0.0, &t), t.overlay0);
@@ -2040,6 +2311,81 @@ mod tests {
         assert_eq!(scroll_start(49, 10, 50), 40);
         // Small lists — never scroll at all.
         assert_eq!(scroll_start(3, 10, 4), 0);
+    }
+
+    // ── row_bg_for_index precedence ──────────────────────────────────────
+
+    #[test]
+    fn selected_row_wins_zebra_and_yields_cursor_wash() {
+        let t = Theme::from_name(crate::theme::ThemeName::Kanagawa);
+        // Even index would normally zebra-stripe; selection beats it.
+        let bg = row_bg_for_index(0, /* selected */ true, /* multi */ false, &t, true);
+        assert_eq!(bg, Some(cursor_wash_color(&t)));
+    }
+
+    #[test]
+    fn multi_selected_row_returns_none_so_caller_paints_peach() {
+        let t = Theme::from_name(crate::theme::ThemeName::Kanagawa);
+        let bg = row_bg_for_index(0, /* selected */ false, /* multi */ true, &t, true);
+        assert_eq!(bg, None, "multi-select wash is caller's responsibility");
+        let bg = row_bg_for_index(0, /* selected */ true, /* multi */ true, &t, true);
+        assert_eq!(bg, None, "multi beats selected");
+    }
+
+    #[test]
+    fn zebra_only_stripes_even_rows_when_enabled() {
+        let t = Theme::from_name(crate::theme::ThemeName::Kanagawa);
+        assert_eq!(
+            row_bg_for_index(0, false, false, &t, true),
+            Some(zebra_bg_color(&t)),
+            "even index gets the stripe"
+        );
+        assert_eq!(
+            row_bg_for_index(1, false, false, &t, true),
+            None,
+            "odd index stays flat"
+        );
+        assert_eq!(
+            row_bg_for_index(2, false, false, &t, true),
+            Some(zebra_bg_color(&t)),
+        );
+    }
+
+    #[test]
+    fn zebra_disabled_flag_turns_off_striping() {
+        let t = Theme::from_name(crate::theme::ThemeName::Kanagawa);
+        assert_eq!(row_bg_for_index(0, false, false, &t, false), None);
+        assert_eq!(row_bg_for_index(2, false, false, &t, false), None);
+    }
+
+    #[test]
+    fn zebra_skipped_on_flat_palettes() {
+        // A synthetic theme where `base == surface0` must never stripe —
+        // the delta test protects light themes from contrast inversion.
+        let mut t = Theme::from_name(crate::theme::ThemeName::Kanagawa);
+        t.surface0 = t.base;
+        assert!(!theme_supports_zebra(&t));
+        assert_eq!(row_bg_for_index(0, false, false, &t, true), None);
+    }
+
+    #[test]
+    fn cursor_wash_sits_between_base_and_surface1() {
+        let t = Theme::from_name(crate::theme::ThemeName::Kanagawa);
+        let wash = cursor_wash_color(&t);
+        // Not equal to either endpoint — it's a 50% blend.
+        assert_ne!(wash, t.base);
+        assert_ne!(wash, t.surface1);
+    }
+
+    #[test]
+    fn zebra_bg_sits_close_to_base_not_surface0() {
+        let t = Theme::from_name(crate::theme::ThemeName::Kanagawa);
+        let zebra = zebra_bg_color(&t);
+        // 30% mix toward surface0 — closer to base than the full cursor wash.
+        assert_ne!(zebra, t.base);
+        assert_ne!(zebra, t.surface0);
+        // Sanity: should differ from cursor wash (different mix and target).
+        assert_ne!(zebra, cursor_wash_color(&t));
     }
 }
 
