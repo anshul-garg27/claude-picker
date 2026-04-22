@@ -1,0 +1,72 @@
+Wide 16:9 product banner for a developer tool. Dark Kanagawa-themed background throughout. Everything in the image is crisp monospace type (rendered in a JetBrains Mono style) and clean geometric UI chrome. Render EVERY text string below EXACTLY as written — do not paraphrase, do not invent new words, do not hallucinate any characters.
+
+OVERALL LAYOUT:
+  The banner is split into a LEFT PANEL (roughly 30% of the width) and a RIGHT PANEL (roughly 70%). The whole background is sumi-black (#1F1F28).
+
+LEFT PANEL (identity side):
+  Vertically centered stack of text, aligned left with ~50px left padding:
+
+  1. Wordmark (large, JetBrains Mono Bold, about 58pt, washi-ivory #DCD7BA):
+     claude-picker
+
+  2. Tagline (medium, JetBrains Mono Regular, about 20pt, autumn gold #C0A36E), two lines:
+     cost-aware session manager
+     for Claude Code
+
+  3. Stats line (small, JetBrains Mono Regular, about 16pt, muted wisteria #957FB8), with middle-dot separators:
+     15 themes • 17 commands • 3.7 MB Rust
+
+  All three blocks left-aligned, stacked with comfortable vertical gaps.
+
+RIGHT PANEL (product side):
+  A dark rounded-corner terminal window floats in this panel, slightly inset, with a soft depth shadow beneath. Inside the terminal, render the following EXACTLY, in a monospace font, clean and readable:
+
+  TOP BAR (three macOS traffic-light dots in the upper-left corner: red, yellow, green — tiny circles, muted tones).
+
+  BREADCRUMB STRIP (thin top row, small type, dim grey #727169 for separators, ivory #DCD7BA for the active label, single purple pill-badge containing the ALL text in bold dark sumi):
+     claude-picker · 6 projects · [ ALL ] · filter: "aud"
+
+  GROUP-TAB ROW (one line of nine short tab-shapes, each a thin rounded rectangle with dim-grey text inside):
+     [0:all]  [1:(empty)]  [2:(empty)]  [3:(empty)]  [4:(empty)]  [5:(empty)]  [6:(empty)]  [7:(empty)]  [8:(empty)]  [9:(empty)]
+
+  FILTER BOX (wide rounded-rectangle outlined in wisteria purple, ivory prompt character and typed text inside, small ember-red cursor block after the text):
+     > aud▋
+
+  PROJECT LIST — six rows. Each row has a project name on the left in washi-ivory, and a session count on the right in autumn-gold. The FIRST row is highlighted with a wisteria-purple background block running full-width behind it, and has a small right-pointing triangle (▸) to the far left as a selection marker. Use exact monospace alignment. Use these EXACT strings, one per row, top to bottom:
+
+     ▸ marketing-site                  2 sessions     1h
+       platform-infra                  3 sessions     1h
+       design-system                   2 sessions     1h
+       data-pipeline                   5 sessions     1h
+       order-system                    3 sessions     1h
+       auth-service                    4 sessions     1h
+
+  HOTKEY BAR (thin bottom row of seven small keyboard-cap pills, each one a tiny colored square containing a key label, followed by a short ivory label word — all tiny monospace text, with middle-dot separators between groups):
+     [↑↓] navigate  ·  [Enter] open  ·  [u] pin  ·  [1-9] jump  ·  [0] all  ·  [?] help  ·  [q] quit
+
+COLORS — strict Kanagawa palette throughout:
+  - Background: sumi-black (#1F1F28)
+  - Terminal body: slightly lighter charcoal (#2A2A37) with a subtle outline
+  - Primary text / wordmark / project names: washi ivory (#DCD7BA)
+  - Tagline: autumn gold (#C0A36E)
+  - Stats line and wisteria accents: muted wisteria (#957FB8)
+  - Session counts: autumn gold (#C0A36E)
+  - Selected-row highlight: wisteria purple (#957FB8) at 55% opacity
+  - Filter cursor and 1 accent: ember red (#C34043)
+  - Dim separators: grey (#727169)
+  - Traffic lights: small muted red / yellow / green circles
+
+STYLE:
+  - Clean flat editorial illustration of a monospace terminal UI
+  - Subtle sumi-paper grain texture overall (very faint)
+  - Matte, not glossy
+  - Soft ambient warm glow from the right edge of the banner
+  - Crisp, sharp monospace typography — NO handwriting, NO calligraphic flourishes
+
+CRITICAL RULES:
+  - Render EVERY text string EXACTLY as written above. Do not change, paraphrase, translate, abbreviate, or invent any word. Every letter must be correct.
+  - Use a standard monospace typeface throughout (JetBrains Mono / Fira Code / Source Code Pro style). No serifs.
+  - Do NOT add any extra text, symbols, or decorative glyphs beyond what is explicitly listed above.
+  - Keep all text LATIN-alphabet only. No Japanese characters, no kanji, no hiragana, no Chinese, no Cyrillic, no Arabic, no emoji.
+  - Straight ASCII characters and the four explicit special glyphs allowed: middle-dot (·), triangle marker (▸), up/down arrow (↑↓), and the small ember-red cursor block (▋). Nothing else exotic.
+  - Numbers are digits only: 0 1 2 3 4 5 6 7 8 9. No word substitutions.

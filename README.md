@@ -28,7 +28,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero-marketing.png" alt="claude-picker key art — a Kanagawa-palette terminal window on a sumi-ink canvas showing three model-cost rows (opus $1,357.80, sonnet $128.44, haiku $12.18), set against a hand-painted moon and Japanese washi texture. Kanji on the right reads 選択はコストなり (selection is cost)." width="92%">
+  <img src="assets/hero-banner.jpg" alt="claude-picker hero banner — left panel shows the wordmark 'claude-picker' in large JetBrains Mono bold, tagline 'cost-aware session manager for Claude Code', and a stats line '15 themes · 17 commands · 3.7 MB Rust'. Right panel renders a dark rounded terminal window with macOS traffic lights, a breadcrumb 'claude-picker · 6 projects · [ ALL ] · filter: &quot;aud&quot;', ten group tabs ([0:all] through [9:(empty)]), a wisteria-outlined filter box containing '> aud' with an ember cursor, a highlighted first row '▸ marketing-site  2 sessions  1h', five more rows (platform-infra, design-system, data-pipeline, order-system, auth-service) each with their session counts and '1h' timestamps, and a bottom hotkey strip with keycap pills '[↑↓] navigate · [Enter] open · [u] pin · [1-9] jump · [0] all · [?] help · [q] quit'. Full Kanagawa palette — sumi-black background, washi ivory, wisteria purple, autumn gold, ember red." width="92%">
 </p>
 
 <p align="center">
@@ -36,7 +36,7 @@
 </p>
 
 <p align="center"><sub>
-  Full-resolution: <a href="assets/hero.mp4">assets/hero.mp4</a> · 1920×1200 · 35 s · 563 KB.<br>
+  Full-resolution: <a href="assets/hero.mp4">assets/hero.mp4</a> · 1920×1200 · 37 s · 559 KB (GIF is 1705×966 · 747 KB · 24 fps for inline preview).<br>
   Want to regenerate against your own sandbox? See <a href="scripts/capture/tapes/01-hero-v06.tape"><code>scripts/capture/tapes/01-hero-v06.tape</code></a>.
 </sub></p>
 
@@ -607,30 +607,6 @@ $ claude-picker prompt
 claude: $458.38 today · $1,257.84 month
 ```
 </details>
-
-<details>
-<summary><strong>Alternative branding</strong> — light theme + social card (for folks who want to reuse the art)</summary>
-
-<p align="center">
-  <img src="assets/hero-square-light.png" alt="Light-theme editorial composition — a floating ink-black terminal window on warm ivory canvas with five sample sessions and their costs, topped by a small orange-seal accent next to the claude-picker wordmark, tagline 'cost-aware terminal session manager' below." width="52%">
-  <img src="assets/social-banner.png" alt="Wide GitHub social-share banner — sumi-ink background, Kanagawa accents, actual audit output with 3 heuristic rows in the right-side terminal pane, serif wordmark claude-picker on the left, vertical kanji 賢い選択 ('wise choice') on the far right edge." width="88%">
-</p>
-
-Both banners are generated art (Azure OpenAI `gpt-image-2`, `size=1792×1024 / 1024×1024`,
-`quality=high`) — drop-in material for blog posts, conference talks, or GitHub social
-preview cards.
-</details>
-
-### Still to capture
-
-The following still need a VHS tape or Playwright scene before the gallery is complete:
-
-- [ ] `assets/viewer.png` — conversation viewer with interesting-moments timeline, timestamps, and subagent tree
-- [ ] `assets/replay.png` — time-travel replay with 4-position comet trail
-
-The VHS tape at [`scripts/capture/tapes/01-hero-v06.tape`](scripts/capture/tapes/01-hero-v06.tape)
-is the live template for the other six above — duplicate it, swap the scene, and
-re-run with `HOME=/tmp/claude-picker-demo vhs …`.
 
 ---
 
