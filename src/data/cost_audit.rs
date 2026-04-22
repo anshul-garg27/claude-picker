@@ -99,6 +99,15 @@ pub const TOOL_RATIO_THRESHOLD: f64 = 0.70;
 /// cache" and get flagged.
 pub const CACHE_EFFICIENCY_THRESHOLD: f64 = 0.20;
 
+/// Cache-efficiency savings heuristic: flag session as recoverable for this
+/// fraction of its total cost when cache hit rate falls below the threshold.
+/// Hand-tuned; conservative ceiling for "if you had continued, you would've
+/// saved this much" — a warm cache at Opus rates saves ~90% on the cached
+/// input side, but not all tokens are cache-eligible, so 20% is the cap we
+/// quote. Numerically coincides with `CACHE_EFFICIENCY_THRESHOLD` but is
+/// semantically independent: tuning the threshold does not imply tuning this.
+const CACHE_SAVINGS_FRACTION: f64 = 0.20;
+
 /// Below this token count, an Opus session is a "model mismatch" — Sonnet or
 /// Haiku would have done the job at a fraction of the price.
 pub const SMALL_SESSION_THRESHOLD_TOKENS: u64 = 5_000;
@@ -206,10 +215,9 @@ pub fn audit_session(
     if denom >= 1_000 && probe_ok {
         let ratio = session.tokens.cache_read as f64 / denom as f64;
         if ratio < CACHE_EFFICIENCY_THRESHOLD {
-            // Savings is fuzzier here — a warm cache at Opus rates saves ~90 %
-            // on the cached input side. Use a hand-tuned 20 % of total cost
-            // as the cap so we don't overpromise.
-            let savings = session.total_cost_usd * 0.20;
+            // Savings fraction — see `CACHE_SAVINGS_FRACTION` for the
+            // reasoning. Conservative cap, not the threshold reused by value.
+            let savings = session.total_cost_usd * CACHE_SAVINGS_FRACTION;
             let pct = (ratio * 100.0).round() as i64;
             let msg = format!("cache hit rate {pct}% \u{2014} consider session continuation");
             findings.push(Finding {
@@ -457,7 +465,7 @@ pub fn audit_session_with_stats(
     if denom >= 1_000 && probe_ok {
         let ratio = session.tokens.cache_read as f64 / denom as f64;
         if ratio < CACHE_EFFICIENCY_THRESHOLD {
-            let savings = session.total_cost_usd * 0.20;
+            let savings = session.total_cost_usd * CACHE_SAVINGS_FRACTION;
             let pct = (ratio * 100.0).round() as i64;
             let msg = format!("cache hit rate {pct}% \u{2014} consider session continuation");
             findings.push(Finding {
