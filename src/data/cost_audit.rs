@@ -749,6 +749,14 @@ mod tests {
                 // Tool-ratio must be suppressed when model_summary is empty.
                 assert!(f.kind != FindingKind::ToolRatio);
             }
+            // Model-mismatch must also be suppressed: family("") is Unknown,
+            // so is_opus_family returns false and the gate skips.
+            assert!(
+                !af.findings
+                    .iter()
+                    .any(|f| f.kind == FindingKind::ModelMismatch),
+                "empty model_summary should not trigger model-mismatch"
+            );
         }
     }
 }

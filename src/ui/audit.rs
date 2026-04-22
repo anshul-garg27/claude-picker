@@ -148,7 +148,7 @@ fn render_summary_band(
             FindingKind::ModelMismatch => "model-mismatch",
         };
         let count_str = format!("{} findings", count);
-        let savings_str = format!("${:.2}", savings);
+        let savings_str = format!("~${:.2}", savings);
         let label_pad = 18usize.saturating_sub(label.chars().count());
         let count_pad = 14usize.saturating_sub(count_str.chars().count());
         let (lab_s, cnt_s, sav_s) = if count == 0 {
@@ -158,7 +158,7 @@ fn render_summary_band(
         };
         lines.push(Line::from(vec![
             Span::raw("  "),
-            Span::styled(label.to_string(), lab_s),
+            Span::styled(label, lab_s),
             Span::raw(" ".repeat(label_pad.max(1))),
             Span::styled(count_str, cnt_s),
             Span::raw(" ".repeat(count_pad.max(3))),

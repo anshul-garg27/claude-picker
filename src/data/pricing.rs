@@ -176,15 +176,16 @@ pub fn output_rate_for(model: &str) -> f64 {
 /// it returns 1.0 so the "savings" term collapses to zero. Unknown models
 /// fall back to the Opus ratio.
 pub fn haiku_output_ratio_to(model: &str) -> f64 {
-    // Haiku 4.5 output rate = $5 / 1M tokens.
-    const HAIKU_OUTPUT_RATE: f64 = 5.0 / 1_000_000.0;
+    // Read Haiku 4.5's output rate straight from the PRICES table so the
+    // table stays the single source of truth — no duplicated magic number.
+    let haiku_rate = output_rate_for("claude-haiku-4-5");
     let model_rate = output_rate_for(model);
     if model_rate <= 0.0 {
         // Synthetic or unreachable — treat as Opus (most conservative claim
         // since Opus is the most expensive model).
-        return HAIKU_OUTPUT_RATE / FALLBACK_RATES.output;
+        return haiku_rate / FALLBACK_RATES.output;
     }
-    (HAIKU_OUTPUT_RATE / model_rate).min(1.0)
+    (haiku_rate / model_rate).min(1.0)
 }
 
 #[cfg(test)]
