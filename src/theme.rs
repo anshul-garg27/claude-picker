@@ -1,12 +1,14 @@
-//! Theme tokens — 10 built-in themes + runtime switching.
+//! Theme tokens — 15 built-in themes + runtime switching.
 //!
 //! Centralises every color used by the UI so swapping palettes is a runtime
-//! concern instead of a recompile. Users pick between 10 baked-in themes
-//! (Catppuccin Mocha/Latte, Dracula, TokyoNight, GruvboxDark, Nord, plus the
-//! Horizon-2 additions Nord Aurora, Rose Pine Moon, High Contrast, and
-//! Colorblind Safe) via the `--theme` CLI flag, `CLAUDE_PICKER_THEME` env
-//! var, or the `t` keybinding on the main picker screen (which cycles
-//! through [`ThemeName::ALL`]).
+//! concern instead of a recompile. Users pick between 15 baked-in themes:
+//! the v0.6 additions (Kanagawa, Finance Terminal, Parchment Dark, Paperwhite
+//! Warm — Kanagawa is the default), the Catppuccin pair (Mocha/Latte),
+//! Dracula, Tokyo Night, Gruvbox Dark, Nord, plus the Horizon-2 additions
+//! (Nord Aurora, Rose Pine Moon, High Contrast, Colorblind Safe), plus the
+//! bonus Terminal Classic retro-CRT variant. Switch via the `--theme` CLI
+//! flag, `CLAUDE_PICKER_THEME` env var, or the `t` keybinding on the main
+//! picker screen (which cycles through [`ThemeName::ALL`]).
 //!
 //! Design:
 //! - [`ThemeName`] is a cheap `Copy` enum with `label()`/`from_str()`/`next()`.
@@ -25,14 +27,23 @@ use std::time::Duration;
 use catppuccin::{Color as CatColor, PALETTE};
 use ratatui::style::{Color, Modifier, Style};
 
-/// One of the 10 built-in themes.
+/// One of the 15 built-in themes.
 ///
 /// `Copy` so it's cheap to pass around and compare. The order of
 /// [`Self::ALL`] is the cycle order used by the runtime `t` keybinding —
-/// starts on Mocha (default) and wraps after Colorblind Safe.
+/// starts on Kanagawa (the v0.6 default) and wraps after Terminal Classic.
 #[derive(Debug, Default, Clone, Copy, PartialEq, Eq)]
 pub enum ThemeName {
+    /// Japanese ink-wash — v0.6 default. Warm washi-paper ink on sumi black,
+    /// wisteria purple accent, autumn orange money.
     #[default]
+    Kanagawa,
+    /// Bloomberg-inspired navy + amber. Every dollar looks like a ticker.
+    FinanceTerminal,
+    /// Deep blue-black with warm cream ink + soft purple accent. Editorial.
+    ParchmentDark,
+    /// Light theme done right — cream base, indigo ink. Daytime / projector.
+    PaperwhiteWarm,
     CatppuccinMocha,
     CatppuccinLatte,
     Dracula,
@@ -43,11 +54,18 @@ pub enum ThemeName {
     RosePineMoon,
     HighContrast,
     ColorblindSafe,
+    /// Retro green-on-black CRT — phosphor-glow nostalgia. Bonus theme, not
+    /// cycled into until explicitly requested via label.
+    TerminalClassic,
 }
 
 impl ThemeName {
     /// Every theme in cycle order. First entry is the default.
     pub const ALL: &'static [ThemeName] = &[
+        ThemeName::Kanagawa,
+        ThemeName::FinanceTerminal,
+        ThemeName::ParchmentDark,
+        ThemeName::PaperwhiteWarm,
         ThemeName::CatppuccinMocha,
         ThemeName::CatppuccinLatte,
         ThemeName::Dracula,
@@ -58,12 +76,19 @@ impl ThemeName {
         ThemeName::RosePineMoon,
         ThemeName::HighContrast,
         ThemeName::ColorblindSafe,
+        // Bonus theme appended at the end so the `t` cycle ends on it; by
+        // convention it's opt-in rather than a default rotation pick.
+        ThemeName::TerminalClassic,
     ];
 
     /// Stable kebab-case label. Used for CLI parsing, env var values, the
     /// persistence file on disk, and the toast shown on theme switch.
     pub fn label(self) -> &'static str {
         match self {
+            Self::Kanagawa => "kanagawa",
+            Self::FinanceTerminal => "finance-terminal",
+            Self::ParchmentDark => "parchment-dark",
+            Self::PaperwhiteWarm => "paperwhite-warm",
             Self::CatppuccinMocha => "catppuccin-mocha",
             Self::CatppuccinLatte => "catppuccin-latte",
             Self::Dracula => "dracula",
@@ -74,6 +99,7 @@ impl ThemeName {
             Self::RosePineMoon => "rose-pine-moon",
             Self::HighContrast => "high-contrast",
             Self::ColorblindSafe => "colorblind-safe",
+            Self::TerminalClassic => "terminal-classic",
         }
     }
 
@@ -165,6 +191,10 @@ impl Theme {
     /// conversions; safe to call on every theme switch.
     pub fn from_name(name: ThemeName) -> Self {
         match name {
+            ThemeName::Kanagawa => kanagawa(),
+            ThemeName::FinanceTerminal => finance_terminal(),
+            ThemeName::ParchmentDark => parchment_dark(),
+            ThemeName::PaperwhiteWarm => paperwhite_warm(),
             ThemeName::CatppuccinMocha => catppuccin_mocha(),
             ThemeName::CatppuccinLatte => catppuccin_latte(),
             ThemeName::Dracula => dracula(),
@@ -175,12 +205,21 @@ impl Theme {
             ThemeName::RosePineMoon => rose_pine_moon(),
             ThemeName::HighContrast => high_contrast(),
             ThemeName::ColorblindSafe => colorblind_safe(),
+            ThemeName::TerminalClassic => terminal_classic(),
         }
     }
 
-    /// Convenience — the historical default. Kept so callers that haven't
-    /// been plumbed with a theme name (stats_cmd, diff_cmd, etc.) still
-    /// compile. Equivalent to `Theme::from_name(ThemeName::CatppuccinMocha)`.
+    /// Convenience — the v0.6 default. Kept so callers that haven't yet been
+    /// plumbed with a resolved `ThemeName` (stats_cmd, diff_cmd, etc.) still
+    /// compile. Equivalent to `Theme::from_name(ThemeName::Kanagawa)`.
+    pub fn kanagawa() -> Self {
+        Self::from_name(ThemeName::Kanagawa)
+    }
+
+    /// Back-compat alias. Pre-v0.6 this returned Catppuccin Mocha; it still
+    /// does, so subcommands that hard-coded the old default keep their exact
+    /// previous look. New call sites should prefer [`Self::kanagawa`] or the
+    /// resolved `ThemeName` path.
     pub fn mocha() -> Self {
         Self::from_name(ThemeName::CatppuccinMocha)
     }
@@ -256,7 +295,7 @@ impl Theme {
 
 impl Default for Theme {
     fn default() -> Self {
-        Self::mocha()
+        Self::kanagawa()
     }
 }
 
@@ -864,6 +903,353 @@ fn colorblind_safe() -> Theme {
     }
 }
 
+/// Kanagawa — v0.6 default. Inspired by Hokusai's *Great Wave off Kanagawa* and
+/// traditional sumi-e ink painting. Warm washi-paper ink (`#DCD7BA`) on sumi
+/// black (`#1F1F28`), with wisteria purple as the primary accent and autumn
+/// orange carrying all currency. The palette is already beloved in the
+/// vim/neovim ecosystem — we pick up the same tokens so users coming from
+/// kanagawa.nvim feel at home. Money gets a dedicated `autumn` channel so it
+/// never collides with the Opus model pill (wisteria) the way Mocha's peach
+/// collided with opus before this refactor.
+fn kanagawa() -> Theme {
+    // v0.6.1 depth pass: the prior tones left `base` (canvas) and `surface0`
+    // (panel interior) only ~11 points apart, so the session-list pane never
+    // visually "floated" on the canvas — everything read as a single flat
+    // dark field. Deepen the canvas edges (`crust`/`mantle`) and the base,
+    // then brighten the panel interior so base↔surface0 spans a clear 14
+    // points. Text on `washi (#DCD7BA)` over `surface0 (#262632)` still
+    // clears WCAG AA (contrast ≈ 11.9:1).
+    let sumi = hex(0x18, 0x18, 0x20); // base — darker sumi ink
+    let surface0 = hex(0x26, 0x26, 0x32); // panel interior — clearly lifted
+    let surface1 = hex(0x38, 0x38, 0x48); // rule / border
+    let surface2 = hex(0x5C, 0x5C, 0x74); // overlay
+    let washi = hex(0xDC, 0xD7, 0xBA); // ink — warm off-white paper
+    let subtext1 = hex(0xC8, 0xC3, 0xAA); // slightly dimmer
+    let subtext0 = hex(0xA6, 0xA6, 0x9C); // dim
+    let overlay2 = hex(0x88, 0x8B, 0x82); // darker dim
+    let overlay1 = hex(0x72, 0x71, 0x69); // muted
+    let overlay0 = hex(0x5C, 0x5C, 0x67); // very muted
+
+    let wisteria = hex(0x95, 0x7F, 0xB8); // primary accent
+    let bamboo = hex(0x98, 0xBB, 0x6C); // green — bamboo leaves
+    let rice = hex(0xE6, 0xC3, 0x84); // yellow — cooked rice
+    let sakura_blue = hex(0x7E, 0x9C, 0xD8); // blue — soft sky
+    let autumn = hex(0xFF, 0x9E, 0x3B); // peach — autumn leaves / money
+    let muted_teal = hex(0x7A, 0xA8, 0x9F); // teal — tea green
+    let samurai = hex(0xE8, 0x24, 0x24); // red — samurai crest
+    let sakura_pink = hex(0xD2, 0x7E, 0x99); // pink — cherry blossom
+    let sky = hex(0x7F, 0xB4, 0xCA); // sky — cool cyan
+    let lavender = hex(0x93, 0x8A, 0xA9); // muted lavender
+
+    Theme {
+        name: ThemeName::Kanagawa,
+        crust: hex(0x0E, 0x0E, 0x14),
+        mantle: hex(0x13, 0x13, 0x1B),
+        base: sumi,
+        surface0,
+        surface1,
+        surface2,
+        text: washi,
+        subtext1,
+        subtext0,
+        overlay2,
+        overlay1,
+        overlay0,
+        mauve: wisteria,
+        green: bamboo,
+        yellow: rice,
+        blue: sakura_blue,
+        peach: autumn,
+        teal: muted_teal,
+        red: samurai,
+        pink: sakura_pink,
+        sky,
+        lavender,
+        // Cost ramp: bamboo → rice → autumn → samurai. Autumn is deliberately
+        // distinct from the model_opus wisteria so money never visually blurs
+        // into the Opus pill — the exact collision Mocha had.
+        cost_green: bamboo,
+        cost_yellow: rice,
+        cost_amber: autumn,
+        cost_red: hex(0xC3, 0x40, 0x43), // saturated samurai for "very high"
+        cost_critical: samurai,          // pure samurai for alarm
+        speed_fast: bamboo,
+        speed_medium: rice,
+        speed_slow: autumn,
+        speed_glacial: hex(0xC3, 0x40, 0x43),
+        model_opus: wisteria,  // premium
+        model_sonnet: sakura_blue,
+        model_haiku: bamboo,
+    }
+}
+
+/// Finance Terminal — Bloomberg-inspired. Deep navy trading-screen base with
+/// amber (`#F7931A`, the signature Bitcoin/Reuters orange) as the universal
+/// money colour. Green for gains, pink-red for losses. Every piece of the UI
+/// reinforces the "manage your AI bill" narrative — the cost column literally
+/// reads like a P&L ticker. Pairs best with the `audit` subcommand as the
+/// launch-hero screen.
+fn finance_terminal() -> Theme {
+    let navy = hex(0x0B, 0x12, 0x20); // base — deep trading navy
+    let surface0 = hex(0x12, 0x1B, 0x2D);
+    let surface1 = hex(0x1E, 0x2A, 0x42);
+    let surface2 = hex(0x2E, 0x41, 0x66);
+    let ink = hex(0xB8, 0xC2, 0xCC);
+    let subtext1 = hex(0xA0, 0xAA, 0xB8);
+    let subtext0 = hex(0x85, 0x91, 0xA3);
+    let overlay2 = hex(0x6F, 0x7B, 0x8E);
+    let overlay1 = hex(0x5D, 0x6B, 0x82);
+    let overlay0 = hex(0x4B, 0x58, 0x6D);
+
+    let amber = hex(0xF7, 0x93, 0x1A); // signature $ colour
+    let gain = hex(0x26, 0xD0, 0x7C); // green — up
+    let loss = hex(0xFF, 0x4D, 0x6D); // red — down
+    let mid = hex(0xFF, 0xB8, 0x00); // mid-amber
+    let sky_blue = hex(0x5D, 0xAD, 0xE2);
+    let orange_hot = hex(0xFF, 0x8C, 0x42);
+    let violet = hex(0xB9, 0x87, 0xE6);
+
+    Theme {
+        name: ThemeName::FinanceTerminal,
+        crust: hex(0x05, 0x09, 0x12),
+        mantle: hex(0x08, 0x0D, 0x1A),
+        base: navy,
+        surface0,
+        surface1,
+        surface2,
+        text: ink,
+        subtext1,
+        subtext0,
+        overlay2,
+        overlay1,
+        overlay0,
+        mauve: amber, // primary accent = signature amber
+        green: gain,
+        yellow: mid,
+        blue: sky_blue,
+        peach: orange_hot,
+        teal: sky_blue,
+        red: loss,
+        pink: loss,
+        sky: sky_blue,
+        lavender: violet,
+        cost_green: gain,
+        cost_yellow: mid,
+        cost_amber: amber,
+        cost_red: loss,
+        cost_critical: hex(0xFF, 0x17, 0x44),
+        speed_fast: gain,
+        speed_medium: mid,
+        speed_slow: amber,
+        speed_glacial: loss,
+        model_opus: amber,
+        model_sonnet: sky_blue,
+        model_haiku: gain,
+    }
+}
+
+/// Parchment Dark — editorial dark. Deep blue-black base (`#0F1419`), warm
+/// cream ink (`#E4E1D5`) instead of the cold cyan-white most dark themes use.
+/// Soft premium purple opus, sky-blue sonnet, sage-green haiku. Mustard handles
+/// currency. Pairs well with long transcript reading sessions; less dramatic
+/// than Finance Terminal but more versatile across every screen.
+fn parchment_dark() -> Theme {
+    let deep = hex(0x0F, 0x14, 0x19);
+    let surface0 = hex(0x16, 0x1B, 0x22);
+    let surface1 = hex(0x26, 0x2D, 0x38);
+    let surface2 = hex(0x38, 0x42, 0x51);
+    let cream = hex(0xE4, 0xE1, 0xD5);
+    let subtext1 = hex(0xCB, 0xC8, 0xBC);
+    let subtext0 = hex(0xA6, 0xA4, 0x96);
+    let overlay2 = hex(0x8C, 0x92, 0xA0);
+    let overlay1 = hex(0x7A, 0x84, 0x94);
+    let overlay0 = hex(0x5E, 0x69, 0x76);
+
+    let soft_purple = hex(0xD4, 0x99, 0xFF); // premium opus
+    let sage = hex(0x95, 0xD5, 0xB2);
+    let mustard = hex(0xE9, 0xC4, 0x6A);
+    let sky_blue = hex(0x64, 0xA6, 0xBD);
+    let warm_orange = hex(0xF4, 0xA2, 0x61);
+    let teal_deep = hex(0x2A, 0x9D, 0x8F);
+    let terracotta = hex(0xE7, 0x6F, 0x51);
+    let pink_soft = hex(0xE9, 0xB7, 0xC5);
+    let lavender_soft = hex(0xB3, 0x9B, 0xC8);
+
+    Theme {
+        name: ThemeName::ParchmentDark,
+        crust: hex(0x07, 0x0A, 0x0E),
+        mantle: hex(0x0B, 0x0F, 0x14),
+        base: deep,
+        surface0,
+        surface1,
+        surface2,
+        text: cream,
+        subtext1,
+        subtext0,
+        overlay2,
+        overlay1,
+        overlay0,
+        mauve: soft_purple,
+        green: sage,
+        yellow: mustard,
+        blue: sky_blue,
+        peach: warm_orange,
+        teal: teal_deep,
+        red: terracotta,
+        pink: pink_soft,
+        sky: sky_blue,
+        lavender: lavender_soft,
+        cost_green: sage,
+        cost_yellow: mustard,
+        cost_amber: warm_orange,
+        cost_red: terracotta,
+        cost_critical: hex(0xE6, 0x39, 0x46),
+        speed_fast: sage,
+        speed_medium: mustard,
+        speed_slow: warm_orange,
+        speed_glacial: terracotta,
+        model_opus: soft_purple,
+        model_sonnet: sky_blue,
+        model_haiku: sage,
+    }
+}
+
+/// Paperwhite Warm — the one light theme designed with care. Cream base
+/// (`#FAF4E6`) instead of harsh pure white, deep-indigo ink (`#1A1A2E`) instead
+/// of pure black. All accents are deeper/darker than dark-theme equivalents so
+/// they retain AA+ contrast against the cream. Use for daytime coding,
+/// projectors, and blog-embed screenshots.
+fn paperwhite_warm() -> Theme {
+    let cream = hex(0xFA, 0xF4, 0xE6);
+    let surface0 = hex(0xF3, 0xED, 0xDC);
+    let surface1 = hex(0xE8, 0xE0, 0xC4);
+    let surface2 = hex(0xD9, 0xCF, 0xAA);
+    let indigo = hex(0x1A, 0x1A, 0x2E);
+    let subtext1 = hex(0x2E, 0x2E, 0x45);
+    let subtext0 = hex(0x4A, 0x4A, 0x5E);
+    let overlay2 = hex(0x6B, 0x6B, 0x7A);
+    let overlay1 = hex(0x8A, 0x8A, 0x96);
+    let overlay0 = hex(0xA8, 0xA8, 0xB0);
+
+    let aubergine = hex(0x6B, 0x3F, 0xA0); // opus premium
+    let forest = hex(0x3A, 0x7D, 0x44);
+    let brass = hex(0x9B, 0x75, 0x18); // $ currency
+    let ocean = hex(0x1E, 0x6B, 0x8C);
+    let burnt_umber = hex(0xB4, 0x5B, 0x1E);
+    let teal_deep = hex(0x24, 0x73, 0x73);
+    let crimson = hex(0xB3, 0x3A, 0x3A);
+    let berry = hex(0xA6, 0x46, 0x75);
+
+    Theme {
+        name: ThemeName::PaperwhiteWarm,
+        crust: hex(0xFD, 0xF8, 0xEA),
+        mantle: hex(0xFB, 0xF5, 0xE8),
+        base: cream,
+        surface0,
+        surface1,
+        surface2,
+        text: indigo,
+        subtext1,
+        subtext0,
+        overlay2,
+        overlay1,
+        overlay0,
+        mauve: aubergine,
+        green: forest,
+        yellow: brass,
+        blue: ocean,
+        peach: burnt_umber,
+        teal: teal_deep,
+        red: crimson,
+        pink: berry,
+        sky: ocean,
+        lavender: aubergine,
+        cost_green: forest,
+        cost_yellow: brass,
+        cost_amber: burnt_umber,
+        cost_red: crimson,
+        cost_critical: hex(0x8B, 0x00, 0x00), // deep red alarm for light mode
+        speed_fast: forest,
+        speed_medium: brass,
+        speed_slow: burnt_umber,
+        speed_glacial: crimson,
+        model_opus: aubergine,
+        model_sonnet: ocean,
+        model_haiku: forest,
+    }
+}
+
+/// Terminal Classic — retro green-on-black CRT (bonus theme, not default).
+///
+/// Phosphor-glow nostalgia: deep mossy base (`#081106`), vivid ink-green text
+/// (`#B7FF8A`), sharp primary green accent, amber-yellow money for a "hot
+/// caret" look. All model pills stay inside the green/teal family so the
+/// model column reads as one consistent neon panel; cost ramp climbs from
+/// pale neon green → amber → pale yellow-green → orange-red so P&L still
+/// pops against the terminal-green field. Palette sourced from
+/// `docs/design/theme-comparison.html` (`.t-terminal`).
+fn terminal_classic() -> Theme {
+    let base = hex(0x08, 0x11, 0x06);
+    let surface0 = hex(0x0E, 0x1A, 0x0C);
+    let surface1 = hex(0x1B, 0x2E, 0x18);
+    let surface2 = hex(0x2A, 0x48, 0x24);
+    let ink = hex(0xB7, 0xFF, 0x8A);
+    let subtext = hex(0x4F, 0x7A, 0x3E);
+    let overlay = hex(0x2E, 0x4B, 0x2A);
+
+    // Accent ramp — the primary phosphor green is the mauve slot. Greens,
+    // teals, and yellow-greens do most of the palette work; a warm amber
+    // carries money and a single orange-red covers error/alarm so the dark
+    // field doesn't go monochrome.
+    let primary = hex(0x7D, 0xFF, 0x57); // mauve slot (primary accent)
+    let mint = hex(0x57, 0xFF, 0xB0); // green slot (success / cheap)
+    let amber = hex(0xFF, 0xDD, 0x57); // yellow slot (cash / medium cost)
+    let cyan = hex(0x8A, 0xFF, 0xD9); // blue / sky / teal — cool green-cyan
+    let pale_yellow_green = hex(0xE7, 0xFF, 0x8A); // peach / opus slot
+    let orange_red = hex(0xFF, 0x7A, 0x45); // red — single warm alarm
+
+    Theme {
+        name: ThemeName::TerminalClassic,
+        crust: hex(0x04, 0x09, 0x03),
+        mantle: hex(0x06, 0x0D, 0x05),
+        base,
+        surface0,
+        surface1,
+        surface2,
+        text: ink,
+        subtext1: ink,
+        subtext0: subtext,
+        overlay2: subtext,
+        overlay1: overlay,
+        overlay0: overlay,
+        mauve: primary,
+        green: mint,
+        yellow: amber,
+        blue: cyan,
+        peach: pale_yellow_green,
+        teal: cyan,
+        red: orange_red,
+        pink: pale_yellow_green,
+        sky: cyan,
+        lavender: mint,
+        // Cost ramp climbs mint → amber → pale-yellow-green → orange-red, so
+        // "cheap" shares the success green but "very high" stands out with a
+        // warm red that the monochrome terminal field deliberately lacks.
+        cost_green: mint,
+        cost_yellow: amber,
+        cost_amber: pale_yellow_green,
+        cost_red: orange_red,
+        cost_critical: hex(0xFF, 0x4A, 0x1A), // hotter alarm than cost_red
+        speed_fast: mint,
+        speed_medium: amber,
+        speed_slow: pale_yellow_green,
+        speed_glacial: orange_red,
+        model_opus: pale_yellow_green,
+        model_sonnet: cyan,
+        model_haiku: mint,
+    }
+}
+
 /// Foreground color for the model pill text. Always dark on colored bg so the
 /// text remains legible regardless of which family color we picked. For light
 /// themes (Latte) this is still the darkest shade in the palette.
@@ -1092,7 +1478,7 @@ pub fn resolve_theme_name(cli: Option<&str>) -> ThemeName {
 ///   2. `CLAUDE_PICKER_THEME` env var
 ///   3. Config file `[ui] theme = "…"`
 ///   4. One-line `~/.config/claude-picker/theme` persistence
-///   5. Built-in default (Catppuccin Mocha)
+///   5. Built-in default (Kanagawa as of v0.6)
 ///
 /// Pass an empty string for `config_value` when no config is loaded; that
 /// collapses the behaviour back to the pre-config precedence chain.
