@@ -447,6 +447,10 @@ fn handle_viewer_event(state: &mut SearchState, ev: Event) -> EventOutcome {
             state.set_toast(message, local_kind);
             EventOutcome::Continue
         }
+        // Search-driven viewer has no chrome to drop — ignore the toggle
+        // rather than propagating it. Saves us from threading a zen bool
+        // through every SearchState field purely for a no-op render.
+        ViewerAction::ToggleZen => EventOutcome::Continue,
     }
 }
 

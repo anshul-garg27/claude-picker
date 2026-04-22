@@ -20,7 +20,7 @@ use std::io::{BufRead, BufReader};
 use std::path::Path;
 use std::process::{Command, Stdio};
 
-use chrono::Local;
+use chrono::{DateTime, Local, Utc};
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
@@ -34,6 +34,7 @@ use crate::data::Session;
 use crate::theme::{self, Theme};
 use crate::ui::model_pill;
 use crate::ui::text::{display_width, truncate_to_width};
+use crate::ui::timestamp_fmt::format_message_timestamp;
 
 /// How many exchanges to show. Matches the brief (4-6) — 6 is usually what
 /// fits on a 40-row terminal after header / footer / meta.
@@ -512,6 +513,10 @@ fn render_body(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) 
     }
 
     let mut lines: Vec<Line<'_>> = Vec::with_capacity(exchanges.len() * 3);
+    // Running timestamp of the last message we rendered — drives the
+    // "relative delta" variant of the timestamp prefix. First qualifying
+    // exchange seeds it; subsequent ones compute `this - prev`.
+    let mut prev_ts: Option<DateTime<Utc>> = None;
     for ex in exchanges {
         let (label, label_style) = match ex.role {
             Role::User => (
@@ -525,12 +530,21 @@ fn render_body(f: &mut Frame<'_>, area: Rect, session: &Session, theme: &Theme) 
                     .add_modifier(Modifier::BOLD),
             ),
         };
-        lines.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(label, label_style),
-            Span::raw("  "),
-            Span::styled(ex.body, theme.body()),
-        ]));
+        let ts_spans = format_message_timestamp(prev_ts, ex.timestamp, theme);
+        // Only advance `prev_ts` when the current message actually carries
+        // one — missing timestamps don't reset the timeline for later
+        // messages. That way a single malformed line doesn't wipe the
+        // subsequent `+Nm` deltas.
+        if ex.timestamp.is_some() {
+            prev_ts = ex.timestamp;
+        }
+        let mut spans: Vec<Span<'_>> = Vec::with_capacity(ts_spans.len() + 4);
+        spans.push(Span::raw(" "));
+        spans.extend(ts_spans);
+        spans.push(Span::styled(label, label_style));
+        spans.push(Span::raw("  "));
+        spans.push(Span::styled(ex.body, theme.body()));
+        lines.push(Line::from(spans));
         // Blank spacer between exchanges — matches the Rich-based preview.
         lines.push(Line::raw(""));
     }
@@ -673,6 +687,10 @@ fn turn_duration_summary(
 struct Exchange {
     role: Role,
     body: String,
+    /// RFC3339 timestamp from the JSONL line, when present. Used by the
+    /// renderer to emit a compact `HH:MM · +Nm · ` prefix — see
+    /// [`crate::ui::timestamp_fmt`].
+    timestamp: Option<DateTime<Utc>>,
 }
 
 enum Role {
@@ -720,12 +738,21 @@ fn load_preview(session: &Session) -> Vec<Exchange> {
             continue;
         }
         let body = clean_body(&body);
+        let timestamp = raw
+            .timestamp
+            .as_deref()
+            .and_then(|s| DateTime::parse_from_rfc3339(s).ok())
+            .map(|dt| dt.with_timezone(&Utc));
 
         if ring.len() == MAX_MESSAGES {
             // Pop the oldest. Vec::remove(0) is fine for N=6.
             ring.remove(0);
         }
-        ring.push(Exchange { role, body });
+        ring.push(Exchange {
+            role,
+            body,
+            timestamp,
+        });
     }
     ring
 }
@@ -757,6 +784,8 @@ struct RawLine {
     kind: Option<String>,
     #[serde(default)]
     message: Option<RawMsg>,
+    #[serde(default)]
+    timestamp: Option<String>,
 }
 
 #[derive(Deserialize)]

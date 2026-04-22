@@ -254,6 +254,11 @@ pub struct App {
     pub model_simulator: Option<ModelSimulatorState>,
     /// First-run onboarding tour (#13).
     pub onboarding: Option<OnboardingState>,
+    /// Zen mode (#28) — chrome-free rendering across the picker + viewer.
+    /// Shared at the app level so breadcrumb, footer, stats strip, and the
+    /// viewer's own footer/search all stay in sync. Toggled with `z` from
+    /// inside the viewer (and reachable from the palette eventually).
+    pub zen: bool,
     /// Session ids the user has multi-selected via Tab.
     pub multi_selected: HashSet<String>,
     /// True when multi-select mode is engaged. Distinct from
@@ -395,6 +400,7 @@ impl App {
             replay: None,
             model_simulator: None,
             onboarding: None,
+            zen: false,
             multi_selected: HashSet::new(),
             multi_mode: false,
             pending_g: None,
@@ -1400,6 +1406,9 @@ impl App {
                     ViewerToastKind::Error => ToastKind::Error,
                 };
                 self.toast = Some(Toast::new(message, app_kind));
+            }
+            ViewerAction::ToggleZen => {
+                self.zen = !self.zen;
             }
         }
         Ok(())

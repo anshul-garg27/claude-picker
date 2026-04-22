@@ -545,6 +545,9 @@ impl TreeState {
                 };
                 self.toast = Some(Toast::new(message, local_kind));
             }
+            // Tree's viewer has no surrounding chrome to drop — absorb the
+            // toggle so a misplaced `z` press doesn't crash the match.
+            ViewerAction::ToggleZen => {}
         }
     }
 

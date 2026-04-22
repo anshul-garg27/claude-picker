@@ -31,6 +31,7 @@ use crate::data::transcript::{
 use crate::data::Session;
 use crate::events::Event;
 use crate::theme::{self, Theme};
+use crate::ui::timestamp_fmt::format_message_timestamp;
 
 /// What the viewer wants the parent to do after handling an event.
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -41,6 +42,12 @@ pub enum ViewerAction {
     Close,
     /// Show a transient status message ("copied message", etc.).
     Toast(String, ToastKind),
+    /// Flip the app-level zen flag. Rendering chrome (breadcrumb, footer,
+    /// picker stats strip) suppresses itself when zen is on; the viewer
+    /// also drops its own footer + search bar in-place. The parent owns
+    /// the bool so other screens that share the viewer-in-a-modal model
+    /// stay in sync.
+    ToggleZen,
 }
 
 /// Toast flavour the parent should use. Mirrors [`crate::app::ToastKind`]
@@ -382,6 +389,12 @@ impl ViewerState {
             }
             Event::Ctrl('e') => self.send_current_turn_to_editor(),
             Event::Key('y') => self.copy_centered_message(),
+            // `z` toggles zen mode — the parent owns the flag so every
+            // chrome-free panel across the app gets the same treatment.
+            // The viewer reacts by dropping its footer + search bar in
+            // the render path; the picker suppresses its breadcrumb +
+            // footer + stats strip.
+            Event::Key('z') => ViewerAction::ToggleZen,
             Event::Resize(_, _) => ViewerAction::None,
             _ => {
                 self.pending_g = None;
@@ -695,6 +708,20 @@ fn format_turn_for_editor(idx: usize, msg: &TranscriptMessage, session_title: &s
 /// Render the viewer across the entire `area`. Recomputes the flattened
 /// line cache if the width has changed.
 pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut ViewerState, theme: &Theme) {
+    render_with_zen(f, area, state, theme, false);
+}
+
+/// Zen-aware render entry point. When `zen` is true we drop the bordered
+/// block, the title line, the footer, and the search bar — only the
+/// transcript body survives. Every other caller should use [`render`]
+/// which preserves the original chrome-on behaviour.
+pub fn render_with_zen(
+    f: &mut Frame<'_>,
+    area: Rect,
+    state: &mut ViewerState,
+    theme: &Theme,
+    zen: bool,
+) {
     // Clear so we truly take over the whole screen — the viewer is
     // modal-on-top-of-picker and the underlying pane's border would
     // otherwise bleed through at the edges.
@@ -702,6 +729,21 @@ pub fn render(f: &mut Frame<'_>, area: Rect, state: &mut ViewerState, theme: &Th
 
     if area.width < MIN_VIEWER_WIDTH {
         render_too_narrow(f, area, theme);
+        return;
+    }
+
+    if zen {
+        // Zen mode: no border, no title, no footer, no search bar. The
+        // whole area is transcript. Keep the 1-col horizontal inset so
+        // text doesn't butt up against the terminal edge; otherwise the
+        // reading experience deteriorates fast.
+        let inner = Rect {
+            x: area.x.saturating_add(1),
+            y: area.y,
+            width: area.width.saturating_sub(2),
+            height: area.height,
+        };
+        render_body(f, inner, state, theme);
         return;
     }
 
@@ -1037,16 +1079,25 @@ fn rebuild_rendered_lines(state: &mut ViewerState, theme: &Theme, width: u16) {
     let query_lower = state.search_query.to_lowercase();
     let query_active = !query_lower.is_empty();
 
+    // Track the previous rendered message's timestamp so each successive
+    // message can show a relative delta (`+3m`, `just now`, …). Seeded
+    // with `None` so the first visible timestamp is rendered as absolute
+    // local time.
+    let mut prev_ts: Option<chrono::DateTime<chrono::Utc>> = None;
     for msg in &state.messages {
         let start = state.rendered_lines.len();
         render_message(
             msg,
+            prev_ts,
             theme,
             wrap_width,
             content_width,
             &mut state.rendered_lines,
             &mut state.tool_use_line_indices,
         );
+        if msg.timestamp.is_some() {
+            prev_ts = msg.timestamp;
+        }
         let end = state.rendered_lines.len();
         // Blank spacer between messages.
         state.rendered_lines.push(Line::raw(""));
@@ -1192,8 +1243,13 @@ fn highlight_line(line: &mut Line<'static>, needle_lower: &str, yellow: Color, b
 
 /// Flatten a single message into `out`. Pushes all of its display rows,
 /// records tool-use block entry lines into `tool_use_indices`.
+///
+/// `prev_ts` carries the previous rendered message's timestamp so the
+/// helper can emit a compact `HH:MM · +Nm · ` prefix on the role-label
+/// line — see [`crate::ui::timestamp_fmt`].
 fn render_message(
     msg: &TranscriptMessage,
+    prev_ts: Option<chrono::DateTime<chrono::Utc>>,
     theme: &Theme,
     wrap_width: usize,
     content_width: usize,
@@ -1214,6 +1270,25 @@ fn render_message(
         ),
     };
 
+    // Timestamp prefix that will ride along on whichever line carries the
+    // role label. Empty vec when the JSONL line had no parseable timestamp.
+    let ts_prefix = format_message_timestamp(prev_ts, msg.timestamp, theme);
+
+    // Helper to assemble the role-label line with the timestamp prefix
+    // attached — used from every `first_text` branch below so the prefix
+    // stays consistent regardless of which content item leads the message.
+    let role_label_line = |extra: Vec<Span<'static>>| -> Line<'static> {
+        let mut spans: Vec<Span<'static>> = Vec::with_capacity(ts_prefix.len() + 3 + extra.len());
+        spans.push(Span::raw(" "));
+        spans.extend(ts_prefix.iter().cloned());
+        spans.push(Span::styled(label.to_string(), label_style));
+        if !extra.is_empty() {
+            spans.push(Span::raw("  "));
+            spans.extend(extra);
+        }
+        Line::from(spans)
+    };
+
     // Concatenate text items on the same "header" row.
     let mut first_text = true;
     for item in &msg.items {
@@ -1223,18 +1298,9 @@ fn render_message(
                     // Pull the first line of the text onto the role-label line.
                     let mut lines_iter = split_text_into_blocks(text, wrap_width);
                     if let Some(first) = lines_iter.next() {
-                        let mut spans = vec![
-                            Span::raw(" "),
-                            Span::styled(label.to_string(), label_style),
-                            Span::raw("  "),
-                        ];
-                        spans.extend(first.spans);
-                        out.push(Line::from(spans));
+                        out.push(role_label_line(first.spans));
                     } else {
-                        out.push(Line::from(vec![
-                            Span::raw(" "),
-                            Span::styled(label.to_string(), label_style),
-                        ]));
+                        out.push(role_label_line(Vec::new()));
                     }
                     // Following wrapped lines indent to align with the body.
                     for line in lines_iter {
@@ -1255,10 +1321,7 @@ fn render_message(
             ContentItem::ToolUse { name, input } => {
                 // Ensure role label appears even if no text came first.
                 if first_text {
-                    out.push(Line::from(vec![
-                        Span::raw(" "),
-                        Span::styled(label.to_string(), label_style),
-                    ]));
+                    out.push(role_label_line(Vec::new()));
                     first_text = false;
                 }
                 out.push(Line::raw(""));
@@ -1267,10 +1330,7 @@ fn render_message(
             }
             ContentItem::ToolResult { content, is_error } => {
                 if first_text {
-                    out.push(Line::from(vec![
-                        Span::raw(" "),
-                        Span::styled(label.to_string(), label_style),
-                    ]));
+                    out.push(role_label_line(Vec::new()));
                     first_text = false;
                 }
                 out.push(Line::raw(""));
@@ -1278,10 +1338,7 @@ fn render_message(
             }
             ContentItem::Thinking { text } => {
                 if first_text {
-                    out.push(Line::from(vec![
-                        Span::raw(" "),
-                        Span::styled(label.to_string(), label_style),
-                    ]));
+                    out.push(role_label_line(Vec::new()));
                     first_text = false;
                 }
                 out.push(Line::raw(""));
@@ -1289,10 +1346,7 @@ fn render_message(
             }
             ContentItem::Other(kind) => {
                 if first_text {
-                    out.push(Line::from(vec![
-                        Span::raw(" "),
-                        Span::styled(label.to_string(), label_style),
-                    ]));
+                    out.push(role_label_line(Vec::new()));
                     first_text = false;
                 }
                 out.push(Line::from(vec![
@@ -1307,10 +1361,7 @@ fn render_message(
     // messages at parse time), at least render the role line so the user
     // sees it appeared.
     if first_text {
-        out.push(Line::from(vec![
-            Span::raw(" "),
-            Span::styled(label.to_string(), label_style),
-        ]));
+        out.push(role_label_line(Vec::new()));
     }
 }
 
