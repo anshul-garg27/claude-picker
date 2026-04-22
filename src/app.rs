@@ -223,6 +223,11 @@ pub struct App {
     pub previous_cursor: Option<usize>,
     /// When the cursor last moved — paired with `previous_cursor`.
     pub cursor_changed_at: Option<Instant>,
+    /// When the app constructor ran. Used by the UI layer to display
+    /// skeleton rows for the first ~1s while the background enumeration
+    /// settles. Cleared implicitly once `sessions` or `projects` become
+    /// non-empty (we never show skeletons when real data is available).
+    pub init_instant: Instant,
     /// Filter input has focus — controls which border styles light up.
     pub filter_focused: bool,
 
@@ -406,6 +411,7 @@ impl App {
             cursor: 0,
             previous_cursor: None,
             cursor_changed_at: None,
+            init_instant: Instant::now(),
             filter_focused: true,
             bookmarks,
             theme,
