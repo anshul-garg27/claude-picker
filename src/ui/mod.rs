@@ -40,6 +40,7 @@ pub mod replay;
 pub mod search;
 pub mod session_list;
 pub mod stats;
+pub mod subagent_tree;
 pub mod task_drawer;
 pub mod text;
 // Shared timestamp formatter used by preview + conversation viewer (#9, FEAT-7).
