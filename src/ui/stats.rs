@@ -134,6 +134,10 @@ pub struct StatsData {
     /// Sum of `total_cost_usd` for sessions whose last timestamp falls in
     /// the current calendar month. Drives the budget forecast.
     pub month_to_date_cost: f64,
+    /// Sum of `total_cost_usd` for sessions whose last timestamp falls in
+    /// the *previous* calendar month. Used by the burn-rate alert (#12) to
+    /// flag month-over-month divergence.
+    pub last_month_total_cost: f64,
     /// Build date; used by the budget math.
     pub today: NaiveDate,
     /// Sessions-per-hour-of-day histogram over the last 7 days (local time).
@@ -144,6 +148,13 @@ pub struct StatsData {
     pub monthly_tokens: Vec<u64>,
     /// Turn-duration histogram over the last 30 days.
     pub turn_durations: TurnDurationStats,
+    /// Session count bucketed into a 7-row (Sun..Sat) × 24-col (hour-of-day)
+    /// grid, computed from every session's `first_timestamp` in local time.
+    /// Feature #21.
+    pub dow_hour_sessions: [[u32; 24]; 7],
+    /// Total USD cost bucketed into the same 7×24 grid as
+    /// [`Self::dow_hour_sessions`].
+    pub dow_hour_cost: [[f64; 24]; 7],
 }
 
 /// Timeline window mode — cycles through 4 modes on `t`.
@@ -204,6 +215,38 @@ pub struct StatsView<'a> {
     pub monthly_limit_usd: f64,
     /// Budget-modal in-progress input, `Some` when open.
     pub budget_modal: Option<&'a str>,
+    /// Subscription tier label + optional cap for the quota panel (#22).
+    /// `None` hides the panel entirely.
+    pub plan: Option<(&'a str, Option<f64>)>,
+    /// Which metric drives the 7×24 pattern heatmap (#21).
+    pub pattern_metric: PatternMetric,
+}
+
+/// What the 7×24 pattern heatmap paints into each cell.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub enum PatternMetric {
+    /// Session count at that slot.
+    Sessions,
+    /// Total USD cost accrued at that slot. Default per spec.
+    #[default]
+    Cost,
+}
+
+impl PatternMetric {
+    /// Advance to the next metric in the cycle. Used by the `p` key binding.
+    pub fn next(self) -> Self {
+        match self {
+            Self::Cost => Self::Sessions,
+            Self::Sessions => Self::Cost,
+        }
+    }
+
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Cost => "cost",
+            Self::Sessions => "sessions",
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,6 +289,10 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     } else {
         0
     };
+    // Burn-rate alert (#12) — single line that only renders when this
+    // month's projected spend diverges >20% from last month's actual and
+    // last month cleared the $5 noise floor.
+    let burn_h: u16 = if burn_alert_visible(view.data) { 1 } else { 0 };
     let hist_h: u16 = if view.data.turn_durations.total_turns > 0 {
         12
     } else {
@@ -274,8 +321,9 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
             Constraint::Length(1),          // blank
             Constraint::Length(8),          // kpi cards (rich)
             Constraint::Length(1),          // blank
-            Constraint::Min(8),             // per-project + activity flex
+            Constraint::Min(8),             // per-project + quota + activity + patterns flex
             Constraint::Length(hist_h),     // turn-duration histogram
+            Constraint::Length(burn_h),     // burn-rate alert (#12)
             Constraint::Length(budget_h),   // budget band
             Constraint::Length(by_model_h), // by-model pills
             Constraint::Length(1),          // footer
@@ -288,13 +336,16 @@ pub fn render(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &T
     if hist_h > 0 {
         render_turn_duration_hist(frame, rows[5], view, theme);
     }
+    if burn_h > 0 {
+        render_burn_alert(frame, rows[6], view, theme);
+    }
     if budget_h > 0 {
-        render_budget_band(frame, rows[6], view, theme);
+        render_budget_band(frame, rows[7], view, theme);
     }
     if by_model_h > 0 {
-        render_by_model(frame, rows[7], view, theme);
+        render_by_model(frame, rows[8], view, theme);
     }
-    render_footer(frame, rows[8], theme);
+    render_footer(frame, rows[9], theme);
 
     if let Some(msg) = view.toast {
         render_toast(frame, area, msg, view.toast_kind, theme);
@@ -736,23 +787,40 @@ fn render_body(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &
         TimelineMode::Hours24 => 6,
         TimelineMode::Month => 9,
     };
+    // Quota panel (#22): 1 rule + 1 blank + 1 progress + 1 subtitle + 1
+    // trailing blank = 5. When the plan is None, collapse to 0.
+    let quota_h: u16 = if view.plan.is_some() { 5 } else { 0 };
+    // Pattern heatmap (#21): 1 rule + 1 blank + 1 legend + 7 rows + 1
+    // insight + 1 trailing blank = 11.
+    let pattern_h: u16 = 11;
 
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
-            Constraint::Length(projects_needed.min(area.height.saturating_sub(activity_height))),
-            Constraint::Min(activity_height),
+            Constraint::Length(projects_needed.min(
+                area.height
+                    .saturating_sub(activity_height)
+                    .saturating_sub(pattern_h)
+                    .saturating_sub(quota_h),
+            )),
+            Constraint::Length(quota_h),
+            Constraint::Length(activity_height),
+            Constraint::Min(pattern_h),
         ])
         .split(area);
 
     render_projects(frame, rows[0], view, theme);
+    if quota_h > 0 {
+        render_quota(frame, rows[1], view, theme);
+    }
     match view.mode {
         TimelineMode::Days30 | TimelineMode::Weeks12 => {
-            render_activity(frame, rows[1], view, theme)
+            render_activity(frame, rows[2], view, theme)
         }
-        TimelineMode::Hours24 => render_activity_hourly(frame, rows[1], view, theme),
-        TimelineMode::Month => render_activity_monthly(frame, rows[1], view, theme),
+        TimelineMode::Hours24 => render_activity_hourly(frame, rows[2], view, theme),
+        TimelineMode::Month => render_activity_monthly(frame, rows[2], view, theme),
     }
+    render_patterns(frame, rows[3], view, theme);
 }
 
 fn render_projects(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
@@ -2166,6 +2234,462 @@ pub fn build_weekly_window(today: NaiveDate, raw: &[DailyStats]) -> Vec<DailySta
             }
         })
         .collect()
+}
+
+// ── Burn-rate alert (#12) ────────────────────────────────────────────────
+
+/// Month-over-month noise floor: if last month's total spend is below this,
+/// we suppress the burn-rate alert entirely. A single refund, debug run,
+/// or a newly-onboarded user can otherwise produce lots of false alarms.
+const BURN_NOISE_FLOOR_USD: f64 = 5.0;
+/// Divergence threshold — only surface the alert when this month's
+/// projected spend is more than 20% above last month's actual.
+const BURN_DIVERGENCE_THRESHOLD: f64 = 0.20;
+
+/// True when the burn-rate alert line should render this frame. Hidden when:
+/// - last month had <$5 actual spend (noise floor), OR
+/// - projected divergence is within ±20% of last month.
+///
+/// Only the *over*-budget direction triggers an alert — an under-spend
+/// month is not actionable for this particular panel.
+pub fn burn_alert_visible(data: &StatsData) -> bool {
+    let Some(div) = burn_projection_divergence(data) else {
+        return false;
+    };
+    data.last_month_total_cost >= BURN_NOISE_FLOOR_USD && div > BURN_DIVERGENCE_THRESHOLD
+}
+
+/// Project this month's full spend from month-to-date + elapsed fraction of
+/// the month, then return `(forecast - last_month) / last_month` as a ratio.
+/// Returns `None` when last month had zero spend (no baseline to compare).
+pub fn burn_projection_divergence(data: &StatsData) -> Option<f64> {
+    if data.last_month_total_cost <= 0.0 {
+        return None;
+    }
+    let day = data.today.day();
+    let days_in_month = MonthlyActivity::days_in_month(data.today.year(), data.today.month());
+    let forecast = if day == 0 {
+        data.month_to_date_cost
+    } else {
+        data.month_to_date_cost * days_in_month as f64 / day as f64
+    };
+    Some((forecast - data.last_month_total_cost) / data.last_month_total_cost)
+}
+
+/// Produce the forecast dollar amount used by the alert copy. Kept here so
+/// the row math stays in one place; the budget band has its own copy for
+/// now since the wording is subtly different.
+fn burn_forecast_amount(data: &StatsData) -> f64 {
+    let day = data.today.day();
+    let days_in_month = MonthlyActivity::days_in_month(data.today.year(), data.today.month());
+    if day == 0 {
+        data.month_to_date_cost
+    } else {
+        data.month_to_date_cost * days_in_month as f64 / day as f64
+    }
+}
+
+/// Pick the traffic-light color for the alert row. Divergence tiers:
+///   ±10%  → cost_green (safe; never rendered since row is hidden <20%)
+///   20-50% → cost_amber
+///   >50%  → cost_red
+fn burn_alert_color(divergence: f64, theme: &Theme) -> Color {
+    let abs = divergence.abs();
+    if abs <= 0.10 {
+        theme.cost_green
+    } else if abs <= 0.50 {
+        theme.cost_amber
+    } else {
+        theme.cost_red
+    }
+}
+
+fn render_burn_alert(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
+    let Some(div) = burn_projection_divergence(view.data) else {
+        return;
+    };
+    let forecast = burn_forecast_amount(view.data);
+    let days_in_month =
+        MonthlyActivity::days_in_month(view.data.today.year(), view.data.today.month());
+    let color = burn_alert_color(div, theme);
+    let pct = (div * 100.0).round() as i64;
+    let end_of_month = format!(
+        "{} {}",
+        month_name_proper(view.data.today.month()),
+        days_in_month
+    );
+    let prior_month_label = month_name_proper(prev_month(view.data.today.month()));
+    let sign = if pct > 0 { "+" } else { "" };
+
+    let line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "\u{26A0}  ",
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "at current burn you'll hit ",
+            Style::default().fg(theme.text),
+        ),
+        Span::styled(
+            format_cost(forecast),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" by ", Style::default().fg(theme.text)),
+        Span::styled(
+            end_of_month,
+            Style::default()
+                .fg(theme.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            format!(" ({sign}{pct}% vs {prior_month_label})"),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        ),
+    ]);
+
+    frame.render_widget(Paragraph::new(line), area);
+}
+
+/// Proper-cased month label. Kept local so it doesn't collide with the
+/// lower-cased `month_name` used by the budget band header.
+fn month_name_proper(m: u32) -> &'static str {
+    match m {
+        1 => "January",
+        2 => "February",
+        3 => "March",
+        4 => "April",
+        5 => "May",
+        6 => "June",
+        7 => "July",
+        8 => "August",
+        9 => "September",
+        10 => "October",
+        11 => "November",
+        12 => "December",
+        _ => "",
+    }
+}
+
+/// Wrap-around prior month. `1` → `12`.
+fn prev_month(m: u32) -> u32 {
+    if m <= 1 {
+        12
+    } else {
+        m - 1
+    }
+}
+
+// ── Quota / usage-limit tracking (#22) ───────────────────────────────────
+
+fn render_quota(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
+    let Some((plan_label, cap)) = view.plan else {
+        return;
+    };
+    let title = format!("quota ({plan_label} plan) ");
+    let rule = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title.clone(),
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(
+                area.width
+                    .saturating_sub(5 + display_width(&title) as u16) as usize,
+            ),
+            theme.dim(),
+        ),
+    ]);
+
+    let mtd = view.data.month_to_date_cost;
+
+    let body_line = match cap {
+        Some(cap_usd) if cap_usd > 0.0 => build_quota_progress_line(mtd, cap_usd, theme),
+        _ => Line::from(vec![
+            Span::raw("  "),
+            Span::styled("mth-to-date ", theme.muted()),
+            Span::styled(
+                format_cost(mtd),
+                Style::default()
+                    .fg(theme.text)
+                    .add_modifier(Modifier::BOLD),
+            ),
+            Span::styled("   (enterprise \u{2014} no cap)", theme.dim()),
+        ]),
+    };
+
+    let subtitle_line = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "caps are best-effort estimates \u{00B7} override with 'b'",
+            theme.dim(),
+        ),
+    ]);
+
+    let lines = vec![rule, Line::raw(""), body_line, subtitle_line];
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Build the `mth-to-date $X / plan cap ~$Y (Z%)` progress line.
+fn build_quota_progress_line<'a>(mtd: f64, cap: f64, theme: &'a Theme) -> Line<'a> {
+    let bar_w: usize = 30;
+    let used_frac = (mtd / cap).clamp(0.0, 1.5);
+    let filled = ((used_frac.min(1.0)) * bar_w as f64).round() as usize;
+    let over = if used_frac > 1.0 {
+        (((used_frac - 1.0).min(0.5)) * bar_w as f64).round() as usize
+    } else {
+        0
+    };
+    let fill_color = quota_ramp_color(used_frac, theme);
+
+    let filled_bar = "█".repeat(filled.min(bar_w));
+    let over_bar = "█".repeat(over);
+    let empty_bar = "░".repeat(
+        bar_w
+            .saturating_sub(filled.min(bar_w))
+            .saturating_sub(over),
+    );
+    let pct = (mtd / cap * 100.0).round() as i64;
+
+    Line::from(vec![
+        Span::raw("  "),
+        Span::styled("mth-to-date ", theme.muted()),
+        Span::styled(
+            format_cost(mtd),
+            Style::default()
+                .fg(theme.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(" / plan cap ", theme.muted()),
+        Span::styled(
+            format!("~{}", format_cost(cap)),
+            Style::default()
+                .fg(theme.text)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::raw("   "),
+        Span::styled(
+            filled_bar,
+            Style::default().fg(fill_color).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            over_bar,
+            Style::default()
+                .fg(theme.cost_red)
+                .add_modifier(Modifier::BOLD | Modifier::REVERSED),
+        ),
+        Span::styled(empty_bar, Style::default().fg(theme.surface1)),
+        Span::raw("   "),
+        Span::styled(
+            format!("({pct}%)"),
+            Style::default().fg(fill_color).add_modifier(Modifier::BOLD),
+        ),
+    ])
+}
+
+/// Map quota used-fraction → cost-ramp color.
+/// <60%   → cost_green
+/// 60-80% → cost_yellow
+/// 80-100% → cost_amber
+/// >=100%  → cost_red
+fn quota_ramp_color(used_frac: f64, theme: &Theme) -> Color {
+    if used_frac < 0.60 {
+        theme.cost_green
+    } else if used_frac < 0.80 {
+        theme.cost_yellow
+    } else if used_frac < 1.00 {
+        theme.cost_amber
+    } else {
+        theme.cost_red
+    }
+}
+
+// ── Patterns heatmap (24h × 7d) — feature #21 ────────────────────────────
+
+/// Render the 7-row × 24-col pattern heatmap. Each cell is colored along the
+/// `cost_green → cost_yellow → cost_amber → cost_red` ramp based on the
+/// chosen metric (cost or sessions). Default is cost.
+fn render_patterns(frame: &mut Frame<'_>, area: Rect, view: &StatsView<'_>, theme: &Theme) {
+    if area.height == 0 {
+        return;
+    }
+    let title = "patterns (24h \u{00D7} 7d) ";
+    let rule = Line::from(vec![
+        Span::raw("  "),
+        Span::styled(
+            "━━ ",
+            Style::default().fg(theme.mauve).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            title,
+            Style::default()
+                .fg(theme.mauve)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(
+            "━".repeat(area.width.saturating_sub(5 + display_width(title) as u16) as usize),
+            theme.dim(),
+        ),
+    ]);
+
+    // Max value across the entire grid for normalisation under the current
+    // metric.
+    let grid_max = match view.pattern_metric {
+        PatternMetric::Cost => view
+            .data
+            .dow_hour_cost
+            .iter()
+            .flatten()
+            .copied()
+            .fold(0.0f64, f64::max),
+        PatternMetric::Sessions => view
+            .data
+            .dow_hour_sessions
+            .iter()
+            .flatten()
+            .copied()
+            .max()
+            .unwrap_or(0) as f64,
+    };
+
+    // Row labels: Sun..Sat matching the spec (feature #21).
+    const ROW_LABELS: [&str; 7] = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+
+    let mut lines: Vec<Line<'_>> = Vec::with_capacity(11);
+    lines.push(rule);
+
+    // Column header — every ~4 hours so the row isn't too dense.
+    let mut header_spans: Vec<Span<'_>> = Vec::with_capacity(26);
+    header_spans.push(Span::raw("      "));
+    for h in 0..24 {
+        let label = if h % 4 == 0 {
+            format!("{h:02}")
+        } else {
+            "  ".to_string()
+        };
+        header_spans.push(Span::styled(label, theme.dim()));
+    }
+    lines.push(Line::from(header_spans));
+
+    for (row_idx, row_label) in ROW_LABELS.iter().enumerate() {
+        let mut spans: Vec<Span<'_>> = Vec::with_capacity(26);
+        spans.push(Span::styled(
+            format!("  {row_label} "),
+            Style::default().fg(theme.subtext0),
+        ));
+        for hour in 0..24 {
+            let (value, color) = match view.pattern_metric {
+                PatternMetric::Cost => {
+                    let v = view.data.dow_hour_cost[row_idx][hour];
+                    let norm = if grid_max > 0.0 { v / grid_max } else { 0.0 };
+                    (v, pattern_ramp_color(norm, theme))
+                }
+                PatternMetric::Sessions => {
+                    let v = view.data.dow_hour_sessions[row_idx][hour] as f64;
+                    let norm = if grid_max > 0.0 { v / grid_max } else { 0.0 };
+                    (v, pattern_ramp_color(norm, theme))
+                }
+            };
+            let (glyph, style) = pattern_cell_glyph(value, color, theme);
+            spans.push(Span::styled(glyph, style));
+            spans.push(Span::raw(" "));
+        }
+        lines.push(Line::from(spans));
+    }
+
+    // Insight line: "peak: Tuesdays 3pm · $42/hr avg".
+    let (peak_row, peak_hour, peak_val) = pattern_peak_slot(view);
+    let insight = if peak_val > 0.0 {
+        let pretty_hour = pretty_hour_12(peak_hour);
+        let weekday_plural = format!("{}s", ROW_LABELS[peak_row]);
+        let unit = match view.pattern_metric {
+            PatternMetric::Cost => format!("{}/hr avg", format_cost(peak_val)),
+            PatternMetric::Sessions => format!("{} sessions/hr avg", peak_val.round() as i64),
+        };
+        format!("peak: {weekday_plural} {pretty_hour} \u{00B7} {unit}")
+    } else {
+        "no activity yet".to_string()
+    };
+    lines.push(Line::from(vec![
+        Span::raw("  "),
+        Span::styled(insight, theme.muted()),
+        Span::styled(
+            format!(
+                "   (metric: {} \u{00B7} 'p' to cycle)",
+                view.pattern_metric.label()
+            ),
+            theme.dim(),
+        ),
+    ]));
+
+    frame.render_widget(Paragraph::new(lines), area);
+}
+
+/// Identify the (row, hour) slot with the peak value under the active
+/// pattern metric. Returns `(0, 0, 0.0)` when every slot is empty.
+pub fn pattern_peak_slot(view: &StatsView<'_>) -> (usize, usize, f64) {
+    let mut best: (usize, usize, f64) = (0, 0, 0.0);
+    for r in 0..7 {
+        for h in 0..24 {
+            let v = match view.pattern_metric {
+                PatternMetric::Cost => view.data.dow_hour_cost[r][h],
+                PatternMetric::Sessions => view.data.dow_hour_sessions[r][h] as f64,
+            };
+            if v > best.2 {
+                best = (r, h, v);
+            }
+        }
+    }
+    best
+}
+
+/// 12-hour human-friendly hour label (`3pm`, `11am`, `12am`).
+fn pretty_hour_12(hour: usize) -> String {
+    let h = hour % 24;
+    let (disp, suffix) = match h {
+        0 => (12, "am"),
+        1..=11 => (h, "am"),
+        12 => (12, "pm"),
+        _ => (h - 12, "pm"),
+    };
+    format!("{disp}{suffix}")
+}
+
+/// Pick the ramp color for a normalised cell value in `[0, 1]`.
+/// Zero → surface1 (empty); non-zero scales across the cost ramp.
+fn pattern_ramp_color(norm: f64, theme: &Theme) -> Color {
+    if norm <= 0.0 {
+        return theme.surface1;
+    }
+    if norm < 0.25 {
+        theme.cost_green
+    } else if norm < 0.55 {
+        theme.cost_yellow
+    } else if norm < 0.80 {
+        theme.cost_amber
+    } else {
+        theme.cost_red
+    }
+}
+
+/// Choose the glyph + style for a pattern cell. An empty cell renders as a
+/// dim `·`; everything else as a solid block with the ramp color.
+fn pattern_cell_glyph(value: f64, color: Color, theme: &Theme) -> (String, Style) {
+    if value <= 0.0 {
+        ("\u{00B7}".to_string(), Style::default().fg(theme.surface1))
+    } else {
+        (
+            "\u{2588}".to_string(),
+            Style::default().fg(color).add_modifier(Modifier::BOLD),
+        )
+    }
 }
 
 // ── Tests ────────────────────────────────────────────────────────────────

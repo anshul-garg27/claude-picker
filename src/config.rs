@@ -45,9 +45,10 @@ pub struct Config {
 /// `[ui]` — appearance + global display toggles.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct UiConfig {
-    /// One of: kanagawa (default), catppuccin-mocha, catppuccin-latte, dracula,
-    /// tokyo-night, gruvbox-dark, nord, finance-terminal, parchment-dark,
-    /// paperwhite-warm. Unknown values fall through to the next source.
+    /// One of: kanagawa, finance-terminal, parchment-dark, paperwhite-warm,
+    /// catppuccin-mocha, catppuccin-latte, dracula, tokyo-night, gruvbox-dark,
+    /// nord, nord-aurora, rose-pine-moon, high-contrast, colorblind-safe.
+    /// Unknown values fall through to the next source.
     #[serde(default = "default_theme")]
     pub theme: String,
 
@@ -72,6 +73,83 @@ pub struct UiConfig {
     /// flip this to `true` in `~/.config/claude-picker/config.toml`.
     #[serde(default)]
     pub reduce_motion: bool,
+
+    /// Paint a subtle `surface0`-wash stripe on every other session row so
+    /// the tabular lists read with zebra contrast. Only applies to dark
+    /// themes where `base` and `surface0` differ; light themes with
+    /// minimal base↔surface0 delta skip the stripe so the palette inversion
+    /// doesn't flip contrast.
+    ///
+    /// Default `true`. Users who find the striping noisy can disable it in
+    /// `~/.config/claude-picker/config.toml`:
+    ///
+    /// ```toml
+    /// [ui]
+    /// zebra_rows = false
+    /// ```
+    #[serde(default = "default_zebra_rows")]
+    pub zebra_rows: bool,
+
+    /// Subscription tier used by the `stats` quota panel (feature #22). One
+    /// of:
+    ///
+    /// - `"none"` (default) — no panel rendered.
+    /// - `"pro"` — $20/mo cap.
+    /// - `"max"` — $100/mo cap.
+    /// - `"max20"` — $200/mo cap.
+    /// - `"team"` — $30/user/mo cap.
+    /// - `"enterprise"` — no cap rendered (panel shows plan only).
+    ///
+    /// The caps are best-effort estimates — users on a negotiated plan can
+    /// override them by setting a custom monthly budget via `b` on the stats
+    /// dashboard.
+    #[serde(default = "default_plan_tier")]
+    pub plan_tier: String,
+
+    /// Auto-redact well-known secret shapes (API keys, tokens, JWTs, bearer
+    /// headers) whenever message text is rendered in the preview pane or the
+    /// full-screen conversation viewer. Matches against known prefixes
+    /// (`sk-ant-…`, `sk-proj-…`, `AKIA…`, `ASIA…`, `ghp_…`, `gho_…`, `ghu_…`,
+    /// `ghs_…`, `eyJ….….…`, `Bearer …`) and replaces the sensitive tail with
+    /// `****<last4>` so snapshots, demos, and screenshots never accidentally
+    /// leak a working credential.
+    ///
+    /// Default `true`. Users who need to see the raw content (e.g. debugging
+    /// a token themselves) flip this to `false` in
+    /// `~/.config/claude-picker/config.toml`:
+    ///
+    /// ```toml
+    /// [ui]
+    /// redact_preview = false
+    /// ```
+    #[serde(default = "default_redact_preview")]
+    pub redact_preview: bool,
+}
+
+fn default_zebra_rows() -> bool {
+    true
+}
+
+fn default_plan_tier() -> String {
+    "none".to_string()
+}
+
+fn default_redact_preview() -> bool {
+    true
+}
+
+/// Plan-tier metadata for the `stats` quota panel. `None` = panel hidden;
+/// `Some((label, Some(cap)))` renders a progress bar against the cap;
+/// `Some((label, None))` renders a "no cap" line (enterprise).
+pub fn plan_tier_info(tier: &str) -> Option<(&'static str, Option<f64>)> {
+    match tier.trim().to_ascii_lowercase().as_str() {
+        "pro" => Some(("Pro", Some(20.0))),
+        "max" => Some(("Max", Some(100.0))),
+        "max20" => Some(("Max 20\u{00D7}", Some(200.0))),
+        "team" => Some(("Team", Some(30.0))),
+        "enterprise" => Some(("Enterprise", None)),
+        _ => None,
+    }
 }
 
 impl Default for UiConfig {
@@ -81,13 +159,14 @@ impl Default for UiConfig {
             date_format: String::new(),
             stats_width: 0,
             reduce_motion: false,
+            zebra_rows: default_zebra_rows(),
+            plan_tier: default_plan_tier(),
+            redact_preview: default_redact_preview(),
         }
     }
 }
 
 fn default_theme() -> String {
-    // v0.6 swapped the default from catppuccin-mocha → kanagawa for the long-
-    // term brand identity direction (see docs/design/theme-comparison.html).
     "kanagawa".to_string()
 }
 
@@ -260,9 +339,9 @@ pub const DEFAULT_TEMPLATE: &str = r#"# claude-picker configuration
 #   4. Built-in default
 
 [ui]
-# Default theme. One of: kanagawa (default), catppuccin-mocha, catppuccin-latte,
-# dracula, tokyo-night, gruvbox-dark, nord, finance-terminal, parchment-dark,
-# paperwhite-warm.
+# Default theme. One of: kanagawa (default), finance-terminal, parchment-dark,
+# paperwhite-warm, catppuccin-mocha, catppuccin-latte, dracula, tokyo-night,
+# gruvbox-dark, nord, nord-aurora, rose-pine-moon, high-contrast, colorblind-safe.
 theme = "kanagawa"
 
 # When non-empty, overrides the subtitle timestamp format. Default uses
@@ -278,6 +357,30 @@ stats_width = 0
 # / prefers-reduced-motion setups. The `CLAUDE_PICKER_NO_ANIM=1` env var
 # still works for the pre-tachyonfx effects (toast slide, cursor glide).
 reduce_motion = false
+
+# Paint a subtle surface0-wash stripe on every other session row so the
+# tabular lists read with zebra contrast. Only applies to dark themes
+# where base and surface0 differ meaningfully; light themes skip the
+# stripe automatically so the palette inversion doesn't flip contrast.
+# Default true. Flip to false for a flat, fully-uniform list.
+zebra_rows = true
+
+# Subscription tier for the stats quota panel (feature #22). One of:
+#   "none"       — hide the quota panel (default)
+#   "pro"        — $20/mo cap
+#   "max"        — $100/mo cap
+#   "max20"      — $200/mo cap
+#   "team"       — $30/user/mo cap
+#   "enterprise" — no cap shown
+# The caps are best-effort estimates; users on negotiated plans can
+# override with the 'b' budget modal on the stats dashboard.
+plan_tier = "none"
+
+# Auto-redact well-known secret shapes (API keys, tokens, JWTs, bearer
+# headers) whenever message text is rendered in the preview pane or the
+# conversation viewer. Matched tokens are replaced with `****<last4>`.
+# Default true. Flip to false to show raw content when debugging.
+redact_preview = true
 
 [picker]
 # Default sort for the session list. One of: recent, cost, msgs, name,
@@ -331,6 +434,12 @@ mod tests {
         let c = Config::default();
         assert_eq!(c.ui.theme, "kanagawa");
         assert!(!c.ui.reduce_motion, "animations should be on by default");
+        assert!(c.ui.zebra_rows, "zebra striping should be on by default");
+        assert_eq!(c.ui.plan_tier, "none");
+        assert!(
+            c.ui.redact_preview,
+            "preview secret-redaction must be on by default",
+        );
         assert_eq!(c.picker.sort, "bookmarked-first");
         assert_eq!(c.picker.min_messages, 2);
         assert!(c.picker.include_hidden_projects);
@@ -363,6 +472,9 @@ mod tests {
         assert_eq!(cfg.ui.date_format, d.ui.date_format);
         assert_eq!(cfg.ui.stats_width, d.ui.stats_width);
         assert_eq!(cfg.ui.reduce_motion, d.ui.reduce_motion);
+        assert_eq!(cfg.ui.zebra_rows, d.ui.zebra_rows);
+        assert_eq!(cfg.ui.plan_tier, d.ui.plan_tier);
+        assert_eq!(cfg.ui.redact_preview, d.ui.redact_preview);
         assert_eq!(cfg.picker.sort, d.picker.sort);
         assert_eq!(
             cfg.picker.include_hidden_projects,
@@ -430,6 +542,37 @@ mod tests {
         assert!(!nested.parent().unwrap().exists());
         Config::write_template(&nested, false).expect("should create dirs");
         assert!(nested.is_file());
+    }
+
+    #[test]
+    fn plan_tier_info_maps_known_tiers() {
+        let (label, cap) = plan_tier_info("pro").expect("pro recognized");
+        assert_eq!(label, "Pro");
+        assert_eq!(cap, Some(20.0));
+        let (label, cap) = plan_tier_info("max").expect("max recognized");
+        assert_eq!(label, "Max");
+        assert_eq!(cap, Some(100.0));
+        let (_, cap) = plan_tier_info("max20").expect("max20 recognized");
+        assert_eq!(cap, Some(200.0));
+        let (_, cap) = plan_tier_info("team").expect("team recognized");
+        assert_eq!(cap, Some(30.0));
+        let (label, cap) = plan_tier_info("enterprise").expect("enterprise recognized");
+        assert_eq!(label, "Enterprise");
+        assert!(cap.is_none(), "enterprise has no cap");
+    }
+
+    #[test]
+    fn plan_tier_info_hides_unknown_tiers() {
+        assert!(plan_tier_info("none").is_none());
+        assert!(plan_tier_info("").is_none());
+        assert!(plan_tier_info("nonsense").is_none());
+    }
+
+    #[test]
+    fn plan_tier_info_is_case_insensitive() {
+        assert!(plan_tier_info("PRO").is_some());
+        assert!(plan_tier_info("Max20").is_some());
+        assert!(plan_tier_info(" team ").is_some());
     }
 
     #[test]

@@ -24,7 +24,7 @@ use std::io::{self, Stdout};
 use std::path::PathBuf;
 use std::time::{Duration, Instant};
 
-use chrono::{Datelike, NaiveDate, Timelike, Utc};
+use chrono::{Datelike, NaiveDate, Timelike, Utc, Weekday};
 use crossterm::event::{DisableMouseCapture, EnableMouseCapture};
 use crossterm::execute;
 use crossterm::terminal::{
@@ -33,6 +33,7 @@ use crossterm::terminal::{
 use ratatui::backend::CrosstermBackend;
 use ratatui::Terminal;
 
+use crate::config::{plan_tier_info, Config};
 use crate::data::budget::Budget;
 use crate::data::claude_json_cache::ClaudeJsonCache;
 use crate::data::pricing::{family, Family, TokenCounts};
@@ -82,6 +83,17 @@ pub fn run() -> anyhow::Result<()> {
         let mut budget = Budget::load();
         let mut budget_input: Option<String> = None;
 
+        // Quota panel (#22) — read `[ui] plan_tier` from config. A missing
+        // or malformed config file silently falls back to "no plan set",
+        // matching the precedence rules documented in src/config.rs.
+        let config = Config::load().unwrap_or_default();
+        let plan = plan_tier_info(&config.ui.plan_tier);
+
+        // Pattern heatmap (#21) — defaults to cost per spec. Cycled with `p`
+        // at runtime so we don't collide with the existing `t` binding for
+        // timeline mode.
+        let mut pattern_metric = stats::PatternMetric::default();
+
         // Driver loop. `events::next()` blocks up to 50 ms, so toasts get a
         // free redraw tick without us needing a separate timer.
         while !should_quit {
@@ -108,6 +120,8 @@ pub fn run() -> anyhow::Result<()> {
                     show_forecast: budget.show_forecast,
                     monthly_limit_usd: budget.monthly_limit_usd,
                     budget_modal: budget_input.as_deref(),
+                    plan,
+                    pattern_metric,
                 };
                 stats::render(f, f.area(), &view, &theme);
                 if show_help {
@@ -239,6 +253,14 @@ pub fn run() -> anyhow::Result<()> {
                             Instant::now() + Duration::from_millis(2000),
                         ));
                     }
+                }
+                Event::Key('p') => {
+                    pattern_metric = pattern_metric.next();
+                    toast = Some((
+                        format!("patterns: {}", pattern_metric.label()),
+                        ToastKind::Info,
+                        Instant::now() + Duration::from_millis(1200),
+                    ));
                 }
                 Event::Key('r') => match aggregate() {
                     Ok(fresh) => {
@@ -399,6 +421,7 @@ fn build_stats_data_from_cache(
         named_count: 0,
         unnamed_count: 0,
         month_to_date_cost: 0.0,
+        last_month_total_cost: 0.0,
         today,
         hourly_buckets: [0u32; 24],
         monthly: MonthlyActivity {
@@ -409,6 +432,8 @@ fn build_stats_data_from_cache(
         },
         monthly_tokens: vec![0u64; days_in_month],
         turn_durations: TurnDurationStats::default(),
+        dow_hour_sessions: [[0u32; 24]; 7],
+        dow_hour_cost: [[0.0f64; 24]; 7],
     })
 }
 
@@ -488,11 +513,22 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
     let mut hourly_buckets = [0u32; 24];
     let mut month_by_day: HashMap<u32, (u32, u64)> = HashMap::new();
     let mut month_to_date_cost: f64 = 0.0;
+    let mut last_month_total_cost: f64 = 0.0;
     let mut turn_durations = TurnDurationStats::default();
 
     let current_year = today_date.year();
     let current_month = today_date.month();
     let seven_days_ago = today_date - chrono::Duration::days(6);
+    let (last_year, last_month) = if current_month <= 1 {
+        (current_year - 1, 12)
+    } else {
+        (current_year, current_month - 1)
+    };
+
+    // 7×24 pattern heatmap (#21). Row = Sun..Sat, col = hour of day, using
+    // the session's `first_timestamp` in local time.
+    let mut dow_hour_sessions = [[0u32; 24]; 7];
+    let mut dow_hour_cost = [[0.0f64; 24]; 7];
 
     for (project, sessions) in projects {
         for s in sessions {
@@ -553,12 +589,31 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
                     entry.1 = entry.1.saturating_add(s.tokens.total());
                 }
 
+                // Prior calendar-month for the burn-rate alert (#12).
+                if d.year() == last_year && d.month() == last_month {
+                    last_month_total_cost += s.total_cost_usd;
+                }
+
                 // Hourly bucket (local time).
                 if d >= seven_days_ago && d <= today_date {
                     let local_hour = ts.with_timezone(&chrono::Local).hour() as usize;
                     if local_hour < 24 {
                         hourly_buckets[local_hour] = hourly_buckets[local_hour].saturating_add(1);
                     }
+                }
+            }
+
+            // 7×24 pattern heatmap (#21). Bucket by the session's
+            // `first_timestamp` in local time so "when did I start?" stays
+            // stable for sessions that span hours.
+            if let Some(first) = s.first_timestamp {
+                let local = first.with_timezone(&chrono::Local);
+                let row = weekday_sun_first(local.weekday());
+                let hour = local.hour() as usize;
+                if hour < 24 {
+                    dow_hour_sessions[row][hour] =
+                        dow_hour_sessions[row][hour].saturating_add(1);
+                    dow_hour_cost[row][hour] += s.total_cost_usd;
                 }
             }
         }
@@ -604,11 +659,27 @@ pub fn build_stats_data(projects: &[(Project, Vec<Session>)], today_date: NaiveD
         named_count,
         unnamed_count,
         month_to_date_cost,
+        last_month_total_cost,
         today: today_date,
         hourly_buckets,
         monthly,
         monthly_tokens,
         turn_durations,
+        dow_hour_sessions,
+        dow_hour_cost,
+    }
+}
+
+/// Map a chrono `Weekday` to a Sunday-first row index (0..=6).
+fn weekday_sun_first(w: Weekday) -> usize {
+    match w {
+        Weekday::Sun => 0,
+        Weekday::Mon => 1,
+        Weekday::Tue => 2,
+        Weekday::Wed => 3,
+        Weekday::Thu => 4,
+        Weekday::Fri => 5,
+        Weekday::Sat => 6,
     }
 }
 
