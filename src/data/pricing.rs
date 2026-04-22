@@ -153,6 +153,40 @@ pub fn family(model: &str) -> Family {
     }
 }
 
+/// Per-output-token rate for the dominant model of a session.
+///
+/// Used by the audit's tool-ratio savings calc, which needs to know how much
+/// the *output tokens alone* cost at this model's rate (the denominator of
+/// the new tool-ratio formula is output tokens, not total). Unknown / empty
+/// model strings fall back to the conservative Opus rate so we never silently
+/// return zero.
+pub fn output_rate_for(model: &str) -> f64 {
+    if let Some(r) = rates_for(model) {
+        r.output
+    } else {
+        FALLBACK_RATES.output
+    }
+}
+
+/// Haiku 4.5's output rate as a fraction of `model`'s output rate.
+///
+/// The savings formula is `output_cost × tool_ratio × (1 − haiku_ratio)` —
+/// so for Opus (output $25/MTok) this returns 5/25 = 0.20, for Sonnet
+/// (output $15/MTok) it returns 5/15 ≈ 0.333, and for Haiku (already cheap)
+/// it returns 1.0 so the "savings" term collapses to zero. Unknown models
+/// fall back to the Opus ratio.
+pub fn haiku_output_ratio_to(model: &str) -> f64 {
+    // Haiku 4.5 output rate = $5 / 1M tokens.
+    const HAIKU_OUTPUT_RATE: f64 = 5.0 / 1_000_000.0;
+    let model_rate = output_rate_for(model);
+    if model_rate <= 0.0 {
+        // Synthetic or unreachable — treat as Opus (most conservative claim
+        // since Opus is the most expensive model).
+        return HAIKU_OUTPUT_RATE / FALLBACK_RATES.output;
+    }
+    (HAIKU_OUTPUT_RATE / model_rate).min(1.0)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -240,6 +274,30 @@ mod tests {
         assert_eq!(family("claude-sonnet-4-5"), Family::Sonnet);
         assert_eq!(family("claude-3-5-haiku-20241022"), Family::Haiku);
         assert_eq!(family("claude-future-9"), Family::Unknown);
+    }
+
+    #[test]
+    fn output_rate_for_known_models() {
+        assert!((output_rate_for("claude-opus-4-7") - 25.0 / 1_000_000.0).abs() < 1e-12);
+        assert!((output_rate_for("claude-sonnet-4-5") - 15.0 / 1_000_000.0).abs() < 1e-12);
+        assert!((output_rate_for("claude-haiku-4-5") - 5.0 / 1_000_000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn output_rate_for_empty_falls_back_to_opus() {
+        // Empty / synthetic → FALLBACK_RATES.output = Opus 4 output rate.
+        assert!((output_rate_for("") - 25.0 / 1_000_000.0).abs() < 1e-12);
+        assert!((output_rate_for("<synthetic>") - 25.0 / 1_000_000.0).abs() < 1e-12);
+    }
+
+    #[test]
+    fn haiku_ratio_is_correct_per_family() {
+        // Opus: 5/25 = 0.20
+        assert!((haiku_output_ratio_to("claude-opus-4-7") - 0.20).abs() < 1e-9);
+        // Sonnet: 5/15 ≈ 0.333…
+        assert!((haiku_output_ratio_to("claude-sonnet-4-5") - (5.0 / 15.0)).abs() < 1e-9);
+        // Haiku: 5/5 = 1.0 → "savings" term (1 - 1.0) = 0.
+        assert!((haiku_output_ratio_to("claude-haiku-4-5") - 1.0).abs() < 1e-9);
     }
 
     #[test]
