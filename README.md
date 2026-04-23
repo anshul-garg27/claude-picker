@@ -32,7 +32,7 @@
 </p>
 
 <p align="center">
-  <img src="assets/hero.gif" alt="claude-picker cold-start: Kanagawa-themed picker with fuzzy filter and model/permission pills; tabbing to the audit dashboard surfaces two tool-ratio findings worth $64 with an annual run-rate projection of ~$779/year; the stats dashboard lights up with 7×24 usage heatmap and per-project 30-day cost bars; finishing with a single-line `claude-picker prompt` suitable for shell-prompt integration" width="88%">
+  <img src="assets/hero.gif" alt="claude-picker cold-start: Kanagawa-themed picker with fuzzy filter and model/permission pills; then `claude-picker audit` surfaces two tool-ratio findings worth $64 with an annual run-rate projection of ~$779/year; then `claude-picker stats` shows a 7×24 usage heatmap and per-project 30-day cost bars; finishing with a single-line `claude-picker prompt` output for embedding in a shell prompt" width="88%">
 </p>
 
 ---
@@ -50,7 +50,7 @@ Claude Code stores every conversation on disk, but the built-in `/resume` picker
 
 No projects. No preview. No names. No cost. No search. No way to find that one session from last Tuesday where you fixed the auth bug.
 
-**claude-picker** reads those same JSONL files and gives you a two-pane picker with live preview, fork tree, word-level diff, file pivot, time-travel replay, an 11-operator filter language, and a cost-optimization audit. Run against this repo's own session history it surfaced $148 of avoidable spend. All reads are local; no telemetry, no network calls.
+**claude-picker** reads those same JSONL files and gives you a two-pane picker with live preview, fork tree, word-level diff, file pivot, time-travel replay, an 11-operator filter language, and a cost-optimization audit. On this repo's own session history the audit surfaced $148 of avoidable spend. All reads are local; no telemetry, no network calls.
 
 ---
 
@@ -59,7 +59,7 @@ No projects. No preview. No names. No cost. No search. No way to find that one s
 Four ways. The binary is identical everywhere.
 
 ```bash
-# 1. Cargo (always-latest from crates.io — no cache lag)
+# 1. Cargo (from crates.io)
 cargo install claude-picker
 
 # 2. Cargo from source (this repo)
@@ -241,7 +241,7 @@ Every theme carries the same 12 semantic tokens (`cost_green/yellow/amber/red/cr
 
 ## Audit + stats deep-dive
 
-`claude-picker audit` scores every session in `~/.claude/projects/` against three heuristics and produces a run-rate-aware savings estimate. The TUI has always shown findings — v0.6 adds an always-visible 3-heuristic summary band and a drill-in per-finding overlay with per-tool distribution.
+`claude-picker audit` scores every session in `~/.claude/projects/` against three heuristics and produces a run-rate-aware savings estimate. v0.6 adds an always-visible 3-heuristic summary band and a drill-in per-finding overlay with per-tool distribution.
 
 <p align="center">
   <img src="assets/audit-summary-band.svg" alt="Always-visible summary band on the audit dashboard, split into three labeled rectangles: tool-ratio (warn-yellow, 6 findings, ~$110.40), cache-efficiency (info-blue, 1 finding, ~$0.11), model-mismatch (ok-green, 0 findings, $0.00)" width="72%">
@@ -250,7 +250,7 @@ Every theme carries the same 12 semantic tokens (`cost_green/yellow/amber/red/cr
 ### The three heuristics
 
 - **Tool-ratio** — sessions where `tool_use` tokens dominate the output budget. The ratio is computed as `tool_use / (output + cache-create)`, and anything over 50% is flagged as *"could have been a Haiku call"*.
-- **Cache-efficiency** — weak `cache_read` vs `cache_creation` ratio. Sessions that regenerate the same 5-minute ephemeral context over and over get flagged; typical savings from prompt-caching that input.
+- **Cache-efficiency** — weak `cache_read` vs `cache_creation` ratio. Sessions that regenerate the same 5-minute ephemeral context repeatedly get flagged; the fix is usually prompt-caching that input.
 - **Model-mismatch** — Opus on throwaway work (all-cheap tool calls), or Haiku on heavy reasoning (long free-form plans). Direction-aware so you don't get warned about *"your Opus session should be on Opus"*.
 
 ### JSON output (sample from this repo)
@@ -479,8 +479,8 @@ Everything below respects `[ui] reduce_motion = true`.
 - **Smooth scroll** — scroll interpolates over a few frames instead of jumping a page.
 - **Chain badge (⛓)** — session list surfaces sessions that appear to continue each other: same project, opened within 24h, similar titles.
 - **Cost anomaly badge (⚡)** — sessions whose cost is ≥2× the project median get a lightning chip so you spot runaway runs without opening the audit.
-- **Zebra rows** — tabular lists alternate `base` and `surface0` on dark themes. Auto-off on light themes where the delta would flip contrast.
-- **Interesting-moments timeline** in the conversation viewer — a compact top strip marks cost spikes, tool bursts, long pauses, and the first+last user prompts. One glance tells you where the session's weight sits.
+- **Zebra rows** — tabular lists alternate `base` and `surface0` on dark themes. Auto-off on light themes.
+- **Interesting-moments timeline** in the conversation viewer — a compact top strip marks cost spikes, tool bursts, long pauses, and the first+last user prompts.
 - **Subagent tree** — Task tool calls render as nested children with `├─` / `└─` / `│ ` connectors, so multi-agent runs read as a tree instead of a flat log.
 
 ---
