@@ -17,9 +17,7 @@
 <p align="center">
   <a href="#install">Install</a> ·
   <a href="#first-run">First run</a> ·
-  <a href="#whats-new-in-v06">v0.6</a> ·
   <a href="#screens">Screens</a> ·
-  <a href="#keyboard">Keyboard</a> ·
   <a href="#themes">Themes</a> ·
   <a href="#audit--stats-deep-dive">Audit</a> ·
   <a href="#scripting--shell-integration">Scripting</a> ·
@@ -91,21 +89,6 @@ Type to fuzzy-filter. `?` pops a context-aware help overlay. `Enter` resumes the
 
 ---
 
-## What's new in v0.6
-
-Fifteen themes (up from ten), five new headless subcommands, UI polish across picker and conversation viewer.
-
-- **[Kanagawa is the new default](#themes)** — warm ink-wash palette replaces Catppuccin Mocha as the out-of-box theme. `finance-terminal`, `parchment-dark`, `paperwhite-warm`, and `terminal-classic` round the theme count up to 15.
-- **[Doctor, export, latest, prompt, completions](#scripting--shell-integration)** — five new subcommands for scripting and shell integration. `prompt` emits a PS1-friendly spend line. `export --redact` writes a Markdown transcript with secrets masked. `doctor --format json` surfaces orphans and top-cost sessions.
-- **[Audit JSON/CSV output](#audit--stats-deep-dive)** — `audit --format json` pipes straight into `jq`, Datadog, or your spreadsheet of choice. The TUI now always shows a 3-heuristic summary band and an **annual-savings run-rate** (monthly × 12.17).
-- **[Chain and anomaly badges](#screens) in the session list** — `⛓` marks sessions in the same project opened within 24h with similar titles. `⚡` marks sessions whose cost is ≥2× the project median.
-- **[Zebra rows + loading skeletons + cursor memory + smooth scroll](#ui-polish)** — tabular lists alternate shades on dark themes. Cold start shows pulsing grey placeholders for ~1.2s until enumeration settles. Cursor position restores per-project. Scroll interpolates instead of jumping. Every animation respects `reduce_motion`.
-- **[Conversation viewer rework](#keyboard)** — every message gets a `HH:MM · +Nm ·` timestamp. `z` toggles **zen mode** (drop breadcrumb, footer, search bar). Subagent Task tool calls render as a tree with `├─` / `└─` / `│ ` connectors. An **interesting-moments mini-timeline** at the top marks cost spikes, tool bursts, long pauses, and the first+last prompts.
-- **[Stats dashboard extras](#audit--stats-deep-dive)** — burn-rate alert vs prior month, 7×24 day-of-week × hour-of-day heatmap (`p` cycles metric), optional quota progress bar gated on `[ui] plan_tier`, per-project 30-day cost heatmap.
-- **[Auto-redact in preview](#privacy)** — `sk-ant-…`, `AKIA…`, `ghp_…`, `eyJ….….…` JWTs, and `Bearer …` headers are masked as `****<last4>` before rendering. Opt out via `[ui] redact_preview = false`.
-
----
-
 ## Screens
 
 Fourteen screens plus five headless subcommands. Every TUI screen has its own keyboard context and `?` help overlay.
@@ -137,71 +120,6 @@ Fourteen screens plus five headless subcommands. Every TUI screen has its own ke
 | `latest [--project NAME --count N]` | Print the most-recent session id(s) for scripting |
 | `prompt [--format PS1\|JSON --no-color]` | Single-line spend summary for embedding in your shell prompt |
 | `completions <bash\|zsh\|fish\|elvish\|powershell>` | Emit a shell-completion script |
-
----
-
-## Keyboard
-
-Every screen shares the same core map. Press `?` for a context-aware help overlay. Hold any leader key (`Space`, `g`) for 250ms and a helix-style which-key popup appears with every follow-up.
-
-### Navigation (all screens)
-
-| Key | Action |
-|---|---|
-| `j` / `k` or `↓` / `↑` | Move selection |
-| `gg` / `G` | Top / bottom |
-| `3j` `12G` `5dd` | Vim-style count prefix |
-| `Ctrl-o` / `Ctrl-i` | Jump back / forward (selection history ring) |
-| `Tab` | Multi-select toggle |
-| `q` / `Esc` | Back out or quit |
-
-### Session list
-
-| Key | Action |
-|---|---|
-| `Enter` | Exec `claude --resume` on the selected session (replaces this process) |
-| `v` | Full-screen conversation viewer |
-| `R` | Time-travel replay |
-| `r` | Rename session (writes `custom-title` back into JSONL) |
-| `e` | Export session transcript to Markdown |
-| `o` | Open raw JSONL in `$EDITOR` |
-| `y` / `Y` | Copy session ID / project path to clipboard |
-| `Ctrl+A` | AI summarize via Haiku 4.5 (cached) |
-| `m` | Mark / unmark for bulk action |
-| `*` / `b` | Toggle bookmark / filter to bookmarks-only |
-| `z` / `Z` | Undo / redo (rename today; delete coming) |
-
-### Project + scope
-
-| Key | Action |
-|---|---|
-| `u` | Pin current project |
-| `1`–`9` | Jump to pinned slot |
-| `0` | Clear project filter (all projects) |
-| `Ctrl-r` | Cycle filter ribbon (`ALL` → `REPO` → `7D` → `RUNNING` → `FORKED`) |
-| `/` | Filter within current view |
-| `Space` | Command palette (leader) |
-
-### Conversation viewer
-
-| Key | Action |
-|---|---|
-| `c` | Cycle heatmap gutter dimension (cost / duration / tokens) |
-| `n` / `N` | Jump to next / previous turn boundary |
-| `z` | Toggle **zen mode** — drop breadcrumb, footer, search chrome |
-| `Ctrl-e` | Send current turn to `$EDITOR` |
-
-### Diff / tree / stats / task drawer
-
-| Key | Action |
-|---|---|
-| `n` / `N` (diff) | Jump to next / previous hunk |
-| `d` (diff) | Toggle word-level inline diff |
-| `e` / `E` (tree) | Expand / collapse subtree recursively |
-| `p` (stats) | Cycle heatmap metric (cost / tokens / sessions) |
-| `w` / `x` | Toggle task drawer / cancel focused task |
-| `t` | Cycle theme live |
-| `?` | Help overlay |
 
 ---
 
@@ -241,7 +159,7 @@ Every theme carries the same 12 semantic tokens (`cost_green/yellow/amber/red/cr
 
 ## Audit + stats deep-dive
 
-`claude-picker audit` scores every session in `~/.claude/projects/` against three heuristics and produces a run-rate-aware savings estimate. v0.6 adds an always-visible 3-heuristic summary band and a drill-in per-finding overlay with per-tool distribution.
+`claude-picker audit` scores every session in `~/.claude/projects/` against three heuristics and produces a run-rate-aware savings estimate. The TUI shows an always-visible 3-heuristic summary band and a drill-in per-finding overlay with per-tool distribution.
 
 <p align="center">
   <img src="assets/audit-summary-band.svg" alt="Always-visible summary band on the audit dashboard, split into three labeled rectangles: tool-ratio (warn-yellow, 6 findings, ~$110.40), cache-efficiency (info-blue, 1 finding, ~$0.11), model-mismatch (ok-green, 0 findings, $0.00)" width="72%">
@@ -469,8 +387,7 @@ export CLAUDE_PICKER_FLAGS="--model sonnet"    # force sonnet
 
 ---
 
-<a id="ui-polish"></a>
-## UI polish in v0.6
+## UI polish
 
 Everything below respects `[ui] reduce_motion = true`.
 
