@@ -471,32 +471,25 @@ See [CHANGELOG.md](CHANGELOG.md) for the release history. See [BREW-TAP.md](BREW
 
 ## Gallery
 
-<details>
-<summary><strong>Session picker</strong> — filter, cost chips, model/permission pills, timestamps, live preview</summary>
+**Session picker** — filter, cost chips, model/permission pills, timestamps, live preview
 
 <p align="center">
   <img src="assets/picker.png" alt="Left pane: session list inside a project with filter input at top, two sessions sorted by date, cost chips ($7.80 / $9.31), bookmark/pin indicators, and a running `today $0.00 · avg $0.57/day` cost counter. Right pane: live conversation preview with HH:MM timestamps and +Nm relative deltas, a `sonnet` model pill, and an `ACCEPT` permission badge. Footer key hints: ↑↓ navigate · Enter resume · v view · Tab multi · Ctrl-r scope · 1-9 pin." width="88%">
 </p>
-</details>
 
-<details>
-<summary><strong>Cost audit</strong> — 3-heuristic summary band, annual run-rate, per-project bar</summary>
+**Cost audit** — 3-heuristic summary band, annual run-rate, per-project bar
 
 <p align="center">
   <img src="assets/audit-tui.png" alt="Audit dashboard with top summary band listing three heuristics (tool-ratio 2 findings ~$64.00 in green; cache-efficiency 0 findings; model-mismatch 0 findings) followed by an `annual run-rate × 12.17 ~$778.88 avoidable/year` line. Below, two findings (data-pipeline / Optimize Redshift COPY command $76.85 and platform-infra / Debug terraform plan diff $56.47) each flagged with a ⚠ and a 'Haiku could save ~$36.40' / '~$27.60' narration. Bottom: a per-project horizontal bar split into purple (avoidable) and pink (other) segments." width="88%">
 </p>
-</details>
 
-<details>
-<summary><strong>Stats dashboard</strong> — KPI cards, 7×24 heatmap, project 30-day cost, budget, by-model</summary>
+**Stats dashboard** — KPI cards, 7×24 heatmap, project 30-day cost, budget, by-model
 
 <p align="center">
   <img src="assets/stats.png" alt="Stats dashboard with three KPI cards (tokens 157.1M ▲203% vs prior · cost $458.38 ▲199% · sessions 19 ▲180%), a 7×24 day-of-week × hour-of-day pattern heatmap highlighting the Saturday-8pm peak, a project-heat 30-day grid for six projects sorted by cost ($203.17 down to $7.63), a month-to-date budget band at 73% of the month with a forecast of $625.07 at current burn, and a by-model breakdown (opus-4-7 76%, sonnet-4-5 23%, haiku-4-5 2%)." width="88%">
 </p>
-</details>
 
-<details>
-<summary><strong>Shell-prompt integration</strong> — single-line spend summary</summary>
+**Shell-prompt integration** — single-line spend summary
 
 <p align="center">
   <img src="assets/prompt.png" alt="Terminal running `claude-picker prompt` and emitting a single-line summary formatted for embedding in a PS1 shell prompt." width="74%">
@@ -506,7 +499,6 @@ See [CHANGELOG.md](CHANGELOG.md) for the release history. See [BREW-TAP.md](BREW
 $ claude-picker prompt
 claude: $458.38 today · $1,257.84 month
 ```
-</details>
 
 ---
 
