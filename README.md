@@ -505,7 +505,3 @@ claude: $458.38 today · $1,257.84 month
 ## License
 
 MIT. See [LICENSE](LICENSE).
-
-<p align="center">
-  Built by <a href="https://github.com/anshul-garg27">Anshul Garg</a>.
-</p>
